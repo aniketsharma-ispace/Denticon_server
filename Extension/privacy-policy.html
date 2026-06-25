@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy – Insurance Auditor Pro</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 0 20px;
+            color: #333;
+            line-height: 1.7;
+        }
+        h1 { color: #1a73e8; border-bottom: 2px solid #1a73e8; padding-bottom: 10px; }
+        h2 { color: #444; margin-top: 30px; }
+        .last-updated { color: #888; font-size: 0.9em; }
+        ul { padding-left: 20px; }
+        li { margin-bottom: 8px; }
+        .highlight {
+            background: #f0f7ff;
+            border-left: 4px solid #1a73e8;
+            padding: 12px 16px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Privacy Policy</h1>
+    <p class="last-updated">Last updated: May 26, 2025</p>
+
+    <p>This Privacy Policy describes how <strong>Insurance Auditor Pro</strong> ("the Extension") handles information when installed in the Google Chrome browser. By using this Extension, you agree to the practices described in this policy.</p>
+
+    <div class="highlight">
+        <strong>Summary:</strong> This extension does not collect, transmit, or share any data with external servers. All data processed by this extension stays entirely on your local device.
+    </div>
+
+    <h2>1. What Data Does the Extension Access?</h2>
+    <p>Insurance Auditor Pro reads the following information from supported dental insurance portals when explicitly triggered by the user:</p>
+    <ul>
+        <li><strong>Personally Identifiable Information (PII):</strong> Patient name, date of birth, email address, and phone number as displayed on the portal.</li>
+        <li><strong>Health Information:</strong> Dental insurance plan details, coverage percentages, procedure categories, and benefits information.</li>
+        <li><strong>Financial Information:</strong> Account balances, estimated insurance/patient portions, deductibles, and annual maximums as displayed on the portal.</li>
+        <li><strong>Website Content:</strong> Text content from dental portal pages (Denticon, MetLife, Cigna) required to extract the above data.</li>
+    </ul>
+
+    <h2>2. How Is Data Used?</h2>
+    <p>All data accessed by the Extension is used solely for the following purposes:</p>
+    <ul>
+        <li>Temporarily storing captured insurance data in the browser's local storage (<code>chrome.storage.local</code>) while the user navigates between portals.</li>
+        <li>Compiling and exporting the data as a structured JSON file to the user's local device for audit and reconciliation purposes.</li>
+    </ul>
+
+    <h2>3. Data Storage & Retention</h2>
+    <ul>
+        <li>Data is stored <strong>only in the user's local browser storage</strong> (<code>chrome.storage.local</code>).</li>
+        <li>Data is <strong>automatically purged</strong> from local storage immediately after the user downloads the JSON export.</li>
+        <li>No data is retained beyond a single audit session.</li>
+    </ul>
+
+    <h2>4. Data Sharing & Transmission</h2>
+    <div class="highlight">
+        <strong>This extension does NOT:</strong>
+        <ul style="margin: 8px 0 0 0;">
+            <li>Send any data to external servers, APIs, or third parties.</li>
+            <li>Sell or transfer user data to any third party.</li>
+            <li>Use data for any purpose unrelated to the extension's core insurance auditing function.</li>
+            <li>Use data to determine creditworthiness or for lending purposes.</li>
+        </ul>
+    </div>
+
+    <h2>5. Permissions Used</h2>
+    <ul>
+        <li><strong>storage:</strong> Used to temporarily hold audit data in local browser storage between portal sessions.</li>
+        <li><strong>activeTab:</strong> Used to detect which portal the user is currently viewing, to display correct status and route commands.</li>
+        <li><strong>downloads:</strong> Used to save the compiled JSON audit file to the user's local machine.</li>
+        <li><strong>Host permissions (denticon.com, planetdds.com, metlife.com, cigna.com):</strong> Required for content scripts to read insurance data from the supported portals.</li>
+    </ul>
+
+    <h2>6. Supported Portals</h2>
+    <p>The Extension only operates on the following dental insurance portals:</p>
+    <ul>
+        <li>Denticon / PlanetDDS (<code>denticon.com</code>, <code>planetdds.com</code>)</li>
+        <li>MetLife Dental Provider Portal (<code>dentalprovider.metlife.com</code>)</li>
+        <li>Cigna for HCP (<code>cignaforhcp.cigna.com</code>)</li>
+    </ul>
+
+    <h2>7. Children's Privacy</h2>
+    <p>This Extension is intended for use by dental professionals only and is not directed at individuals under the age of 13. We do not knowingly collect data from children.</p>
+
+    <h2>8. Changes to This Policy</h2>
+    <p>We may update this Privacy Policy from time to time. Any changes will be reflected on this page with an updated "Last updated" date. Continued use of the Extension after changes constitutes acceptance of the updated policy.</p>
+
+    <h2>9. Contact</h2>
+    <p>If you have any questions about this Privacy Policy or the Extension's data practices, please contact the developer through the Chrome Web Store listing page.</p>
+
+</body>
+</html>

@@ -1,0 +1,13 @@
+# ── Web framework / server ──────────────────────────────────────────
+fastapi
+uvicorn
+pydantic
+python-multipart      # required by FastAPI to accept file uploads (/api/parse-pdf)
+
+# ── HTTP clients ────────────────────────────────────────────────────
+httpx                 # async client used to call Ollama (compare_patients.py)
+requests              # sync client used by new_plan.py LLM calls
+
+# ── PDF handling ────────────────────────────────────────────────────
+PyMuPDF               # provides `fitz`, used to read insurance PDFs (pdf_extractor.py)
+reportlab             # generates the New Plan breakdown PDF (new_plan.py)

@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Patient Matching Engine</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, #1e1e2f, #2a2a40);
+            color: #e0e0e0;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 40px 20px 80px;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+
+        .card {
+            background: rgba(255,255,255,0.05);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+            padding: 40px;
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+
+        h1 { margin-top:0; color:#fff; text-align:center; font-weight:700; letter-spacing:-0.5px; text-shadow:0 2px 4px rgba(0,0,0,0.2); }
+
+        .subtitle { text-align:center; color:#a0aabf; margin-bottom:40px; font-size:1.05rem; }
+
+        .section-label {
+            font-size:0.65rem; text-transform:uppercase; letter-spacing:0.12em; color:#a0aabf;
+            margin:32px 0 16px; display:flex; align-items:center; gap:12px;
+        }
+        .section-label::after { content:''; flex:1; height:1px; background:rgba(255,255,255,0.1); }
+
+        .upload-grid { display:grid; grid-template-columns:1fr 1fr; gap:30px; margin-bottom:35px; }
+        @media(max-width:650px){ .upload-grid{ grid-template-columns:1fr; } }
+
+        .upload-box {
+            border:2px dashed rgba(255,255,255,0.2); padding:30px 20px; text-align:center;
+            border-radius:12px; background:rgba(0,0,0,0.2); transition:all 0.3s ease; position:relative; overflow:hidden;
+        }
+        .upload-box:hover { border-color:rgba(255,255,255,0.4); transform:translateY(-2px); box-shadow:0 4px 15px rgba(0,0,0,0.2); }
+        .upload-box.ready { border-color:#00d2ff; background:rgba(0,210,255,0.05); }
+        .upload-box h3 { margin-top:0; color:#fff; font-weight:600; }
+
+        input[type="file"] { display:block; margin:15px auto; color:#a0aabf; max-width:100%; }
+        input[type="file"]::file-selector-button {
+            background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.2); color:#fff;
+            padding:8px 16px; border-radius:6px; cursor:pointer; transition:all 0.2s; margin-right:10px;
+        }
+        input[type="file"]::file-selector-button:hover { background:rgba(255,255,255,0.2); }
+
+        .btn-row { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; margin-bottom:4px; }
+        @media(max-width:650px){ .btn-row{ grid-template-columns:1fr; } }
+
+        button.run-btn {
+            background:linear-gradient(90deg,#00d2ff 0%,#3a7bd5 100%); color:#fff; border:none;
+            padding:16px; font-size:15px; border-radius:8px; cursor:pointer; width:100%; font-weight:600;
+            letter-spacing:0.3px; transition:all 0.3s ease; box-shadow:0 4px 15px rgba(0,210,255,0.3);
+        }
+        button.run-btn.notes-btn { background:linear-gradient(90deg,#00e676 0%,#00897b 100%); box-shadow:0 4px 15px rgba(0,230,118,0.3); }
+        button.run-btn.plan-btn  { background:linear-gradient(90deg,#ff9800 0%,#e65100 100%); box-shadow:0 4px 15px rgba(255,152,0,0.3); }
+        button.run-btn:hover { transform:translateY(-2px); box-shadow:0 6px 20px rgba(0,210,255,0.4); }
+        button.run-btn.notes-btn:hover { box-shadow:0 6px 20px rgba(0,230,118,0.4); }
+        button.run-btn.plan-btn:hover  { box-shadow:0 6px 20px rgba(255,152,0,0.4); }
+        button.run-btn:disabled { background:rgba(255,255,255,0.1); color:rgba(255,255,255,0.3); cursor:not-allowed; box-shadow:none; transform:none; }
+
+        .loader { display:none; text-align:center; margin:24px 0 8px; font-size:15px; font-weight:500; }
+        .loader.match-loader { color:#00d2ff; }
+        .loader.notes-loader { color:#00e676; }
+        .loader.plan-loader  { color:#ff9800; }
+        .loader.visible { display:block; animation:pulse 1.5s infinite; }
+
+        @keyframes pulse { 0%{opacity:.6} 50%{opacity:1} 100%{opacity:.6} }
+
+        .result-card { padding:25px; border-radius:12px; margin-top:24px; background:rgba(0,0,0,0.3); animation:slideUp 0.5s ease forwards; border:1px solid rgba(255,255,255,0.05); }
+        .match-success { border-left:6px solid #00e676; box-shadow:0 4px 20px rgba(0,230,118,0.15); }
+        .match-fail    { border-left:6px solid #ff1744; box-shadow:0 4px 20px rgba(255,23,68,0.15); }
+        .plan-success  { border-left:6px solid #ff9800; box-shadow:0 4px 20px rgba(255,152,0,0.15); }
+
+        .plan-id { font-size:30px; font-weight:700; margin:15px 0; color:#00d2ff; text-shadow:0 2px 10px rgba(0,210,255,0.3); }
+        .confidence { font-weight:600; color:#00e676; font-size:17px; display:flex; align-items:center; gap:8px; }
+        .reason-box { background:rgba(255,255,255,0.05); padding:14px; border-radius:8px; margin-top:14px; border:1px solid rgba(255,255,255,0.05); line-height:1.6; color:#d1d5db; }
+
+        /* Notes panel */
+        .notes-panel { display:none; margin-top:24px; background:rgba(0,0,0,0.3); border:1px solid rgba(0,230,118,0.2); border-radius:12px; overflow:hidden; animation:slideUp 0.5s ease forwards; }
+        .notes-panel.visible { display:block; }
+        .notes-toolbar { display:flex; align-items:center; justify-content:space-between; padding:14px 20px; border-bottom:1px solid rgba(255,255,255,0.08); background:rgba(0,230,118,0.06); flex-wrap:wrap; gap:10px; }
+        .patient-tag { font-weight:600; font-size:0.9rem; color:#00e676; }
+        #toolbarDate { font-size:0.75rem; color:#a0aabf; margin-left:10px; }
+        .toolbar-actions { display:flex; gap:8px; }
+        .btn-sm { font-size:0.7rem; font-weight:600; padding:5px 12px; border-radius:5px; border:1px solid rgba(255,255,255,0.15); cursor:pointer; transition:all 0.15s; background:transparent; color:#e0e0e0; }
+        .btn-sm:hover    { border-color:#00d2ff; color:#00d2ff; }
+        .btn-sm.dl:hover { border-color:#00e676; color:#00e676; }
+        .notes-body { padding:22px; }
+        .notes-table { width:100%; border-collapse:collapse; font-size:0.82rem; }
+        .notes-table tr { border-bottom:1px solid rgba(255,255,255,0.05); }
+        .notes-table tr:last-child { border-bottom:none; }
+        .notes-table td { padding:8px 6px; vertical-align:top; }
+        .notes-table .label  { color:#a0aabf; white-space:nowrap; padding-right:20px; width:300px; }
+        .notes-table .value  { color:#e6edf3; font-weight:600; }
+        .notes-table .value.nh    { color:#a0aabf; font-weight:400; }
+        .notes-table .value.date  { color:#00e676; }
+        .notes-table .value.money { color:#ffa657; }
+        .tbl-section { background:rgba(255,255,255,0.025); }
+        .tbl-section td { padding:10px 6px 4px; font-size:0.62rem; text-transform:uppercase; letter-spacing:0.12em; color:#00d2ff; font-weight:600; }
+
+        @keyframes slideUp { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+
+        /* ── Ranked Plans Table ── */
+        .ranked-plans { margin-top:20px; }
+        .ranked-plans-header { display:flex; align-items:center; gap:10px; font-size:0.7rem; text-transform:uppercase; letter-spacing:0.1em; color:#a0aabf; margin-bottom:12px; }
+        .ranked-plans-header .divider { flex:1; height:1px; background:rgba(255,255,255,0.08); }
+        .plan-row { background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07); border-radius:8px; padding:12px 14px; margin-bottom:8px; }
+        .plan-row-tied { border-color:rgba(255,152,0,0.35); background:rgba(255,152,0,0.05); }
+        .plan-row-top { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+        .rank-badge-best { background:#00e676; color:#000; font-size:0.6rem; font-weight:700; padding:2px 7px; border-radius:4px; }
+        .rank-badge-num  { background:rgba(255,255,255,0.1); color:#a0aabf; font-size:0.6rem; font-weight:700; padding:2px 7px; border-radius:4px; }
+        .plan-row-name { font-weight:600; color:#fff; font-size:0.88rem; flex:1; }
+        .crit-badge { background:rgba(255,112,67,0.2); color:#ff7043; font-size:0.6rem; padding:2px 7px; border-radius:4px; border:1px solid rgba(255,112,67,0.3); }
+        .tie-badge  { background:rgba(255,152,0,0.2);  color:#ff9800; font-size:0.6rem; padding:2px 7px; border-radius:4px; border:1px solid rgba(255,152,0,0.3); }
+        .score-bar-wrap { display:flex; align-items:center; gap:8px; }
+        .score-bar-track { width:90px; height:5px; background:rgba(255,255,255,0.1); border-radius:3px; overflow:hidden; }
+        .score-bar-fill  { height:100%; border-radius:3px; }
+        .score-label { font-size:0.8rem; font-weight:700; min-width:36px; text-align:right; }
+        .plan-mismatches { margin-top:8px; font-size:0.72rem; color:#a0aabf; line-height:1.7; padding-top:8px; border-top:1px solid rgba(255,255,255,0.05); }
+        .plan-no-mismatch { margin-top:6px; font-size:0.72rem; color:#00e676; }
+
+        /* ── Tie Warning Banner ── */
+        .tie-warning { display:flex; align-items:flex-start; gap:12px; background:rgba(255,152,0,0.1); border:1px solid rgba(255,152,0,0.35); border-radius:10px; padding:14px 16px; margin-bottom:14px; }
+        .tie-warning-title { font-weight:700; color:#ff9800; margin-bottom:4px; font-size:0.9rem; }
+        .tie-item { font-size:0.8rem; color:#e0c080; margin-top:3px; }
+        .tie-score { font-weight:700; color:#ff9800; }
+
+        /* ── Insurance Override Modal ── */
+        .modal-overlay {
+            display:none; position:fixed; inset:0; background:rgba(0,0,0,0.72);
+            z-index:1000; align-items:center; justify-content:center;
+        }
+        .modal-overlay.active { display:flex; }
+        .modal-box {
+            background:#1e1e34; border:1px solid rgba(0,210,255,0.3);
+            border-radius:14px; padding:36px 32px; width:480px; max-width:92vw;
+            box-shadow:0 16px 48px rgba(0,0,0,0.6); animation:slideUp 0.28s ease;
+        }
+        .modal-box h2 { margin:0 0 6px; color:#fff; font-size:1.1rem; font-weight:700; }
+        .modal-box p  { margin:0 0 24px; color:#a0aabf; font-size:0.84rem; line-height:1.55; }
+        .modal-field  { margin-bottom:18px; }
+        .modal-field label {
+            display:block; font-size:0.68rem; text-transform:uppercase;
+            letter-spacing:0.1em; color:#a0aabf; margin-bottom:6px;
+        }
+        .modal-field input,
+        .modal-field select {
+            width:100%; box-sizing:border-box; background:rgba(255,255,255,0.07);
+            border:1px solid rgba(255,255,255,0.15); border-radius:7px;
+            padding:10px 13px; color:#fff; font-size:0.88rem;
+            font-family:inherit; outline:none; transition:border-color 0.2s;
+        }
+        .modal-field input:focus,
+        .modal-field select:focus { border-color:#00d2ff; }
+        /* Style the select dropdown options */
+        .modal-field select option { background:#1e1e34; color:#fff; }
+        .modal-btn-row { display:flex; gap:12px; margin-top:6px; }
+        .modal-btn {
+            flex:1; padding:11px; border-radius:7px; border:none;
+            cursor:pointer; font-size:0.88rem; font-weight:600;
+            font-family:inherit; transition:all 0.2s;
+        }
+        .modal-btn.confirm { background:linear-gradient(90deg,#00d2ff,#3a7bd5); color:#fff; }
+        .modal-btn.confirm:hover { opacity:0.85; transform:translateY(-1px); }
+        .modal-btn.cancel  { background:rgba(255,255,255,0.08); color:#a0aabf; }
+        .modal-btn.cancel:hover { background:rgba(255,255,255,0.14); color:#fff; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <h1>🔍 AI Patient Reconciliation</h1>
+    <p class="subtitle">Upload your Portal export and Denticon export to match patients, generate notes, and create new plan PDFs.</p>
+
+    <div class="section-label">01 — Upload Files</div>
+    <div class="upload-grid">
+        <div class="upload-box" id="boxPortal">
+            <h3>1. Portal JSON</h3>
+            <p style="font-size:13px;color:#a0aabf;">(Cigna / MetLife Export)</p>
+            <input type="file" id="filePortal" accept=".json,.pdf">
+            <div id="statusPortal" style="font-weight:500;margin-top:10px;color:#a0aabf;">Waiting for file…</div>
+        </div>
+        <div class="upload-box" id="boxDenticon">
+            <h3>2. Denticon JSON</h3>
+            <p style="font-size:13px;color:#a0aabf;">(Deep Audit Export)</p>
+            <input type="file" id="fileDenticon" accept=".json">
+            <div id="statusDenticon" style="font-weight:500;margin-top:10px;color:#a0aabf;">Waiting for file…</div>
+        </div>
+    </div>
+
+    <div class="section-label">02 — Run</div>
+    <div class="btn-row">
+        <button class="run-btn"            id="btnMatch"   disabled>✨ Run AI Plan Matching</button>
+        <button class="run-btn notes-btn"  id="btnNotes"   disabled>⚡ Generate Patient Notes</button>
+        <button class="run-btn plan-btn"   id="btnNewPlan" disabled>📄 Generate New Plan PDF</button>
+    </div>
+
+    <div class="loader match-loader" id="matchLoader">🧠 AI is analyzing IDs and records… please wait 10–20 s.</div>
+    <div id="matchOutput"></div>
+
+    <div class="loader notes-loader" id="notesLoader">📋 Generating patient notes…</div>
+    <div class="notes-panel" id="notesPanel">
+        <div class="notes-toolbar">
+            <div><span class="patient-tag" id="toolbarName"></span><span id="toolbarDate"></span></div>
+            <div class="toolbar-actions">
+                <button class="btn-sm"    id="btnCopy">⎘ Copy</button>
+                <button class="btn-sm dl" id="btnDownload">↓ Download .txt</button>
+            </div>
+        </div>
+        <div class="notes-body"><table class="notes-table" id="notesTable"></table></div>
+    </div>
+
+    <div class="loader plan-loader" id="planLoader">📄 Building Insurance Plan PDF…</div>
+    <div id="planOutput"></div>
+</div>
+
+<!-- ══ Insurance Override Modal ══ -->
+<div class="modal-overlay" id="insOverlayModal">
+    <div class="modal-box">
+        <h2>⚠️ Insurance Details Required</h2>
+        <p id="insModalReason"></p>
+        <div class="modal-field">
+            <label>Insurance Name</label>
+            <input type="text" id="modalInsName" placeholder="e.g. MetLife (IN) — PO Box 981282 — 79998">
+        </div>
+        <div class="modal-field">
+            <label>Fee Schedule</label>
+            <input type="text" id="modalFeeSchedule" placeholder="e.g. Metlife PPO">
+        </div>
+        <!-- ★ NEW FIELD: Relation to Subscriber ★ -->
+        <div class="modal-field">
+            <label>Relation to Subscriber</label>
+            <select id="modalRelation">
+                <option value="">— Select —</option>
+                <option value="Self">Self</option>
+                <option value="Spouse">Spouse</option>
+                <option value="Child">Child</option>
+                <option value="Dependent">Dependent</option>
+                <option value="Other">Other</option>
+            </select>
+        </div>
+        <div class="modal-btn-row">
+            <button class="modal-btn cancel" id="insModalCancel">Cancel</button>
+            <button class="modal-btn confirm" id="insModalConfirm">✔ Use These &amp; Generate PDF</button>
+        </div>
+    </div>
+</div>
+
+<script>
+/* ─────────────────────────────────────────
+   STATE
+───────────────────────────────────────── */
+let portalData   = null;
+let denticonData = null;
+let lastNotesText = '';
+
+const filePortal   = document.getElementById('filePortal');
+const fileDenticon = document.getElementById('fileDenticon');
+const btnMatch     = document.getElementById('btnMatch');
+const btnNotes     = document.getElementById('btnNotes');
+const btnNewPlan   = document.getElementById('btnNewPlan');
+const matchOutput  = document.getElementById('matchOutput');
+const matchLoader  = document.getElementById('matchLoader');
+const notesLoader  = document.getElementById('notesLoader');
+const notesPanel   = document.getElementById('notesPanel');
+const planLoader   = document.getElementById('planLoader');
+const planOutput   = document.getElementById('planOutput');
+
+/* ─────────────────────────────────────────
+   FILE LOADING
+───────────────────────────────────────── */
+function handleFile(event, type) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    // Portal box accepts insurance PDFs — send those to the backend parser
+    // (Delta Dental / Guardian) instead of trying to read them as JSON.
+    const isPdf = file.type === 'application/pdf'
+        || file.name.toLowerCase().trim().endsWith('.pdf');
+    if (type === 'portal' && isPdf) {
+        handlePdfUpload(file);
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        try {
+            const parsed = JSON.parse(e.target.result);
+            if (type === 'portal') {
+                portalData = parsed;
+                document.getElementById('statusPortal').innerText = '✅ Loaded successfully';
+                document.getElementById('statusPortal').style.color = '#00e676';
+                document.getElementById('boxPortal').classList.add('ready');
+            } else {
+                denticonData = parsed;
+                const count = parsed.denticon_data?.total_captured || parsed.total_captured || parsed.length || '?';
+                document.getElementById('statusDenticon').innerText = `✅ Loaded (${count} plans)`;
+                document.getElementById('statusDenticon').style.color = '#00e676';
+                document.getElementById('boxDenticon').classList.add('ready');
+            }
+            refreshButtons();
+        } catch { alert(`Error parsing ${type} JSON.`); }
+    };
+    reader.readAsText(file);
+}
+
+async function handlePdfUpload(file) {
+    const statusEl = document.getElementById('statusPortal');
+    statusEl.innerText = '⏳ Parsing PDF...';
+    statusEl.style.color = '#ffab40';
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const response = await fetch('/api/parse-pdf', { method: 'POST', body: formData });
+        if (!response.ok) {
+            let detail = 'Failed to parse PDF.';
+            try { detail = (await response.json()).detail || detail; } catch (_) {}
+            throw new Error(`Server error ${response.status}: ${detail}`);
+        }
+        portalData = await response.json();
+        statusEl.innerText = `✅ PDF parsed (${portalData.summary?.insurer || 'insurance'})`;
+        statusEl.style.color = '#00e676';
+        document.getElementById('boxPortal').classList.add('ready');
+        refreshButtons();
+    } catch (err) {
+        console.error(err);
+        statusEl.innerText = '❌ Error parsing PDF';
+        statusEl.style.color = '#ff5252';
+        alert(`Error parsing PDF:\n\n${err.message}`);
+    }
+}
+function refreshButtons() {
+    const both = !!(portalData && denticonData);
+    btnMatch.disabled   = !both;
+    btnNotes.disabled   = !both;
+    btnNewPlan.disabled = !both;
+}
+filePortal.addEventListener('change',   e => handleFile(e, 'portal'));
+fileDenticon.addEventListener('change', e => handleFile(e, 'denticon'));
+
+/* ─────────────────────────────────────────
+   AI PLAN MATCHING
+───────────────────────────────────────── */
+btnMatch.addEventListener('click', async () => {
+    matchOutput.innerHTML = '';
+    matchLoader.classList.add('visible');
+    btnMatch.disabled = true;
+    const payload = {
+        portal_data:   portalData.cigna_data || portalData.metlife_data || portalData,
+        denticon_data: denticonData.denticon_data || denticonData,
+    };
+    try {
+        const response = await fetch('/api/match', {
+            method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload),
+        });
+        if (!response.ok) throw new Error('Backend server error. Is FastAPI running on port 8000?');
+        renderMatch(await response.json());
+    } catch (err) {
+        matchOutput.innerHTML = `<div class="result-card match-fail" style="color:#ff1744;font-weight:bold;">Connection Error: ${err.message}</div>`;
+    } finally {
+        matchLoader.classList.remove('visible');
+        refreshButtons();
+    }
+});
+
+const CRITICAL_FIELDS = [
+    'individual_annual_max','ortho_lifetime_max','major_D2740_pct',
+    'ortho_D8080_pct','ortho_D8080_age','basic_D2331_D2140_pct','preventative_D0120_pct'
+];
+
+function scoreColor(score) {
+    if (score >= 80) return '#00e676';
+    if (score >= 50) return '#ffab40';
+    return '#ff5252';
+}
+
+function buildMismatchLines(mismatches) {
+    if (!mismatches || mismatches.length === 0)
+        return '<div class="plan-no-mismatch">✓ No mismatches detected</div>';
+    const lines = mismatches.map(raw => {
+        const m = typeof raw === 'string' ? raw : JSON.stringify(raw);
+        const isCrit = CRITICAL_FIELDS.some(f => m.includes(f));
+        const dot = isCrit
+            ? `<span style="color:#ff7043;">▸</span>`
+            : `<span style="color:#ffcc80;">▸</span>`;
+        return `${dot} ${m}`;
+    }).join('<br>');
+    return `<div class="plan-mismatches">${lines}</div>`;
+}
+
+function buildRankedTable(plans) {
+    if (!plans || plans.length === 0) return '';
+
+    const topScore  = plans[0].confidence_score;
+    const topTied   = plans.filter(p => p.confidence_score === topScore);
+    const tiedIds   = new Set(topTied.length >= 2 ? topTied.map(p => p.plan_id) : []);
+
+    let tieWarningHtml = '';
+    if (topTied.length >= 2) {
+        const idList = topTied.map(p => `<strong>#${p.plan_id}</strong>`).join(', ');
+        tieWarningHtml = `
+        <div class="tie-warning">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0;color:#ff9800;margin-top:2px;">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            <div>
+                <div class="tie-warning-title">Tied Probabilities — Manual Review Required</div>
+                <div class="tie-item">Plans ${idList} share <span class="tie-score">${topScore}%</span> — the system cannot auto-select. Please review these manually.</div>
+            </div>
+        </div>`;
+    }
+
+    const rows = plans.map((p, i) => {
+        const color    = scoreColor(p.confidence_score);
+        const badge    = i === 0
+            ? `<span class="rank-badge-best">BEST</span>`
+            : `<span class="rank-badge-num">#${i + 1}</span>`;
+        const crit     = p.critical_mismatches > 0
+            ? `<span class="crit-badge">${p.critical_mismatches} critical</span>` : '';
+        const tieBadge = tiedIds.has(p.plan_id)
+            ? `<span class="tie-badge">TIE</span>` : '';
+        return `
+        <div class="plan-row${tiedIds.has(p.plan_id) ? ' plan-row-tied' : ''}">
+            <div class="plan-row-top">
+                ${badge}
+                <span class="plan-row-name">Plan #${p.plan_id}</span>
+                ${crit}${tieBadge}
+                <div class="score-bar-wrap">
+                    <div class="score-bar-track">
+                        <div class="score-bar-fill" style="width:${p.confidence_score}%;background:${color};"></div>
+                    </div>
+                </div>
+                <span class="score-label" style="color:${color};">${p.confidence_score}%</span>
+            </div>
+            ${buildMismatchLines(p.mismatches)}
+        </div>`;
+    }).join('');
+
+    return `
+    <div class="ranked-plans">
+        <div class="ranked-plans-header">
+            All Plans Evaluated
+            <span class="divider"></span>
+            <span>${plans.length} plan${plans.length !== 1 ? 's' : ''}</span>
+        </div>
+        ${tieWarningHtml}
+        ${rows}
+    </div>`;
+}
+
+function renderMatch(result) {
+    const allPlans    = result.all_plans_ranked || [];
+    const rankedTable = buildRankedTable(allPlans);
+
+    /* ── 1. TIE: top 2+ plans share the same score ── */
+    if (result.tie) {
+        const tied   = result.tied_plans || [];
+        const idList = tied.map(t => `<strong>#${t.plan_id}</strong>`).join(', ');
+        const score  = tied[0]?.confidence_score ?? result.confidence_score;
+        matchOutput.innerHTML = `
+            <div class="result-card match-fail" style="border-left-color:#ff9800;">
+                <h2 style="color:#ff9800;margin-top:0;display:flex;align-items:center;gap:10px;">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                    Manual Review Required — Plans Are Tied
+                </h2>
+                <div style="background:rgba(255,152,0,0.1);border:1px solid rgba(255,152,0,0.3);border-radius:8px;padding:14px;margin:12px 0;color:#e0c080;font-size:0.88rem;line-height:1.6;">
+                    Plans ${idList} all scored <strong style="color:#ff9800;">${score}%</strong>.<br>
+                    The system cannot automatically determine the correct plan. Please manually compare and confirm the right plan from the list below.
+                </div>
+                <div class="reason-box"><strong style="color:#fff;">AI Reasoning:</strong><br>${result.reason}</div>
+                ${rankedTable}
+            </div>`;
+        return;
+    }
+
+    /* ── 2. CONFIDENT MATCH ── */
+    if (result.match_found) {
+        matchOutput.innerHTML = `
+            <div class="result-card match-success">
+                <h2 style="color:#00e676;margin-top:0;display:flex;align-items:center;gap:10px;">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                    Direct Match Identified
+                </h2>
+                <div class="plan-id">Matched Plan ID: #${result.matching_id}</div>
+                <div class="confidence">AI Confidence Score: ${result.confidence_score}%</div>
+                <div class="reason-box"><strong style="color:#fff;">ID Comparison &amp; Reasoning:</strong><br>${result.reason}</div>
+                ${rankedTable}
+            </div>`;
+        return;
+    }
+
+    /* ── 3. NO CONFIDENT MATCH ── */
+    matchOutput.innerHTML = `
+        <div class="result-card match-fail">
+            <h2 style="color:#ff1744;margin-top:0;display:flex;align-items:center;gap:10px;">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
+                </svg>
+                No Confident Match Found
+            </h2>
+            <div class="reason-box"><strong style="color:#fff;">AI Reasoning:</strong><br>${result.reason}</div>
+            ${rankedTable}
+        </div>`;
+}
+
+/* ─────────────────────────────────────────
+   PATIENT NOTES
+───────────────────────────────────────── */
+btnNotes.addEventListener('click', async () => {
+    notesPanel.classList.remove('visible');
+    notesLoader.classList.add('visible');
+    btnNotes.disabled = true;
+    try {
+        const res = await fetch('/api/patient-notes', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({ denticon_data:denticonData.denticon_data||denticonData, insurance_data:portalData }),
+        });
+        if (!res.ok) throw new Error('Server error '+res.status+'. Is FastAPI running on port 8000?');
+        renderNotes(await res.json());
+    } catch (err) {
+        const errDiv = document.createElement('div');
+        errDiv.className = 'result-card match-fail';
+        errDiv.style.cssText = 'color:#ff1744;font-weight:bold;margin-top:16px;';
+        errDiv.textContent = '❌ '+err.message;
+        btnNotes.parentElement.parentElement.appendChild(errDiv);
+    } finally {
+        notesLoader.classList.remove('visible');
+        refreshButtons();
+    }
+});
+
+function renderNotes(d) {
+    const h = d.history;
+    const rows = [
+        {section:'BASIC INFORMATION'},
+        {label:'Appointment Date',               value:'',                          type:'blank'},
+        {label:'Verified By',                    value:'',                           type:'blank'},
+        {label:'Verification Date',              value:d.verification_date,          type:'date'},
+        {label:'Eligibility Status',             value:d.eligibility_status},
+        {label:'Carrier',                        value:d.carrier},
+        {label:'Primary or Secondary',           value:d.primary_secondary},
+        {label:'Plan Type',                      value:d.plan_type},
+        {label:'Patient Assigned to Office',     value:d.patient_assigned_to_office},
+        {section:'FINANCIALS'},
+        {label:'Individual Maximum (Used) $',    value:d.individual_maximum_used,    type:'money'},
+        {label:'Individual Deductible (Used) $', value:d.individual_deductible_used, type:'money'},
+        {label:'Ortho Maximum (Used) $',         value:d.ortho_maximum_used,         type:'money'},
+        {section:'PROCEDURE HISTORY'},
+        {label:'History: Periodic Exam D0120',   value:h.periodic_exam_d0120,        type:'date'},
+        {label:'History: Comp Exam D0150',       value:h.comp_exam_d0150,            type:'date'},
+        {label:'History: Prophy D1110',          value:h.prophy_d1110,               type:'date'},
+        {label:'History: Perio Maint D4910',     value:h.perio_maint_d4910,          type:'date'},
+        {label:'History: FMD D4355',             value:h.fmd_d4355,                  type:'date'},
+        {label:'History: Fluoride D1206, D1208', value:h.fluoride_d1206_d1208,       type:'date'},
+        {label:'History: X-ray D0274',           value:h.xray_d0274,                 type:'date'},
+        {label:'History: X-ray D0210',           value:h.xray_d0210,                 type:'date'},
+    ];
+    const table = document.getElementById('notesTable');
+    table.innerHTML = '';
+    rows.forEach(row => {
+        const tr = document.createElement('tr');
+        if (row.section) {
+            tr.className = 'tbl-section';
+            tr.innerHTML = `<td colspan="2">${row.section}</td>`;
+        } else {
+            const isBlank = row.type==='blank';
+            const isNH    = !isBlank && (row.value==='NH'||!row.value);
+            const cls     = isBlank?'':isNH?'nh':(row.type||'');
+            const display = isBlank?'':(row.value||'NH');
+            tr.innerHTML  = `<td class="label">${row.label} —</td><td class="value ${cls}">${display}</td>`;
+        }
+        table.appendChild(tr);
+    });
+    document.getElementById('toolbarName').textContent = d.patient_name||'Patient Notes';
+    document.getElementById('toolbarDate').textContent = 'Generated '+new Date().toLocaleDateString('en-US');
+    lastNotesText = buildPlainText(d);
+    notesPanel.classList.add('visible');
+    notesPanel.scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+function buildPlainText(d) {
+    const h = d.history;
+    const pad = (l,v) => l.padEnd(44)+(v||'');
+    return [
+        pad('Appointment Date -',               ''),
+        pad('Verified By -',                    ''),
+        pad('Verification Date -',              d.verification_date),
+        pad('Eligibility Status -',             d.eligibility_status),
+        pad('Carrier -',                        d.carrier),
+        pad('Primary or Secondary -',           d.primary_secondary),
+        pad('Plan Type -',                      d.plan_type),
+        pad('Patient Assigned to Office -',     d.patient_assigned_to_office),
+        pad('Individual Maximum (Used) $',      d.individual_maximum_used),
+        pad('Individual Deductible (Used) $',   d.individual_deductible_used),
+        pad('Ortho Maximum (Used) $',           d.ortho_maximum_used),
+        pad('History: Periodic Exam D0120 -',   h.periodic_exam_d0120),
+        pad('History: Comp Exam D0150 -',       h.comp_exam_d0150),
+        pad('History: Prophy D1110 -',          h.prophy_d1110),
+        pad('History: Perio Maint D4910 -',     h.perio_maint_d4910),
+        pad('History: FMD D4355 -',             h.fmd_d4355),
+        pad('History: Fluoride D1206, D1208 -', h.fluoride_d1206_d1208),
+        pad('History: X-ray D0274 -',           h.xray_d0274),
+        pad('History: X-ray D0210 -',           h.xray_d0210),
+    ].join('\n');
+}
+
+document.getElementById('btnCopy').addEventListener('click', () => {
+    navigator.clipboard.writeText(lastNotesText).then(() => {
+        const btn = document.getElementById('btnCopy');
+        btn.textContent = '✔ Copied!';
+        setTimeout(() => btn.textContent = '⎘ Copy', 2000);
+    });
+});
+document.getElementById('btnDownload').addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([lastNotesText],{type:'text/plain'}));
+    a.download = 'patient_notes.txt';
+    a.click();
+});
+
+/* ═══════════════════════════════════════════════════════════════
+   KNOWN SUITES
+═══════════════════════════════════════════════════════════════ */
+const RACINE_SUITES = [
+    'racine dental group suite 1',
+    'racine dental group suite 2',
+    'racine dental group suite 3',
+    'racine dental group suite 4',
+    'racine dental group suite 5',
+    'racine dental group suite 6',
+];
+const RACINE_INS_NAME     = 'Insurance Name (IN) MetLife(TX)- PO Box 981282- 79998';
+const RACINE_FEE_SCHEDULE = 'Metlife PPO';
+
+/* ── Modal promise wrapper ── */
+let _resolveModal = null;
+
+function openInsuranceModal(reason) {
+    document.getElementById('insModalReason').textContent = reason;
+    document.getElementById('modalInsName').value         = '';
+    document.getElementById('modalFeeSchedule').value     = '';
+    document.getElementById('modalRelation').value        = '';   // ★ reset dropdown
+    document.getElementById('insOverlayModal').classList.add('active');
+    document.getElementById('modalInsName').focus();
+    return new Promise(resolve => { _resolveModal = resolve; });
+}
+
+document.getElementById('insModalCancel').addEventListener('click', () => {
+    document.getElementById('insOverlayModal').classList.remove('active');
+    if (_resolveModal) _resolveModal(null);
+});
+
+/* ★ PATCH 2: capture the new relationship field ★ */
+document.getElementById('insModalConfirm').addEventListener('click', () => {
+    const insName      = document.getElementById('modalInsName').value.trim();
+    const feeSchedule  = document.getElementById('modalFeeSchedule').value.trim();
+    const relationship = document.getElementById('modalRelation').value.trim();   // ★
+    document.getElementById('insOverlayModal').classList.remove('active');
+    if (_resolveModal) _resolveModal({ insName, feeSchedule, relationship });     // ★
+});
+
+/* ── Resolve insurance fields before PDF generation ── */
+async function resolveInsuranceFields() {
+    const ins        = extractInsurance(portalData);
+    const dent       = extractDenticon(denticonData);
+    const officeName = (g(dent, 'office_name', 'officeName', 'office') || '').trim().toLowerCase();
+    const networkRaw = g(ins, 'network_status', 'providerNetworkStatus', 'in_network', 'network') || '';
+    const isOutNet   = /out(\s*of\s*network|-of-network)?/i.test(networkRaw);
+    const isRacine   = RACINE_SUITES.includes(officeName);
+
+    if (isRacine && !isOutNet) {
+        /* ★ PATCH 3: Racine auto also carries empty relationship ★ */
+        return { insName: RACINE_INS_NAME, feeSchedule: RACINE_FEE_SCHEDULE, relationship: '' };
+    }
+
+    const reason = isOutNet
+        ? `Provider Network Status is "${networkRaw || 'Out of Network'}". Please enter the correct insurance details for this out-of-network plan.`
+        : `Please enter the Insurance Name and Fee Schedule manually.`;
+
+    return openInsuranceModal(reason);
+}
+
+btnNewPlan.addEventListener('click', async () => {
+
+    planOutput.innerHTML = '';
+    planLoader.classList.add('visible');
+    btnNewPlan.disabled = true;
+
+    const insFields = await resolveInsuranceFields();
+    if (!insFields) {
+        planLoader.classList.remove('visible');
+        refreshButtons();
+        return;
+    }
+    window._insOverride = insFields;
+
+    try {
+
+        /* ★ PATCH 4: inject relationship into denticon data before sending ★ */
+        const denticonWithRel = JSON.parse(JSON.stringify(denticonData));
+        if (insFields.relationship) {
+            const dent = denticonWithRel.denticon_data || denticonWithRel;
+
+            // Inject into primary_insurance (checked by _extract as dent_pi)
+            if (!dent.primary_insurance) dent.primary_insurance = {};
+            dent.primary_insurance.relation_to_subscriber = insFields.relationship;
+
+            // Inject into patient block (checked by _extract as dent_pt)
+            if (!dent.patient) dent.patient = {};
+            dent.patient.relationship = insFields.relationship;
+
+            // Also inject into metlife_data.patient if present
+            if (denticonWithRel.metlife_data && denticonWithRel.metlife_data.patient) {
+                denticonWithRel.metlife_data.patient.relationship = insFields.relationship;
+            }
+        }
+
+        const response = await fetch('/api/new-plan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                portal_data:   portalData,
+                denticon_data: denticonWithRel,   // ★ includes relationship
+                ins_override:  insFields
+            })
+        });
+
+        if (!response.ok) throw new Error(`Server error: ${response.status}`);
+
+        const blob = await response.blob();
+        if (blob.size === 0) throw new Error("Generated PDF is empty");
+
+        const url = window.URL.createObjectURL(blob);
+        const a   = document.createElement('a');
+        a.href     = url;
+        a.download = 'Insurance_Plan.pdf';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+
+        planOutput.innerHTML = `
+            <div class="result-card plan-success" style="margin-top:20px;">
+                <h2 style="color:#ff9800;margin-top:0;">📄 New Plan PDF Generated!</h2>
+                <p style="color:#d1d5db;margin:0;">PDF downloaded successfully.</p>
+            </div>`;
+
+    } catch(err) {
+        console.error(err);
+        planOutput.innerHTML = `
+            <div class="result-card match-fail" style="color:#ff1744;font-weight:bold;margin-top:16px;">
+                ❌ PDF Error: ${err.message}
+            </div>`;
+    } finally {
+        planLoader.classList.remove('visible');
+        refreshButtons();
+    }
+});
+
+/* ─────────────────────────────────────────
+   FIELD EXTRACTOR — flexible key lookups
+───────────────────────────────────────── */
+function g(obj, ...keys) {
+    if (!obj || typeof obj !== 'object') return '';
+    for (const k of keys) {
+        if (obj[k] !== undefined && obj[k] !== null && obj[k] !== '') return String(obj[k]);
+        const lk = k.toLowerCase().replace(/[\s_-]/g,'');
+        for (const key of Object.keys(obj)) {
+            if (key.toLowerCase().replace(/[\s_-]/g,'') === lk) {
+                if (obj[key] !== undefined && obj[key] !== null && obj[key] !== '') return String(obj[key]);
+            }
+        }
+    }
+    return '';
+}
+
+function extractInsurance(raw) {
+    return raw.metlife_data || raw.cigna_data || raw.delta_data || raw.insurance_data || raw;
+}
+
+function extractDenticon(raw) {
+    return raw.denticon_data || raw;
+}
+
+function extractBenefits(ins) {
+    const arr = ins.benefits || ins.benefit_details || ins.procedures || ins.general_benefit_details || [];
+    return Array.isArray(arr) ? arr : [];
+}
+
+</script>
+</body>
+</html>
