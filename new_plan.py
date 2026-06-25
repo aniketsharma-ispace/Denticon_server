@@ -54,7 +54,7 @@ AMBER       = colors.HexColor('#92400e')
 # ═══════════════════════════════════════════════════════════════════════════════
 
 OLLAMA_URL          = "http://localhost:11434/api/generate"
-OLLAMA_MODEL        = "llama3.2"
+OLLAMA_MODEL        = "qwen2.5:7b"
 OLLAMA_TIMEOUT      = 60
 USE_CLAUDE_FALLBACK = False
 CLAUDE_MODEL        = "claude-sonnet-4-20250514"
