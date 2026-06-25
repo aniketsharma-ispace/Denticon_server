@@ -1,0 +1,20 @@
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ── Virtual environment ─────────────────────────────────
+venv/
+.venv/
+env/
+
+# ── Local / generated files ─────────────────────────────
+*.log
+.env
+.env.*
+
+# ── OS / editor noise ───────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

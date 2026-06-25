@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -65,6 +65,12 @@ class NotesRequest(BaseModel):
     denticon_data: dict
 
 
+class NewPlanRequest(BaseModel):
+    portal_data: dict
+    denticon_data: dict
+    ins_override: dict | None = None
+
+
 @app.post("/api/match")
 async def match_patient_plan(req: MatchRequest) -> dict:
     if not req.portal_data or not req.denticon_data:
@@ -104,6 +110,40 @@ async def parse_pdf(file: UploadFile = File(...)) -> dict:
         # Log the full error server-side; surface a clean message to the client.
         log.exception("Failed to parse uploaded PDF '%s'", file.filename)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Defined as a sync `def` so FastAPI runs it in a worker thread — the PDF build
+# (reportlab + a blocking Ollama call) must not block the async event loop.
+@app.post("/api/new-plan")
+def generate_new_plan(req: NewPlanRequest) -> Response:
+    if not req.portal_data or not req.denticon_data:
+        raise HTTPException(status_code=400, detail="Missing portal or denticon data")
+
+    # Lazy import: keeps the rest of the API working even if reportlab isn't
+    # installed — only this endpoint reports the missing dependency.
+    try:
+        from new_plan import generate_new_plan_pdf
+    except ImportError as e:
+        log.exception("New Plan PDF dependencies are missing")
+        raise HTTPException(
+            status_code=500,
+            detail=f"PDF generation unavailable — missing dependency ({e}). "
+                   "Run: pip install -r requirements.txt",
+        )
+
+    try:
+        pdf_bytes = generate_new_plan_pdf(
+            req.portal_data, req.denticon_data, req.ins_override
+        )
+    except Exception as e:
+        log.exception("Failed to generate New Plan PDF")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="Insurance_Plan.pdf"'},
+    )
 
 
 if __name__ == "__main__":
