@@ -1,8 +1,8 @@
 {
     "manifest_version": 3,
     "name": "Insurance Auditor Pro",
-    "version": "1.21",
-    "description": "Automates insurance verification and auditing across Denticon, MetLife, and Cigna portals for dental practices.",
+    "version": "1.22",
+    "description": "Automates insurance verification and auditing across Denticon, MetLife, Cigna, and DentaQuest portals for dental practices.",
     "icons": {
         "16": "face-mask.png",
         "32": "protection.png",
@@ -17,7 +17,8 @@
     "host_permissions": [
         "*://*.denticon.com/*",
         "*://*.planetdds.com/*",
-        "https://dentalprovider.metlife.com/*"
+        "https://dentalprovider.metlife.com/*",
+        "https://providers.dentaquest.com/*"
     ],
     "action": {
         "default_popup": "popup.html",
@@ -54,6 +55,15 @@
             ],
             "js": [
                 "content_cigna.js"
+            ],
+            "all_frames": true
+        },
+        {
+            "matches": [
+                "https://providers.dentaquest.com/*"
+            ],
+            "js": [
+                "content_dentaquest.js"
             ],
             "all_frames": true
         }

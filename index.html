@@ -360,7 +360,7 @@ btnMatch.addEventListener('click', async () => {
     matchLoader.classList.add('visible');
     btnMatch.disabled = true;
     const payload = {
-        portal_data:   portalData.cigna_data || portalData.metlife_data || portalData,
+        portal_data:   portalData.cigna_data || portalData.metlife_data || portalData.dentaquest_data || portalData,
         denticon_data: denticonData.denticon_data || denticonData,
     };
     try {

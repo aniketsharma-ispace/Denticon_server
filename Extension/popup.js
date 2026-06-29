@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const isMetLife = tab.url.includes("metlife.com");
     const isCigna = tab.url.includes("cignaforhcp.cigna.com");
     const isDenticon = tab.url.includes("denticon.com") || tab.url.includes("planetdds.com");
+    const isDentaQuest = tab.url.includes("dentaquest.com");
 
     // 2. Load Data from Storage
     const result = await chrome.storage.local.get("audit_context");
@@ -22,6 +23,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         status.innerText = "Cigna Data: Ready";
     } else if (isDenticon && context.denticon_data) {
         status.innerText = `Denticon Ready: ${context.denticon_data.header?.patient_name || "Active"}`;
+    } else if (isDentaQuest && context.dentaquest_data) {
+        status.innerText = `DentaQuest Ready: ${context.dentaquest_data.patient?.name || "Active"}`;
     } else {
         status.innerText = "Waiting for page data...";
     }

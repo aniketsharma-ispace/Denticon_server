@@ -141,6 +141,8 @@ def build_patient_notes(denticon_data: dict, insurance_data: dict) -> dict:
     patient_name = (
         metlife_data.get("patient", {}).get("name") or
         cigna_data.get("patient", {}).get("name")   or
+        ins.get("dentaquest_data", {}).get("patient", {}).get("name") or
+        ins.get("patient", {}).get("name")           or
         header.get("patient_name")                   or
         dent.get("patient", {}).get("name")          or
         "UNKNOWN"

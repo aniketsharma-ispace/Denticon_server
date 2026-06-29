@@ -117,15 +117,18 @@ def extract_portal_fields(portal_raw: dict) -> dict:
     """
     out = {}
 
-    # ── Detect FORMAT A: benefit_coverage.procedures ──
-    benefit_cov = portal_raw.get("benefit_coverage", {})
-    procedures  = benefit_cov.get("procedures", [])
-
-    # Unwrap metlife/cigna/anthem top-level wrapper
+    # Unwrap metlife/cigna/anthem/dentaquest top-level wrapper
     portal = (portal_raw.get("metlife_data") or
               portal_raw.get("cigna_data") or
               portal_raw.get("anthem_data") or
+              portal_raw.get("dentaquest_data") or
               portal_raw)
+
+    # ── Detect FORMAT A: benefit_coverage.procedures ──
+    # benefit_coverage may live inside the unwrapped portal (DentaQuest) or at
+    # the top level (PDF-parser output / older exports).
+    benefit_cov = portal.get("benefit_coverage") or portal_raw.get("benefit_coverage", {})
+    procedures  = benefit_cov.get("procedures", [])
 
     financials   = portal.get("financials", {})
     plan_details = portal.get("plan_details", {})

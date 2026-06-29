@@ -1,0 +1,772 @@
+{
+  "denticon_data": {
+    "header": {
+      "cell": "786-262-1835",
+      "dob": "04/22/2025",
+      "email": "anturayury@gmail.com",
+      "financials": {
+        "balance": "0.00",
+        "est_ins": "0.00",
+        "est_pat": "0.00",
+        "responsible": "PLASENCIA, DANIELLA",
+        "rp_dob": "01/20/2014"
+      },
+      "insurance_summary": {
+        "header_sub_id": "023542103",
+        "phone": "800-442-7742",
+        "provider": "(IN) Sunlife"
+      },
+      "patient_name": "PLEASE SELECT A PLAN"
+    },
+    "plans": [
+      {
+        "ins_plan_id": "80336",
+        "plan_details": {
+          "CARRIER": "CARRIER",
+          "(IN) Sunlife PO BOX 311 Milwaukee, WI 53201": "(IN) Sunlife PO BOX 311 Milwaukee, WI 53201",
+          "BENEFIT INFORMATION": "ELIGIBILITY INFORMATION"
+        },
+        "benefits": {
+          "notes": "Plan Notes Plan Notes – Standard Template Last Update: 02/02/2026 In / Out of Network: IN Fee Schedule Used: DHA Plan Type: PPO Predetermination required (Yes / No): YES Waiting Period (Yes / No): NO Alternate benefit / downgrade for posterior teeth: Crown: YES, Fillings: NO Perio quadrant or same-day limits: 4 Paid based on Prep / Seat: SEAT DATE: 04.21.2025 PLAN VERIFIED BY: GEBBS CREATED FOR: PEMBROKE INSURANCE COMPANY : SUNLIFE INSURANCE COMPANY PHONE : 800-442-7742 INSURANCE COMPANY ADDRESS : PO BOX 311 MILWAKEE WI 53201 EMPLOYER :PHYSICIANS DIALYSIS MANAGEMENT LLC GROUP # : 972599 WHAT FEE SCHEDULE : DHA NETWORK BENEFITS (IN/OUT) : IN PPO/HMO/INDEMNITY : PPO PAID BY FEE SCHEDULE OR % : CALENDAR YEAR :January CONTRACT YEAR : POLICY RUNS FROM/TO :January to December COB : MAXIMUM $ : 2000 PREV AGAINST MAX (Y/N) : DEDUCTIBLE $ : 50 / 150 APPLY TO PREVENTATIVE (Y/N): DEPENDENT AGE LIMIT : WAITING PERIOD (Y/N) : PRE-D MANDATORY (Y/N) : MISSING TOOTH CLAUSE : Y REPLACEMENT RULE (1XYEARS) : _____________________________________________________________________ PREVENTATIVE %: 100 PROPHY D1120,D1110 : 100 FREQ : 1X6M EXAM D0120 : 100 FREQ : 1X6M EXAM D0140 : 100 FREQ : 1X6M EXAM D0150 : 100 FREQ : 1X6M BWX %: 100 FREQ : 1X12M PA %: 80 FREQ : NF FMX/PANO %: 100 FREQ : 1X60M FLOURIDE D1206 %: 100 FREQ : 1X6M AGE: 13 SEALANTS D1351 %: 100 FREQ : 1X36M AGE: 13 TEETH: SPACE MAINT D1510-D01525 %: 100 FREQ : 1X36M AGE: 18 CONE BEAM (D0364) % : NC PALLIATIVE TX (D9110)% : 80 LIMITATIONS: _____________________________________________________________________ BASIC %: 80 FILLS : 80 POST COMPOSITES : TEETH: ALT BENEFIT GIVEN (Y/N)? : PERIO (D4341/D4342) % : 50 1X24M 4 QUADS ALLOWED SAME DAY? : 2 QUADS FMD D4355 % : NC FREQ: 1x : FMD D4346 % : NC FREQ: 1x : REPL/IN ADDITION TO PROPHY : ARESTIN (D4381)% : 50 FREQ: 1x :1X2M SAME DAY AS D4341/42 (Y/N)?: PERIO MAINT (D4910) % : 50 FREQ: 1x : 1X6M REPL/IN ADDITION TO PROPHY : EXTRACTIONS : D7140 % : 80 SURG EXTRACTION (D7240) % : D7240 % : 80 D7210 % : 50 3rd MOLARS TO MEDICAL 1st ?: BONE GRAFT (D7953) % : NC RCT (D3310/D3320) % : 50 MOLAR (D3330) % : 50 _____________________________________________________________________ MAJOR % : 50 PREP/SEAT DATE (P/S) : SEAT CROWNS (D2740/D2750) % : 50 REPLACEMENT RULE (1XYEARS) : ALT BENEFIT GIVEN FOR D2740: ALT BENEFIT GIVEN FOR D2750: DOWNGRADED TO (CODE) : BRIDGES (D6740/D6750) % : 50 DENTURES (D5110/D5213)% : 50 REPAIR-RELINE(D5511/D5740)%: 50 IMPLANTS D6010 % : 50 IMPLANTS D6057 % : 50 IMPLANTS D6058 % : 50 IMPLANTS D6068 % : 50 IMPLANTS D6100 % : 50 IMPLANTS D6110 % : 50 _____________________________________________________________________ TMJ (D7880) % : NC BRUXISM (D9940) % : REPLACEMENT RULE (1XYEARS) : MINIMUM AGE : _____________________________________________________________________ ORTHO: 50% LIFETIME MAX :1000 DEDUCTIBLE AMOUNT : AGE LIMIT :25 UP TO AGE : INVISALIGN PREAUTH REQ(Y/N): INVISALIGN (D8060) % : INVISALIGN (D8090) % : BILLING (AUTO/SUBMIT) : PAYMENTS (M/Q/SEMI ANNUAL) : INITIAL PAYMENT AMOUNT : _____________________________________________________________________ SPECIALTY CODES: PEDIATRIC (D1354) % : FREQ: 1x : UP TO AGE : ANT COMP CROWN (D2390) % : PREFAB CROWN (D2934) % : _____________________________________________________________________ ENDODONTIC 80 THERAPEUTIC PULP (D3220) % : APICO MOLAR (D3225) % : INCOMPLETE (D3332) % : RETREAT MOLAR (D3348) % : INCOMP INT ROOT(D3333) % : INCOMP INT ROOT(D3331) % : APEXIFICATION (D3351) % : CANAL PREP (D3950) % : _____________________________________________________________________ ORAL SURGERY: BIOPSY - HARD (D7285) % : BIOPSY - SOFT (D7286) % : ALVEOPLASTY (D7310/7311) % : I&D (D7510) % : SINUS AUG (D7351) % : FRENECTOMY (D7960) % : DEEP SEDATION(D9222-9223)% : 80 NITROUS (D9230) % : NC _____________________________________________________________________",
+          "full_text": "PLEASE SELECT A PLAN WE HAVE FOUND FOLLOWING PLANS FOR YOUR SEARCH '972599' ON 'GROUP #'. Note: Press F2 to view insurance plan details Ins Plan ID Group # Carrier ID Carrier Name Employer Name Created Modified 80336 972599 2185 (IN) Sunlife PHYSICIANS DIALYSIS MANAGEMENT LLC 04/22/2025 GEBBS152937 02/03/2026 ISPACE1132937 1 SELECT CLOSE PLASENCIA, DANIELLA 12/F 01/20/2014 ID118030283 Linked ID 11109175 Home Office MILLER (C) 786-262-1835 (H) (W) anturayury@gmail.com Type UP Next Visit 07/02/2026 Next Recall Last Visit 05/28/2026 First Visit 03/13/2018 Responsible PLASENCIA, DANIELLA Balance 0.00 RP BD 01/20/2014 Est Ins 0.00 Est Pat 0.00 Prim. Ins (IN) Sunlife 800-442-7742 SubID023542103 Sec. Ins INSURANCE DETAILS PLAN BEN COVERAGE AND LIMITATIONS Deductible Information Individual Deductible Family Deductible $50.00 $150.00 Maximum Information Individual Maximum Family Maximum $2,000.00 $99,999.00 Ortho Max Information Individual Ortho Maximum Lifetime Ortho Benefits $1,000.00 Yes Plan Notes Plan Notes – Standard Template Last Update: 02/02/2026 In / Out of Network: IN Fee Schedule Used: DHA Plan Type: PPO Predetermination required (Yes / No): YES Waiting Period (Yes / No): NO Alternate benefit / downgrade for posterior teeth: Crown: YES, Fillings: NO Perio quadrant or same-day limits: 4 Paid based on Prep / Seat: SEAT DATE: 04.21.2025 PLAN VERIFIED BY: GEBBS CREATED FOR: PEMBROKE INSURANCE COMPANY : SUNLIFE INSURANCE COMPANY PHONE : 800-442-7742 INSURANCE COMPANY ADDRESS : PO BOX 311 MILWAKEE WI 53201 EMPLOYER :PHYSICIANS DIALYSIS MANAGEMENT LLC GROUP # : 972599 WHAT FEE SCHEDULE : DHA NETWORK BENEFITS (IN/OUT) : IN PPO/HMO/INDEMNITY : PPO PAID BY FEE SCHEDULE OR % : CALENDAR YEAR :January CONTRACT YEAR : POLICY RUNS FROM/TO :January to December COB : MAXIMUM $ : 2000 PREV AGAINST MAX (Y/N) : DEDUCTIBLE $ : 50 / 150 APPLY TO PREVENTATIVE (Y/N): DEPENDENT AGE LIMIT : WAITING PERIOD (Y/N) : PRE-D MANDATORY (Y/N) : MISSING TOOTH CLAUSE : Y REPLACEMENT RULE (1XYEARS) : _____________________________________________________________________ PREVENTATIVE %: 100 PROPHY D1120,D1110 : 100 FREQ : 1X6M EXAM D0120 : 100 FREQ : 1X6M EXAM D0140 : 100 FREQ : 1X6M EXAM D0150 : 100 FREQ : 1X6M BWX %: 100 FREQ : 1X12M PA %: 80 FREQ : NF FMX/PANO %: 100 FREQ : 1X60M FLOURIDE D1206 %: 100 FREQ : 1X6M AGE: 13 SEALANTS D1351 %: 100 FREQ : 1X36M AGE: 13 TEETH: SPACE MAINT D1510-D01525 %: 100 FREQ : 1X36M AGE: 18 CONE BEAM (D0364) % : NC PALLIATIVE TX (D9110)% : 80 LIMITATIONS: _____________________________________________________________________ BASIC %: 80 FILLS : 80 POST COMPOSITES : TEETH: ALT BENEFIT GIVEN (Y/N)? : PERIO (D4341/D4342) % : 50 1X24M 4 QUADS ALLOWED SAME DAY? : 2 QUADS FMD D4355 % : NC FREQ: 1x : FMD D4346 % : NC FREQ: 1x : REPL/IN ADDITION TO PROPHY : ARESTIN (D4381)% : 50 FREQ: 1x :1X2M SAME DAY AS D4341/42 (Y/N)?: PERIO MAINT (D4910) % : 50 FREQ: 1x : 1X6M REPL/IN ADDITION TO PROPHY : EXTRACTIONS : D7140 % : 80 SURG EXTRACTION (D7240) % : D7240 % :"
+        },
+        "coverage": [
+          {
+            "category": "80336",
+            "ded_waived": "972599",
+            "coverage_pct": "2185",
+            "limitation": "(IN) Sunlife"
+          },
+          {
+            "category": "D0120 - Periodic Exam",
+            "ded_waived": "N/A",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "D0150 - Comp. Oral evaluatiovn",
+            "ded_waived": "N/A",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "D0210 - FMX",
+            "ded_waived": "N/A",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "D1110 - Prophy",
+            "ded_waived": "N/A",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "D1120 - Child-Prophy",
+            "ded_waived": "N/A",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "D0330 - Pano",
+            "ded_waived": "N/A",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "D0272/4 - Bitewings (2 or 4)",
+            "ded_waived": "N/A",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "D4910 - Perio maintenance",
+            "ded_waived": "N/A",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "D4341 - Scaling/Rootplanning",
+            "ded_waived": "N/A",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "D4342 - Perio Scaling And Root Planing 1-3 T Per Quad",
+            "ded_waived": "N/A",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "70408",
+            "ded_waived": "2185",
+            "coverage_pct": "Eclaim",
+            "limitation": "800-442-7742"
+          },
+          {
+            "category": "Deductible",
+            "ded_waived": "$50.00",
+            "coverage_pct": "$50.00",
+            "limitation": "$150.00"
+          },
+          {
+            "category": "Annual Max",
+            "ded_waived": "$2,000.00",
+            "coverage_pct": "$1,750.00",
+            "limitation": "$99,999.00"
+          },
+          {
+            "category": "Ortho",
+            "ded_waived": "$1,000.00",
+            "coverage_pct": "$679.00",
+            "limitation": "N/A"
+          },
+          {
+            "category": "Last Verified On",
+            "ded_waived": "06/24/2026 PT",
+            "coverage_pct": "Last Verified By",
+            "limitation": "ISPACE1132937"
+          },
+          {
+            "category": "Name (Last, First)",
+            "ded_waived": "VENTURA VALDES, YUREISKY",
+            "coverage_pct": "Created By",
+            "limitation": "R50526HSO"
+          },
+          {
+            "category": "Address *",
+            "ded_waived": "5216 SW 139 PL",
+            "coverage_pct": "Created On",
+            "limitation": "06/18/2024"
+          },
+          {
+            "category": "Subscriber Plan Effective Date",
+            "ded_waived": "01/01/2025",
+            "coverage_pct": "Subscriber Plan Term Date",
+            "limitation": "N/A"
+          },
+          {
+            "category": "City, St Zip *",
+            "ded_waived": "MIAMI , FL 33175",
+            "coverage_pct": "Phone",
+            "limitation": "7862621835"
+          },
+          {
+            "category": "Birth Date",
+            "ded_waived": "05/05/1981",
+            "coverage_pct": "Marital Status",
+            "limitation": "Single"
+          },
+          {
+            "category": "Patient Rel. to Sub",
+            "ded_waived": "Child",
+            "coverage_pct": "SSN/ SubID",
+            "limitation": "023542103"
+          },
+          {
+            "category": "$50.00",
+            "ded_waived": "$150.00",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "$2,000.00",
+            "ded_waived": "$99,999.00",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "$1,000.00",
+            "ded_waived": "Yes",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "Plan Notes",
+            "ded_waived": "Plan Notes – Standard Template Last Update: 02/02/2026 In / Out of Network: IN Fee Schedule Used: DHA Plan Type: PPO Predetermination required (Yes / No): YES Waiting Period (Yes / No): NO Alternate benefit / downgrade for posterior teeth: Crown: YES, Fillings: NO Perio quadrant or same-day limits: 4 Paid based on Prep / Seat: SEAT DATE: 04.21.2025 PLAN VERIFIED BY: GEBBS CREATED FOR: PEMBROKE INSURANCE COMPANY : SUNLIFE INSURANCE COMPANY PHONE : 800-442-7742 INSURANCE COMPANY ADDRESS : PO BOX 311 MILWAKEE WI 53201 EMPLOYER :PHYSICIANS DIALYSIS MANAGEMENT LLC GROUP # : 972599 WHAT FEE SCHEDULE : DHA NETWORK BENEFITS (IN/OUT) : IN PPO/HMO/INDEMNITY : PPO PAID BY FEE SCHEDULE OR % : CALENDAR YEAR :January CONTRACT YEAR : POLICY RUNS FROM/TO :January to December COB : MAXIMUM $ : 2000 PREV AGAINST MAX (Y/N) : DEDUCTIBLE $ : 50 / 150 APPLY TO PREVENTATIVE (Y/N): DEPENDENT AGE LIMIT : WAITING PERIOD (Y/N) : PRE-D MANDATORY (Y/N) : MISSING TOOTH CLAUSE : Y REPLACEMENT RULE (1XYEARS) : _____________________________________________________________________ PREVENTATIVE %: 100 PROPHY D1120,D1110 : 100 FREQ : 1X6M EXAM D0120 : 100 FREQ : 1X6M EXAM D0140 : 100 FREQ : 1X6M EXAM D0150 : 100 FREQ : 1X6M BWX %: 100 FREQ : 1X12M PA %: 80 FREQ : NF FMX/PANO %: 100 FREQ : 1X60M FLOURIDE D1206 %: 100 FREQ : 1X6M AGE: 13 SEALANTS D1351 %: 100 FREQ : 1X36M AGE: 13 TEETH: SPACE MAINT D1510-D01525 %: 100 FREQ : 1X36M AGE: 18 CONE BEAM (D0364) % : NC PALLIATIVE TX (D9110)% : 80 LIMITATIONS: _____________________________________________________________________ BASIC %: 80 FILLS : 80 POST COMPOSITES : TEETH: ALT BENEFIT GIVEN (Y/N)? : PERIO (D4341/D4342) % : 50 1X24M 4 QUADS ALLOWED SAME DAY? : 2 QUADS FMD D4355 % : NC FREQ: 1x : FMD D4346 % : NC FREQ: 1x : REPL/IN ADDITION TO PROPHY : ARESTIN (D4381)% : 50 FREQ: 1x :1X2M SAME DAY AS D4341/42 (Y/N)?: PERIO MAINT (D4910) % : 50 FREQ: 1x : 1X6M REPL/IN ADDITION TO PROPHY : EXTRACTIONS : D7140 % : 80 SURG EXTRACTION (D7240) % : D7240 % : 80 D7210 % : 50 3rd MOLARS TO MEDICAL 1st ?: BONE GRAFT (D7953) % : NC RCT (D3310/D3320) % : 50 MOLAR (D3330) % : 50 _____________________________________________________________________ MAJOR % : 50 PREP/SEAT DATE (P/S) : SEAT CROWNS (D2740/D2750) % : 50 REPLACEMENT RULE (1XYEARS) : ALT BENEFIT GIVEN FOR D2740: ALT BENEFIT GIVEN FOR D2750: DOWNGRADED TO (CODE) : BRIDGES (D6740/D6750) % : 50 DENTURES (D5110/D5213)% : 50 REPAIR-RELINE(D5511/D5740)%: 50 IMPLANTS D6010 % : 50 IMPLANTS D6057 % : 50 IMPLANTS D6058 % : 50 IMPLANTS D6068 % : 50 IMPLANTS D6100 % : 50 IMPLANTS D6110 % : 50 _____________________________________________________________________ TMJ (D7880) % : NC BRUXISM (D9940) % : REPLACEMENT RULE (1XYEARS) : MINIMUM AGE : _____________________________________________________________________ ORTHO: 50% LIFETIME MAX :1000 DEDUCTIBLE AMOUNT : AGE LIMIT :25 UP TO AGE : INVISALIGN PREAUTH REQ(Y/N): INVISALIGN (D8060) % : INVISALIGN (D8090) % : BILLING (AUTO/SUBMIT) : PAYMENTS (M/Q/SEMI ANNUAL) : INITIAL PAYMENT AMOUNT : _____________________________________________________________________ SPECIALTY CODES: PEDIATRIC (D1354) % : FREQ: 1x : UP TO AGE : ANT COMP CROWN (D2390) % : PREFAB CROWN (D2934) % : _____________________________________________________________________ ENDODONTIC 80 THERAPEUTIC PULP (D3220) % : APICO MOLAR (D3225) % : INCOMPLETE (D3332) % : RETREAT MOLAR (D3348) % : INCOMP INT ROOT(D3333) % : INCOMP INT ROOT(D3331) % : APEXIFICATION (D3351) % : CANAL PREP (D3950) % : _____________________________________________________________________ ORAL SURGERY: BIOPSY - HARD (D7285) % : BIOPSY - SOFT (D7286) % : ALVEOPLASTY (D7310/7311) % : I&D (D7510) % : SINUS AUG (D7351) % : FRENECTOMY (D7960) % : DEEP SEDATION(D9222-9223)% : 80 NITROUS (D9230) % : NC _____________________________________________________________________",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "N/A",
+            "ded_waived": "N/A",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "Diagnostic (d0120)",
+            "ded_waived": "Yes",
+            "coverage_pct": "100",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "D0364 NO 0 Other - See plan notes 0 0",
+            "ded_waived": "D0364",
+            "coverage_pct": "NO",
+            "limitation": "0"
+          },
+          {
+            "category": "D0364",
+            "ded_waived": "NO",
+            "coverage_pct": "0",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Diagnostic Exam Periodic",
+            "ded_waived": "Yes",
+            "coverage_pct": "100",
+            "limitation": "Once every 6 month of Date of Service"
+          },
+          {
+            "category": "Diagnostic Exam Limited",
+            "ded_waived": "Yes",
+            "coverage_pct": "100",
+            "limitation": "Once every 6 month of Date of Service"
+          },
+          {
+            "category": "Diagnostic Exam Comp",
+            "ded_waived": "Yes",
+            "coverage_pct": "100",
+            "limitation": "Once every 6 month of Date of Service"
+          },
+          {
+            "category": "Diagnostic Xray FMX",
+            "ded_waived": "Yes",
+            "coverage_pct": "100",
+            "limitation": "Once per Five Benefit Years"
+          },
+          {
+            "category": "Diagnostic Xray PA 1st",
+            "ded_waived": "Yes",
+            "coverage_pct": "100",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Diagnostic Xray PA addtn'l",
+            "ded_waived": "Yes",
+            "coverage_pct": "100",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Diagnostic Xray",
+            "ded_waived": "Yes",
+            "coverage_pct": "100",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "D0240 YES 100 Twice per 12 Month Benefit Year 0 0",
+            "ded_waived": "D0240",
+            "coverage_pct": "YES",
+            "limitation": "100"
+          },
+          {
+            "category": "D0240",
+            "ded_waived": "YES",
+            "coverage_pct": "100",
+            "limitation": "Twice per 12 Month Benefit Year"
+          },
+          {
+            "category": "Diagnostic Xray BWX",
+            "ded_waived": "Yes",
+            "coverage_pct": "100",
+            "limitation": "Once per 12 Month Benefit Year"
+          },
+          {
+            "category": "Diagnostic Xray PANO",
+            "ded_waived": "Yes",
+            "coverage_pct": "100",
+            "limitation": "Once per Five Benefit Years"
+          },
+          {
+            "category": "Preventive",
+            "ded_waived": "Yes",
+            "coverage_pct": "100",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "D1510 YES 100 Once per Three Benefit Years 18 0",
+            "ded_waived": "D1510",
+            "coverage_pct": "YES",
+            "limitation": "100"
+          },
+          {
+            "category": "D1510",
+            "ded_waived": "YES",
+            "coverage_pct": "100",
+            "limitation": "Once per Three Benefit Years"
+          },
+          {
+            "category": "Preventive Prophy Adult",
+            "ded_waived": "Yes",
+            "coverage_pct": "100",
+            "limitation": "Once every 6 month of Date of Service"
+          },
+          {
+            "category": "Preventive Prophy Child",
+            "ded_waived": "Yes",
+            "coverage_pct": "100",
+            "limitation": "Once every 6 month of Date of Service"
+          },
+          {
+            "category": "Preventive Fluoride",
+            "ded_waived": "Yes",
+            "coverage_pct": "100",
+            "limitation": "Once every 6 month of Date of Service"
+          },
+          {
+            "category": "Preventive Sealant",
+            "ded_waived": "Yes",
+            "coverage_pct": "100",
+            "limitation": "Once per Three Benefit Years"
+          },
+          {
+            "category": "Restorative",
+            "ded_waived": "No",
+            "coverage_pct": "80",
+            "limitation": "Once per Two Benefit Years"
+          },
+          {
+            "category": "D2962 NO 50 Once per Five Benefit Years 0 0",
+            "ded_waived": "D2962",
+            "coverage_pct": "NO",
+            "limitation": "50"
+          },
+          {
+            "category": "D2962",
+            "ded_waived": "NO",
+            "coverage_pct": "50",
+            "limitation": "Once per Five Benefit Years"
+          },
+          {
+            "category": "Restorative Fillings",
+            "ded_waived": "No",
+            "coverage_pct": "80",
+            "limitation": "Once per Two Benefit Years"
+          },
+          {
+            "category": "Restorative Onlay / Inlay",
+            "ded_waived": "No",
+            "coverage_pct": "50",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "D2620 NO 50 Once per 5 Year Benefit Year 0 0",
+            "ded_waived": "D2620",
+            "coverage_pct": "NO",
+            "limitation": "50"
+          },
+          {
+            "category": "D2620",
+            "ded_waived": "NO",
+            "coverage_pct": "50",
+            "limitation": "Once per 5 Year Benefit Year"
+          },
+          {
+            "category": "Restorative Crowns",
+            "ded_waived": "No",
+            "coverage_pct": "50",
+            "limitation": "Once per Five Benefit Years"
+          },
+          {
+            "category": "Restorative Buildups",
+            "ded_waived": "No",
+            "coverage_pct": "50",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Endodontics",
+            "ded_waived": "No",
+            "coverage_pct": "80",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "D3347 NO 50 Once per Two Benefit Years 0 0",
+            "ded_waived": "D3347",
+            "coverage_pct": "NO",
+            "limitation": "50"
+          },
+          {
+            "category": "D3347",
+            "ded_waived": "NO",
+            "coverage_pct": "50",
+            "limitation": "Once per Two Benefit Years"
+          },
+          {
+            "category": "Endodontics (RCT) 1 Canal",
+            "ded_waived": "No",
+            "coverage_pct": "80",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Endodontics (RCT) 3 Canal",
+            "ded_waived": "No",
+            "coverage_pct": "80",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Periodontics",
+            "ded_waived": "No",
+            "coverage_pct": "80",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "D4260 NO 50 Other - See plan notes 0 0 D4263 NO 50 Other - See plan notes 0 0",
+            "ded_waived": "D4260",
+            "coverage_pct": "NO",
+            "limitation": "50"
+          },
+          {
+            "category": "D4260",
+            "ded_waived": "NO",
+            "coverage_pct": "50",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "D4263",
+            "ded_waived": "NO",
+            "coverage_pct": "50",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Periodontics SCRP",
+            "ded_waived": "No",
+            "coverage_pct": "50",
+            "limitation": "Once per Two Benefit Years"
+          },
+          {
+            "category": "D4346 YES 0 Other - See plan notes 0 0",
+            "ded_waived": "D4346",
+            "coverage_pct": "YES",
+            "limitation": "0"
+          },
+          {
+            "category": "D4346",
+            "ded_waived": "YES",
+            "coverage_pct": "0",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Periodontics Debridement",
+            "ded_waived": "Yes",
+            "coverage_pct": "0",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Periodontics Arestin",
+            "ded_waived": "No",
+            "coverage_pct": "50",
+            "limitation": "Once per 12 Month Benefit Year"
+          },
+          {
+            "category": "Periodontics Perio Maintenance",
+            "ded_waived": "No",
+            "coverage_pct": "50",
+            "limitation": "Once every 6 month of Date of Service"
+          },
+          {
+            "category": "Prosth, remov",
+            "ded_waived": "No",
+            "coverage_pct": "50",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "D5860 YES 0 Other - See plan notes 0 0",
+            "ded_waived": "D5860",
+            "coverage_pct": "YES",
+            "limitation": "0"
+          },
+          {
+            "category": "D5860",
+            "ded_waived": "YES",
+            "coverage_pct": "0",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Prosth, remov Dentures/Partials",
+            "ded_waived": "No",
+            "coverage_pct": "50",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Prosth, remov Teeth Replace",
+            "ded_waived": "No",
+            "coverage_pct": "50",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "D5740 NO 50 Once per Three Benefit Years 0 0",
+            "ded_waived": "D5740",
+            "coverage_pct": "NO",
+            "limitation": "50"
+          },
+          {
+            "category": "D5740",
+            "ded_waived": "NO",
+            "coverage_pct": "50",
+            "limitation": "Once per Three Benefit Years"
+          },
+          {
+            "category": "Maxillofacial Prosthetics",
+            "ded_waived": "No",
+            "coverage_pct": "50",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "D5982 YES 0 Other - See plan notes 0 0",
+            "ded_waived": "D5982",
+            "coverage_pct": "YES",
+            "limitation": "0"
+          },
+          {
+            "category": "D5982",
+            "ded_waived": "YES",
+            "coverage_pct": "0",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Implant",
+            "ded_waived": "No",
+            "coverage_pct": "50",
+            "limitation": "Once per 10 Year Benefit Year"
+          },
+          {
+            "category": "D6194 NO 50 Other - See plan notes 0 0",
+            "ded_waived": "D6194",
+            "coverage_pct": "NO",
+            "limitation": "50"
+          },
+          {
+            "category": "D6194",
+            "ded_waived": "NO",
+            "coverage_pct": "50",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Implant Body",
+            "ded_waived": "No",
+            "coverage_pct": "50",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Implant Abutment",
+            "ded_waived": "No",
+            "coverage_pct": "50",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Implant Crown",
+            "ded_waived": "No",
+            "coverage_pct": "50",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "D6065 NO 50 Once per Ten Benefit Years 0 0",
+            "ded_waived": "D6065",
+            "coverage_pct": "NO",
+            "limitation": "50"
+          },
+          {
+            "category": "D6065",
+            "ded_waived": "NO",
+            "coverage_pct": "50",
+            "limitation": "Once per Ten Benefit Years"
+          },
+          {
+            "category": "Prosth, fixed Bridges",
+            "ded_waived": "No",
+            "coverage_pct": "50",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "D6245 NO 50 Once per 5 Year Benefit Year 0 0",
+            "ded_waived": "D6245",
+            "coverage_pct": "NO",
+            "limitation": "50"
+          },
+          {
+            "category": "D6245",
+            "ded_waived": "NO",
+            "coverage_pct": "50",
+            "limitation": "Once per 5 Year Benefit Year"
+          },
+          {
+            "category": "Oral Surgery",
+            "ded_waived": "No",
+            "coverage_pct": "80",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "D7259 NO 80 Once per Lifetime 0 0",
+            "ded_waived": "D7259",
+            "coverage_pct": "NO",
+            "limitation": "80"
+          },
+          {
+            "category": "D7259",
+            "ded_waived": "NO",
+            "coverage_pct": "80",
+            "limitation": "Once per Lifetime"
+          },
+          {
+            "category": "Oral Surgery Simple Extraction",
+            "ded_waived": "No",
+            "coverage_pct": "80",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Oral Surgery Surgical Extraction",
+            "ded_waived": "No",
+            "coverage_pct": "80",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "D7880 NO 0 Other - See plan notes 0 0 D7953 NO 0 Other - See plan notes 0 0",
+            "ded_waived": "D7880",
+            "coverage_pct": "NO",
+            "limitation": "0"
+          },
+          {
+            "category": "D7880",
+            "ded_waived": "NO",
+            "coverage_pct": "0",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "D7953",
+            "ded_waived": "NO",
+            "coverage_pct": "0",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Orthodontics",
+            "ded_waived": "Yes",
+            "coverage_pct": "50",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Orthodontics Child",
+            "ded_waived": "Yes",
+            "coverage_pct": "50",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Orthodontics Adult",
+            "ded_waived": "Yes",
+            "coverage_pct": "50",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Adjunct",
+            "ded_waived": "No",
+            "coverage_pct": "80",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "D9430 YES 0 Other - See plan notes 0 0",
+            "ded_waived": "D9430",
+            "coverage_pct": "YES",
+            "limitation": "0"
+          },
+          {
+            "category": "D9430",
+            "ded_waived": "YES",
+            "coverage_pct": "0",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Adjunct Palliative Exam",
+            "ded_waived": "No",
+            "coverage_pct": "80",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Adjunct Sedation",
+            "ded_waived": "No",
+            "coverage_pct": "80",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Adjunct Conscious Sedation",
+            "ded_waived": "Yes",
+            "coverage_pct": "0",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "D9239 YES 80 Other - See plan notes 0 0",
+            "ded_waived": "D9239",
+            "coverage_pct": "YES",
+            "limitation": "80"
+          },
+          {
+            "category": "D9239",
+            "ded_waived": "YES",
+            "coverage_pct": "80",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Adjunct Consultation",
+            "ded_waived": "Yes",
+            "coverage_pct": "0",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Adjunct Nightguards",
+            "ded_waived": "Yes",
+            "coverage_pct": "0",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Non-covered Services",
+            "ded_waived": "Yes",
+            "coverage_pct": "0",
+            "limitation": "Other - See plan notes"
+          },
+          {
+            "category": "Deductible",
+            "ded_waived": "$50.00",
+            "coverage_pct": "N/A",
+            "limitation": "$150.00"
+          },
+          {
+            "category": "Annual Max.",
+            "ded_waived": "$2,000.00",
+            "coverage_pct": "N/A",
+            "limitation": "$99,999.00"
+          },
+          {
+            "category": "Ortho",
+            "ded_waived": "$1,000.00",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "Anni. Date Exp",
+            "ded_waived": "01/01/2027",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "Verified On",
+            "ded_waived": "06/24/2026 01:50 PM PT",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "Verified By",
+            "ded_waived": "ISPACE1132937",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          },
+          {
+            "category": "Member Subscriber",
+            "ded_waived": "Select from List Select from List PLASENCIA, DANIELLA (Responsible Party) (DOB: 01/20/2014) PLASENCIA, DANIELLA (DOB: 01/20/2014) Other",
+            "coverage_pct": "N/A",
+            "limitation": "N/A"
+          }
+        ]
+      }
+    ],
+    "total_captured": 1,
+    "crawled_at": "2026-06-29T10:18:25.173Z"
+  }
+}
