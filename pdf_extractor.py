@@ -96,6 +96,11 @@ def detect_format(text: str) -> str:
     if "delta dental" in t or "deltadental" in t:
         return "delta_dental"
 
+    # DentaQuest exports its member page as image/vector outlines with no text
+    # layer, so it can't be parsed here — recognise it to give a clear message.
+    if "dentaquest" in t:
+        return "dentaquest"
+
     # Heuristic fallback for Delta's older layout (colon labels + table headers)
     if re.search(r"Group Name:", text) and re.search(r"Annual Maximums", text):
         return "delta_dental"
@@ -116,11 +121,28 @@ async def parse_insurance_pdf(pdf_bytes: bytes) -> dict:
     fmt = detect_format(text)
     log.info(f"Detected insurance format: '{fmt}'")
 
+    # DentaQuest PDFs have no readable text layer — they can't be parsed.
+    if fmt == "dentaquest":
+        raise ValueError(
+            "This is a DentaQuest PDF, which is saved as images with no readable "
+            "text — it cannot be parsed from a file. Capture it instead with the "
+            "browser extension on providers.dentaquest.com (open the member's "
+            "page, then export the JSON) and upload that JSON here."
+        )
+
+    # An image-only / scanned PDF yields almost no extractable text.
+    if len(text.strip()) < 100:
+        raise ValueError(
+            "This PDF has no readable text layer (it appears to be scanned or "
+            "image-based), so it can't be parsed. Use a text-based PDF export, "
+            "or capture the data with the browser extension."
+        )
+
     parser = _PARSER_REGISTRY.get(fmt)
     if parser is None:
         raise ValueError(
             "Unrecognized insurance PDF format — only Delta Dental and Guardian "
-            "are currently supported. (Detected: unknown layout.)"
+            "PDFs are supported. (DentaQuest is captured via the browser extension.)"
         )
 
     result = parser(text)
