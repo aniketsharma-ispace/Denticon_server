@@ -121,16 +121,9 @@ async def parse_insurance_pdf(pdf_bytes: bytes) -> dict:
     fmt = detect_format(text)
     log.info(f"Detected insurance format: '{fmt}'")
 
-    # DentaQuest PDFs have no readable text layer — they can't be parsed.
-    if fmt == "dentaquest":
-        raise ValueError(
-            "This is a DentaQuest PDF, which is saved as images with no readable "
-            "text — it cannot be parsed from a file. Capture it instead with the "
-            "browser extension on providers.dentaquest.com (open the member's "
-            "page, then export the JSON) and upload that JSON here."
-        )
-
-    # An image-only / scanned PDF yields almost no extractable text.
+    # An image-only / scanned PDF yields almost no extractable text. Older
+    # DentaQuest exports are image/vector outlines that land here — the message
+    # points the user at the browser extension as the reliable fallback.
     if len(text.strip()) < 100:
         raise ValueError(
             "This PDF has no readable text layer (it appears to be scanned or "
@@ -141,8 +134,8 @@ async def parse_insurance_pdf(pdf_bytes: bytes) -> dict:
     parser = _PARSER_REGISTRY.get(fmt)
     if parser is None:
         raise ValueError(
-            "Unrecognized insurance PDF format — only Delta Dental and Guardian "
-            "PDFs are supported. (DentaQuest is captured via the browser extension.)"
+            "Unrecognized insurance PDF format — only Delta Dental, Guardian, and "
+            "DentaQuest PDFs are supported."
         )
 
     result = parser(text)
@@ -419,9 +412,260 @@ def _parse_guardian(text: str) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────
+# PARSER: DENTAQUEST  (providers.dentaquest.com "Member Details" export)
+# ──────────────────────────────────────────────────────────────────
+#
+# The DentaQuest member-details page, printed/saved as a PDF, DOES carry a full
+# text layer (unlike the older image-only exports). Its layout is line-oriented:
+#   • Labels sit on their own line; the value follows on the next line, e.g.
+#       Plan/Group number:
+#       972599
+#     (some labels — "Level of coverage: Employee + Child" — are inline instead)
+#   • "Benefits at a glance" gives the financials as compact strings:
+#       Deductible:  →  $50.0 Individual / $150.0 Family
+#       Maximum:     →  $2000.0 Individual annual
+#       Orthodontia max.:  →  $1000.0 Individual lifetime
+#   • The "Benefits summary" table lists every CDT code as a block:
+#       D0120
+#       IN: 100% / OON:
+#       80%                    ← OON% wraps onto its own line
+#       01-01-2024             ← waiting-period-satisfied date
+#       One of (...) per 6Month(s) Per patient, .   ← frequency (may wrap)
+#       N/A                    ← deductible column
+#
+# The output mirrors content_dentaquest.js exactly so a PDF-sourced DentaQuest
+# and a portal-scraped one are indistinguishable to the matcher.
+
+# Lines in the benefits table that are structural noise, never a category header.
+_DQ_NOISE = {
+    "procedurecoinsurance", "waiting period", "satisfied", "frequency",
+    "deductible", "feedback", "member details", "network", "common codes",
+    "benefits summary", "in and out of", "office",
+}
+
+
+def _dq_label(lines: list[str], label: str) -> str | None:
+    """
+    Value for a 'Label:' field — inline ('Label: value') or on the next
+    non-empty line. Case-insensitive; the first match wins.
+
+    The trailing colon is required so we match the real 'Main information'
+    fields (e.g. 'Plan:') and not the colon-less column headers of the
+    dependents table (e.g. a bare 'Plan').
+    """
+    want = label.lower().rstrip(":").strip() + ":"
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        # Inline: "Label: value"
+        m = re.match(rf"{re.escape(label)}\s*:\s*(.+)$", s, re.IGNORECASE)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+        # Standalone "Label:" line → value is the next non-empty line
+        if s.lower() == want:
+            for nxt in lines[i + 1:]:
+                if nxt.strip():
+                    return nxt.strip()
+    return None
+
+
+def _dq_procedures(lines: list[str]) -> list[dict]:
+    """Walk the Benefits-summary table and pull one record per CDT code."""
+    procedures: list[dict] = []
+    seen: set[str] = set()
+    category = ""
+    code_re = re.compile(r"^D\d{4}$")
+    date_re = re.compile(r"^\d{2}-\d{2}-\d{4}$")
+    n = len(lines)
+    i = 0
+
+    while i < n:
+        s = lines[i].strip()
+
+        # A benefit row = a bare CDT code whose next non-empty line starts "IN:".
+        # (Codes in the claims-history table are followed by a description, so
+        # this check cleanly skips them.)
+        if code_re.match(s):
+            j = i + 1
+            while j < n and not lines[j].strip():
+                j += 1
+            if j < n and lines[j].strip().upper().startswith("IN:"):
+                code = s
+                coins = lines[j].strip()
+                k = j + 1
+                # OON% often wraps onto the following line ("IN: 100% / OON:" \n "80%")
+                if "OON:" in coins.upper() and not re.search(r"OON:\s*\d+%", coins, re.I):
+                    while k < n and not lines[k].strip():
+                        k += 1
+                    if k < n:
+                        coins += " " + lines[k].strip()
+                        k += 1
+                in_m  = re.search(r"IN:\s*(\d+)%",  coins, re.I)
+                oon_m = re.search(r"OON:\s*(\d+)%", coins, re.I)
+
+                # Waiting-period-satisfied date (optional)
+                waiting = "N/A"
+                while k < n and not lines[k].strip():
+                    k += 1
+                if k < n and date_re.match(lines[k].strip()):
+                    waiting = lines[k].strip()
+                    k += 1
+
+                # Frequency text, until the deductible column marker
+                freq_parts, ded = [], "N/A"
+                while k < n:
+                    t = lines[k].strip()
+                    if not t:
+                        k += 1
+                        continue
+                    if t == "N/A":
+                        ded = "N/A"
+                        k += 1
+                        break
+                    if t.lower().startswith("in and out of"):
+                        ded = "In and Out of Network"
+                        k += 1
+                        if k < n and lines[k].strip().lower() == "network":
+                            k += 1
+                        break
+                    # Safety: a new row started without an explicit deductible cell
+                    if code_re.match(t) or t.upper().startswith("IN:"):
+                        break
+                    freq_parts.append(t)
+                    k += 1
+
+                if code not in seen:
+                    seen.add(code)
+                    freq = " ".join(freq_parts).strip()
+                    age_m = re.search(r"(?:up to|under|to)\s*age\s*(\d+)", freq, re.I)
+                    procedures.append({
+                        "procedure_code":    code,
+                        "benefit_level":     f"{in_m.group(1)}%" if in_m else "N/A",
+                        "oon_benefit_level": f"{oon_m.group(1)}%" if oon_m else "N/A",
+                        "age_limit":         f"0-{age_m.group(1)}" if age_m else "N/A",
+                        "frequency_limit":   freq or "N/A",
+                        "waiting_period":    waiting,
+                        "deductible":        ded,
+                        "category":          category or "N/A",
+                    })
+                i = k
+                continue
+
+        # Otherwise: track the most recent category header (a short, all-letters
+        # line that isn't structural noise) to tag the codes that follow it.
+        if 1 < len(s) < 40 and re.fullmatch(r"[A-Za-z][A-Za-z /&\-]+", s) \
+                and s.lower() not in _DQ_NOISE:
+            category = s
+        i += 1
+
+    return procedures
+
+
+def _parse_dentaquest(text: str) -> dict:
+    """Parse a DentaQuest (Sun Life) 'Member Details' PDF into the common schema."""
+    lines = text.splitlines()
+
+    # ── 1. Patient ─────────────────────────────────────────────────
+    name = None
+    m = re.search(r"Member information for\s+([A-Z][A-Za-z .'\-]+)", text)
+    if m:
+        name = m.group(1).strip()
+    name = name or _dq_label(lines, "Name")
+
+    level = _dq_label(lines, "Level of coverage") or "N/A"
+    # On these plans the member being viewed IS the patient; treat an
+    # employee-only/self level as "Self", otherwise carry the level through
+    # (matches content_dentaquest.js so has-dependents detection agrees).
+    relationship = (level if level != "N/A"
+                    and not re.search(r"employee only|self|subscriber|member", level, re.I)
+                    else "Self")
+
+    patient = {
+        "name":              name or "N/A",
+        "dob":               _dq_label(lines, "Date of birth") or "N/A",
+        "age":               _dq_label(lines, "Age") or "N/A",
+        "member_id":         _dq_label(lines, "ID number") or "N/A",
+        "relationship":      relationship,
+        "level_of_coverage": level,
+    }
+
+    # ── 2. Plan details ────────────────────────────────────────────
+    plan_name    = _dq_label(lines, "Plan") or "N/A"
+    group_number = _dq_label(lines, "Plan/Group number") or _dq_label(lines, "Group number") or "N/A"
+    if group_number != "N/A":
+        gm = re.match(r"[\w\-]+", group_number)
+        group_number = gm.group(0) if gm else group_number
+    network = _dq_label(lines, "Network") or "N/A"
+
+    plan_details = {
+        "plan_name":         plan_name,
+        "group_number":      group_number,
+        "employer_group":    plan_name,   # matcher reads employer_group OR group_name
+        "network":           network,
+        "level_of_coverage": level,
+    }
+
+    # ── 3. Financials ("Benefits at a glance") ─────────────────────
+    ind_ded = fam_ded = annual_max = ortho_life = None
+    ded_line = _dq_label(lines, "Deductible")
+    if ded_line:
+        dms = re.findall(r"\$[\d,]+\.?\d*", ded_line)
+        if dms:
+            ind_ded = _money(dms[0])
+        if len(dms) > 1:
+            fam_ded = _money(dms[1])
+    max_line = _dq_label(lines, "Maximum")
+    if max_line:
+        mm = re.search(r"\$[\d,]+\.?\d*", max_line)
+        if mm:
+            annual_max = _money(mm.group(0))
+    ortho_line = _dq_label(lines, "Orthodontia max.") or _dq_label(lines, "Orthodontia max")
+    if ortho_line:
+        om = re.search(r"\$[\d,]+\.?\d*", ortho_line)
+        if om:
+            ortho_life = _money(om.group(0))
+
+    financials = {
+        "annual_max":     {"total": annual_max or "$ 0.00"},
+        "deductible_ind": {"total": ind_ded or "$ 0.00"},
+        "deductible_fam": {"total": fam_ded or "$ 0.00"},
+        "ortho_lifetime": {"total": ortho_life or "$ 0.00"},
+    }
+
+    # ── 4. Benefits summary (per-code coverage) ────────────────────
+    procedures = _dq_procedures(lines)
+
+    result = {
+        "source": "DentaQuest PDF - Member Details",
+        "summary": {
+            "group_name":   plan_name,
+            "group_number": group_number,
+            "plan_name":    plan_name,
+        },
+        "plan_details": plan_details,
+        "patient":      patient,
+        "financials":   financials,
+        "covered_services": [],
+        "benefit_coverage": {
+            "source":          "DentaQuest PDF - Benefits Summary",
+            "procedure_count": len(procedures),
+            "procedures":      procedures,
+        },
+    }
+
+    if group_number in (None, "N/A") and not procedures:
+        raise ValueError("Could not extract plan info — DentaQuest PDF layout may have changed.")
+
+    log.info(f"Parsed DentaQuest PDF: group='{group_number}', plan='{plan_name}', "
+             f"ind_ded={ind_ded}, annual_max={annual_max}, ortho={ortho_life}, "
+             f"{len(procedures)} procedures")
+    return result
+
+
+# ──────────────────────────────────────────────────────────────────
 # PARSER REGISTRY — format key → parser fn (built once at import time)
 # ──────────────────────────────────────────────────────────────────
 _PARSER_REGISTRY = {
     "delta_dental": _parse_delta_dental,
     "guardian":     _parse_guardian,
+    "dentaquest":   _parse_dentaquest,
 }
