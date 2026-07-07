@@ -1,37 +1,34 @@
-import logging
-from contextlib import asynccontextmanager
-from pathlib import Path
+# # from fastapi import FastAPI, HTTPException
+# # from fastapi.middleware.cors import CORSMiddleware
+# # from pydantic import BaseModel
+# # import uvicorn
 
-import uvicorn
-from fastapi import FastAPI, HTTPException, UploadFile, File, Response
+# # from compare_patients import trim_patient_data, ask_ollama
+
+# # app = FastAPI(title="AI Insurance Matcher")
+
+# # # Allow the HTML UI to talk to this API
+# # app.add_middleware(
+# #     CORSMiddleware,
+# #     allow_origins=["*"],
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from typing import Optional
+from new_plan import generate_new_plan_pdf
+import uvicorn
 
-from compare_patients import match_insurance_plan, close_http_client
+from compare_patients import trim_patient_data, ask_ollama
 from patient_notes import build_patient_notes
+
+from fastapi.responses import Response
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from pdf_extractor import parse_insurance_pdf
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
-log = logging.getLogger(__name__)
+app = FastAPI(title="AI Insurance Matcher")
 
-# Serve the static UI files relative to THIS file, not the current working
-# directory — so the server works no matter where it is launched from.
-BASE_DIR = Path(__file__).resolve().parent
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    log.info("AI Insurance Matcher starting up.")
-    yield
-    # Cleanly release the shared Ollama HTTP connection pool on shutdown.
-    await close_http_client()
-    log.info("AI Insurance Matcher shut down.")
-
-
-app = FastAPI(title="AI Insurance Matcher", lifespan=lifespan)
-
-# Allow the HTML UI / browser extension to talk to this API.
+# Allow the HTML UI to talk to this API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -40,111 +37,131 @@ app.add_middleware(
 )
 
 
-@app.get("/")
-async def serve_frontend() -> FileResponse:
-    return FileResponse(BASE_DIR / "index.html")
-
-
-@app.get("/styles.css")
-async def serve_css() -> FileResponse:
-    return FileResponse(BASE_DIR / "styles.css", media_type="text/css")
-
-
-@app.get("/match.js")
-async def serve_js() -> FileResponse:
-    return FileResponse(BASE_DIR / "match.js", media_type="application/javascript")
-
+# ── Request models ────────────────────────────────────────────────────────────
 
 class MatchRequest(BaseModel):
     portal_data: dict
     denticon_data: dict
 
-
 class NotesRequest(BaseModel):
-    insurance_data: dict
     denticon_data: dict
+    insurance_data: dict
 
-
-class NewPlanRequest(BaseModel):
+class PDFRequest(BaseModel):
     portal_data: dict
     denticon_data: dict
-    ins_override: dict | None = None
 
+class InsOverride(BaseModel):
+    insName:      Optional[str] = None
+    feeSchedule:  Optional[str] = None
+    relationship: Optional[str] = None
+
+class NewPlanRequest(BaseModel):
+    portal_data:   dict
+    denticon_data: dict
+    ins_override:  Optional[InsOverride] = None   # ← carries modal values
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.post("/api/match")
-async def match_patient_plan(req: MatchRequest) -> dict:
+async def match_patient_plan(req: MatchRequest):
     if not req.portal_data or not req.denticon_data:
         raise HTTPException(status_code=400, detail="Missing portal or denticon data")
 
-    log.info("Step 1: Running Python pre-filter to shortlist candidates...")
-    log.info("Step 2: Sending shortlisted plans to AI for deep matching...")
+    print("Trimming data for AI analysis...")
+    portal, denticon_list = trim_patient_data(req.portal_data, req.denticon_data)
 
-    result = await match_insurance_plan(req.portal_data, req.denticon_data)
-
-    if not result.get("match_found"):
-        log.info("No match found. Reason: %s", result.get("reason"))
-    else:
-        log.info(
-            "Match found: %s (confidence: %s%%)",
-            result.get("matching_id"),
-            result.get("confidence_score"),
-        )
-
+    print(f"Comparing 1 Portal record against {len(denticon_list)} Denticon records...")
+    result = ask_ollama(portal, denticon_list)
     return result
 
 
 @app.post("/api/patient-notes")
-async def generate_patient_notes(req: NotesRequest) -> dict:
-    if not req.insurance_data or not req.denticon_data:
-        raise HTTPException(status_code=400, detail="Missing insurance or denticon data")
+def generate_notes(req: NotesRequest):
+    if not req.denticon_data or not req.insurance_data:
+        raise HTTPException(status_code=400, detail="Missing denticon or insurance data")
 
-    return build_patient_notes(req.denticon_data, req.insurance_data)
+    result = build_patient_notes(req.denticon_data, req.insurance_data)
+    return result
 
+@app.post("/api/generate-new-plan-pdf")
+async def generate_new_plan_pdf_api(req: PDFRequest):
 
-@app.post("/api/parse-pdf")
-async def parse_pdf(file: UploadFile = File(...)) -> dict:
-    try:
-        content = await file.read()
-        return await parse_insurance_pdf(content)
-    except Exception as e:
-        # Log the full error server-side; surface a clean message to the client.
-        log.exception("Failed to parse uploaded PDF '%s'", file.filename)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# Defined as a sync `def` so FastAPI runs it in a worker thread — the PDF build
-# (reportlab + a blocking Ollama call) must not block the async event loop.
-@app.post("/api/new-plan")
-def generate_new_plan(req: NewPlanRequest) -> Response:
     if not req.portal_data or not req.denticon_data:
-        raise HTTPException(status_code=400, detail="Missing portal or denticon data")
-
-    # Lazy import: keeps the rest of the API working even if reportlab isn't
-    # installed — only this endpoint reports the missing dependency.
-    try:
-        from new_plan import generate_new_plan_pdf
-    except ImportError as e:
-        log.exception("New Plan PDF dependencies are missing")
         raise HTTPException(
-            status_code=500,
-            detail=f"PDF generation unavailable — missing dependency ({e}). "
-                   "Run: pip install -r requirements.txt",
+            status_code=400,
+            detail="Missing portal or denticon data"
         )
 
-    try:
-        pdf_bytes = generate_new_plan_pdf(
-            req.portal_data, req.denticon_data, req.ins_override
-        )
-    except Exception as e:
-        log.exception("Failed to generate New Plan PDF")
-        raise HTTPException(status_code=500, detail=str(e))
+    pdf_bytes = generate_new_plan_pdf(
+        req.portal_data,
+        req.denticon_data
+    )
 
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": 'attachment; filename="Insurance_Plan.pdf"'},
+        headers={
+            "Content-Disposition":
+            "attachment; filename=insurance_breakdown.pdf"
+        }
     )
 
+@app.post("/api/parse-pdf")
+async def parse_pdf_endpoint(file: UploadFile = File(...)):
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Uploaded file must be a PDF")
+    pdf_bytes = await file.read()
+    
+    try:
+        result = await parse_insurance_pdf(pdf_bytes)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF parsing failed: {str(e)}")
+    
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}
+
+@app.post("/api/new-plan")
+def generate_new_plan(req: NewPlanRequest):
+    """
+    Generate and return an Insurance Plan Breakdown PDF.
+    Accepts the full raw JSONs from both portals + optional UI overrides.
+    """
+    if not req.portal_data or not req.denticon_data:
+        raise HTTPException(status_code=400, detail="Missing portal or denticon data")
+
+    # Convert InsOverride pydantic model → plain dict (or None)
+    override_dict = req.ins_override.dict() if req.ins_override else None
+
+    # Derive a safe filename from the patient name
+    patient_name = (
+        req.portal_data
+           .get('metlife_data', {})
+           .get('patient', {})
+           .get('name', 'NewPlan')
+           .replace(' ', '_')
+    )
+
+    pdf_bytes = generate_new_plan_pdf(
+        req.portal_data,
+        req.denticon_data,
+        ins_override=override_dict,   # ← insName, feeSchedule, relationship applied inside
+    )
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="Insurance_Plan_{patient_name}.pdf"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        }
+    )
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Run server on port 8000
+    uvicorn.run(app, host="127.0.0.1", port=8000)

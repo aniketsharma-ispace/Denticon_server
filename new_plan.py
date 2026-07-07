@@ -16,7 +16,6 @@ Usage:
 import io
 import re
 import json
-import logging
 import requests
 from datetime import datetime
 
@@ -25,8 +24,6 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 from reportlab.lib.utils import simpleSplit
 from reportlab.platypus import Table, TableStyle
-
-log = logging.getLogger(__name__)
 
 # ─── Page geometry ─────────────────────────────────────────────────────────────
 W, H     = letter          # 612 × 792 pt
@@ -54,7 +51,7 @@ AMBER       = colors.HexColor('#92400e')
 # ═══════════════════════════════════════════════════════════════════════════════
 
 OLLAMA_URL          = "http://localhost:11434/api/generate"
-OLLAMA_MODEL        = "qwen2.5:7b"
+OLLAMA_MODEL        = "llama3.2"
 OLLAMA_TIMEOUT      = 60
 USE_CLAUDE_FALLBACK = False
 CLAUDE_MODEL        = "claude-sonnet-4-20250514"
@@ -135,10 +132,10 @@ def _llm_call_ollama(prompt: str):
         raw = re.sub(r"```json|```", "", raw).strip()
         return json.loads(raw)
     except requests.exceptions.ConnectionError:
-        log.warning("[LLM] Ollama not reachable")
+        print("[LLM] ⚠ Ollama not reachable")
         return None
     except Exception as e:
-        log.warning(f"[LLM] Ollama error: {e}")
+        print(f"[LLM] ⚠ Ollama error: {e}")
         return None
 
 
@@ -170,11 +167,11 @@ def _interpret_provisions(portal_raw: dict) -> dict:
     raw = _llm_call_ollama(prompt)
 
     if raw is None:
-        log.warning("[LLM] All LLM calls failed — using defaults")
+        print("[LLM] ⚠ All LLM calls failed — using defaults")
         return dict(_LLM_DEFAULT_ANSWERS)
 
     answers = _llm_normalize(raw)
-    log.info("[LLM] answers: %s", json.dumps(answers, indent=2))
+    print("[LLM] ✓", json.dumps(answers, indent=2))
     return answers
 
 
@@ -556,7 +553,7 @@ def _get_plan_year_start(procs, eff_date):
         return 'January'
     try:
         return datetime.strptime(eff_date, '%m/%d/%Y').strftime('%B')
-    except (ValueError, TypeError):
+    except:
         return '—'
 
 
@@ -1427,7 +1424,7 @@ def _page2(c, d, start_page, total_pages):
 def generate_new_plan_pdf(
     portal_raw:   dict,
     denticon_raw: dict,
-    ins_override: dict | None = None,
+    ins_override: dict = None,
 ) -> bytes:
     """
     Build and return PDF bytes for an Insurance Plan Breakdown.
@@ -1441,7 +1438,7 @@ def generate_new_plan_pdf(
                      'feeSchedule'  → overrides fee_schedule
                      'relationship' → overrides Relation to Subscriber
     """
-    log.info("Generating New Plan PDF...")
+    print("PDF FUNCTION STARTED")
 
     data = _extract(portal_raw, denticon_raw)
 
@@ -1453,11 +1450,11 @@ def generate_new_plan_pdf(
 
         if ins_name:
             data['ins_name'] = ins_name
-            log.info(f"[override] ins_name     → {ins_name}")
+            print(f"[override] ins_name     → {ins_name}")
 
         if fee_sch:
             data['fee_schedule'] = fee_sch
-            log.info(f"[override] fee_schedule → {fee_sch}")
+            print(f"[override] fee_schedule → {fee_sch}")
 
         if rel:
             data['relationship'] = rel
@@ -1467,13 +1464,12 @@ def generate_new_plan_pdf(
                 indiv_total_raw = data.get('indiv_ded',   ''),
                 relationship    = rel,
             )
-            log.info(f"[override] relationship → {rel}")
+            print(f"[override] relationship → {rel}")
 
-    if log.isEnabledFor(logging.DEBUG):
-        log.debug("FINAL DATA (after overrides):")
-        for k, v in data.items():
-            if k != 'procs':
-                log.debug("  %s: %s", k, v)
+    print("FINAL DATA (after overrides):")
+    for k, v in data.items():
+        if k != 'procs':
+            print(f"  {k}: {v}")
 
     buf = io.BytesIO()
     c   = canvas.Canvas(buf, pagesize=letter)
