@@ -1153,9 +1153,9 @@ function lv(map, label) {
 function scrapePatientOverview() {
     const labels = buildLabelMap();
 
-    const nameEl = Array.from(document.querySelectorAll('div, span'))
-        .find(el => el.children.length === 0 && /^[A-Z]{2,},\s[A-Z]/.test((el.innerText || '').trim()));
-    const patientName = nameEl ? (nameEl.innerText || '').trim() : "N/A";
+    const nameEl = Array.from(document.querySelectorAll('span.font-weight-600'))
+        .find(el => /^[A-Za-z][A-Za-z'\-]*(\s[A-Za-z'\-]+)*,\s[A-Za-z]/.test((el.innerText || '').trim()));
+    const patientName = nameEl ? nameEl.innerText.trim() : "N/A";
 
     const dobEl = Array.from(document.querySelectorAll('span.font-weight-600'))
         .find(el => /^\d{2}\/\d{2}\/\d{4}$/.test((el.innerText || '').trim()));
@@ -1506,6 +1506,10 @@ async function deepCrawlInsurance() {
         const store = result.audit_context || {};
         const existing = store.denticon_data || {};
 
+        delete store.metlife_data;
+        delete store.benefit_coverage;
+        delete store.subscriber_info;
+
         // Inject SubID and RP DOB into primary_insurance and responsible_party
         // These come from the insurance tab header, not the patient overview
         const primaryIns = existing.primary_insurance || {};
@@ -1530,7 +1534,12 @@ async function deepCrawlInsurance() {
         };
 
         chrome.storage.local.set({ audit_context: store }, () => {
-            const patientName = (store.denticon_data?.patient?.name || "Unknown").replace(/[^a-zA-Z0-9_,. -]/g, '');
+            const patientName = (
+                store.denticon_data?.patient?.name ||
+                store.denticon_data?.responsible_party?.name ||
+                store.denticon_data?.primary_insurance?.subscriber_name ||
+                "Unknown"
+            ).replace(/[^a-zA-Z0-9_,. -]/g, '');
             triggerDownload(store, `Denticon_DeepAudit_${patientName}_${Date.now()}.json`, false);
             alert(`Deep Scrape Complete! Captured ${allPlanAudits.length} plans.`);
         });
@@ -1614,3 +1623,16 @@ function triggerDownload(data, filename, purgeAfter) {
         });
     }
 }
+// ─────────────────────────────────────────────
+// 8. INTERCEPT ECLAIMS MANAGEMENT
+//    Forces ClaimConnect to open in normal tab
+//    instead of stripped popup window
+// ─────────────────────────────────────────────
+document.addEventListener("click", function(e) {
+    var el = e.target.closest("a.menuItem");
+    if (!el) return;
+    if (!el.innerText.includes("EClaims Management")) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    window.open("https://" + window.location.host + "/ASPX/Utilities/EClaims.aspx", "_blank");
+}, true);
