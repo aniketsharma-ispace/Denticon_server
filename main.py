@@ -19,12 +19,23 @@ from typing import Optional
 from new_plan import generate_new_plan_pdf
 import uvicorn
 
-from compare_patients import trim_patient_data, ask_ollama
+from compare_patients import match_insurance_plan
+
 from patient_notes import build_patient_notes
 
 from fastapi.responses import Response
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from typing import List
+from datetime import datetime
+import base64
 from pdf_extractor import parse_insurance_pdf
+from Appointment_Scheduler.appointment_processor import (
+    process_appointments,
+    load_exclusions,
+    save_exclusions,
+    history_info,
+    reset_history,
+)
 
 app = FastAPI(title="AI Insurance Matcher")
 
@@ -61,6 +72,9 @@ class NewPlanRequest(BaseModel):
     denticon_data: dict
     ins_override:  Optional[InsOverride] = None   # ← carries modal values
 
+class ExclusionRequest(BaseModel):
+    exclusions: list
+
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
@@ -69,11 +83,8 @@ async def match_patient_plan(req: MatchRequest):
     if not req.portal_data or not req.denticon_data:
         raise HTTPException(status_code=400, detail="Missing portal or denticon data")
 
-    print("Trimming data for AI analysis...")
-    portal, denticon_list = trim_patient_data(req.portal_data, req.denticon_data)
-
-    print(f"Comparing 1 Portal record against {len(denticon_list)} Denticon records...")
-    result = ask_ollama(portal, denticon_list)
+    print("Matching portal data against Denticon plans...")
+    result = await match_insurance_plan(req.portal_data, req.denticon_data)
     return result
 
 
@@ -125,6 +136,62 @@ async def parse_pdf_endpoint(file: UploadFile = File(...)):
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+# ── Appointment cleansing (SOP Steps 2–5) ──────────────────────────────────────
+
+@app.post("/api/appointments/process")
+async def process_appointments_api(
+    files: List[UploadFile] = File(...),
+    commit: bool = Form(True),
+):
+    """
+    Union one or more Denticon appointment reports, run the SOP cleansing steps
+    (remove previously processed / invalid / duplicate / excluded-insurance),
+    and return a per-step summary plus the cleaned workbook (base64).
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="Upload at least one appointment report.")
+
+    payload = []
+    for f in files:
+        name = f.filename or "report.xlsx"
+        if not name.lower().endswith((".xlsx", ".xls", ".csv")):
+            raise HTTPException(status_code=400, detail=f"'{name}' must be an .xlsx, .xls or .csv file.")
+        payload.append((name, await f.read()))
+
+    try:
+        result = process_appointments(payload, commit=commit)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Processing failed: {e}")
+
+    return {
+        "summary": result["summary"],
+        "filename": f"cleaned_appointments_{datetime.now():%Y%m%d}.xlsx",
+        "file_base64": base64.b64encode(result["xlsx_bytes"]).decode("ascii"),
+    }
+
+
+@app.get("/api/appointments/exclusions")
+def get_exclusions():
+    return {"exclusions": load_exclusions()}
+
+
+@app.post("/api/appointments/exclusions")
+def update_exclusions(req: ExclusionRequest):
+    return {"exclusions": save_exclusions(req.exclusions)}
+
+
+@app.get("/api/appointments/history")
+def get_history():
+    return history_info()
+
+
+@app.post("/api/appointments/history/reset")
+def clear_history():
+    return reset_history()
 
 @app.post("/api/new-plan")
 def generate_new_plan(req: NewPlanRequest):

@@ -11,3 +11,7 @@ requests              # sync client used by new_plan.py LLM calls
 # ── PDF handling ────────────────────────────────────────────────────
 PyMuPDF               # provides `fitz`, used to read insurance PDFs (pdf_extractor.py)
 reportlab             # generates the New Plan breakdown PDF (new_plan.py)
+
+# ── Excel / appointment cleansing ───────────────────────────────────
+pandas                # reads/cleanses appointment reports (appointment_processor.py)
+openpyxl              # Excel .xlsx read/write engine used by pandas

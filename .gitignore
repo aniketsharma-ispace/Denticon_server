@@ -13,8 +13,17 @@ env/
 .env
 .env.*
 
+# ── Appointment scheduler runtime state (created on first run) ─
+processed_history.json
+insurance_exclusion.json
+
+# ── Appointment cleansing runtime state ─────────────────
+processed_history.json
+insurance_exclusion.json
+
 # ── OS / editor noise ───────────────────────────────────
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
+Material/
