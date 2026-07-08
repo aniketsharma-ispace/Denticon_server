@@ -23,11 +23,14 @@ from compare_patients import match_insurance_plan
 
 from patient_notes import build_patient_notes
 
-from fastapi.responses import Response
+from fastapi.responses import Response, FileResponse
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from typing import List
 from datetime import datetime
 import base64
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 from pdf_extractor import parse_insurance_pdf
 from Appointment_Scheduler.appointment_processor import (
     process_appointments,
@@ -77,6 +80,12 @@ class ExclusionRequest(BaseModel):
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+
+@app.get("/")
+def serve_ui():
+    """Serve the web UI (index.html) so it can be opened directly from the server."""
+    return FileResponse(os.path.join(BASE_DIR, "index.html"))
+
 
 @app.post("/api/match")
 async def match_patient_plan(req: MatchRequest):
@@ -230,5 +239,6 @@ def generate_new_plan(req: NewPlanRequest):
     )
 
 if __name__ == "__main__":
-    # Run server on port 8000
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    # host="0.0.0.0" makes the server reachable from other machines on the LAN
+    # (e.g. http://10.30.10.67:8000). Use 127.0.0.1 to restrict to this machine only.
+    uvicorn.run(app, host="0.0.0.0", port=8000)
