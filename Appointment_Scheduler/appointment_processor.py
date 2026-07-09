@@ -37,6 +37,10 @@ COLUMN_ALIASES = {
     "patient_id":         ["patient id", "patientid", "pat id", "patid", "pid", "patient no", "patientno"],
     "patient_name":       ["patient name", "patientname", "name", "patient"],
     "insurance":          ["insurance", "insurance name", "insurancename", "carrier", "plan", "ins", "insurance plan"],
+    "dental_primary_ins":   ["dental primary ins carr", "dental primary ins", "dental primary insurance",
+                             "dental primary", "primary insurance", "primary ins", "dental primary ins carrier"],
+    "dental_secondary_ins": ["dental secondary ins carr", "dental secondary ins", "dental secondary insurance",
+                             "dental secondary", "secondary insurance", "secondary ins", "dental secondary ins carrier"],
     "appointment_notes":  ["appointment notes", "appt notes", "notes", "appointmentnotes", "apptnotes", "appointment note"],
     "appointment_date":   ["appointment date", "appt date", "date", "appointmentdate", "apptdate"],
     "appointment_time":   ["appointment time", "appt time", "time", "appointmenttime", "appttime"],
@@ -44,9 +48,6 @@ COLUMN_ALIASES = {
     "appointment_status": ["appointment status", "status", "appt status", "appointmentstatus"],
     "office_name":        ["office name", "office", "officename", "location", "practice"],
 }
-
-# The four fields the SOP uses to detect duplicate appointments.
-DUP_KEYS = ["patient_id", "patient_name", "insurance", "appointment_date"]
 
 
 # ── Header helpers ─────────────────────────────────────────────────────────────
@@ -70,6 +71,41 @@ def _build_column_map(columns) -> dict:
                 mapping[canonical] = real
                 break
     return mapping
+
+
+def _alias_sets():
+    """Flat lookup of every alias across all fields, plus the Patient-ID-only set."""
+    all_exact, all_nospace = set(), set()
+    for aliases in COLUMN_ALIASES.values():
+        for a in aliases:
+            all_exact.add(a)
+            all_nospace.add(a.replace(" ", ""))
+    pid_exact   = set(COLUMN_ALIASES["patient_id"])
+    pid_nospace = {a.replace(" ", "") for a in COLUMN_ALIASES["patient_id"]}
+    return all_exact, all_nospace, pid_exact, pid_nospace
+
+
+def _cell_is_alias(cell, exact, nospace) -> bool:
+    n = _norm_header(cell)
+    return n in exact or n.replace(" ", "") in nospace
+
+
+def _detect_header_row(raw: pd.DataFrame, max_scan: int = 20):
+    """
+    Find the real header row in a sheet that may have title/metadata rows above it.
+    Returns the row index whose cells best match known column names AND contains a
+    Patient ID header, or None if no such row is found in the first `max_scan` rows.
+    """
+    all_exact, all_nospace, pid_exact, pid_nospace = _alias_sets()
+    best_idx, best_score = None, 0
+    for i in range(min(max_scan, len(raw))):
+        row = list(raw.iloc[i])
+        if not any(_cell_is_alias(c, pid_exact, pid_nospace) for c in row):
+            continue
+        score = sum(_cell_is_alias(c, all_exact, all_nospace) for c in row)
+        if score > best_score:
+            best_score, best_idx = score, i
+    return best_idx
 
 
 # ── Value helpers ──────────────────────────────────────────────────────────────
@@ -107,29 +143,70 @@ def _time_sort_key(series: pd.Series) -> pd.Series:
     return parsed.fillna(pd.Timestamp.max)
 
 
+def _norm_text(v) -> str:
+    """Generic text canonicaliser for matching (trim, lower-case, collapse whitespace)."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    return re.sub(r"\s+", " ", str(v).strip().lower())
+
+
+def _norm_office(v) -> str:
+    """Canonicalise an Office Name for matching (trim, lower-case, collapse whitespace)."""
+    return _norm_text(v)
+
+
+def _hist_key(pid: str, office: str) -> str:
+    """
+    Composite 'previously processed' key = Patient ID + Office Name (SOP Step 2).
+    The same Patient ID can appear across different offices, so both are needed to
+    form a unique key.
+    """
+    return f"{_norm_pid(pid)}||{_norm_office(office)}"
+
+
 # ── Persistent-store accessors ─────────────────────────────────────────────────
-def load_history() -> set:
+# History is a list of {"patient_id", "office_name"} records. The unique key for a
+# "previously processed" check is Patient ID + Office Name (SOP Step 2 / Step 10).
+def load_history_records() -> list:
     if not os.path.exists(HISTORY_FILE):
-        return set()
+        return []
     try:
         with open(HISTORY_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return set(data.get("processed_ids", []))
     except Exception:
-        return set()
+        return []
+    if isinstance(data.get("processed"), list):
+        return [r for r in data["processed"] if isinstance(r, dict)]
+    # Backward-compat: earlier format stored bare Patient IDs (no office).
+    if isinstance(data.get("processed_ids"), list):
+        return [{"patient_id": str(p), "office_name": ""} for p in data["processed_ids"]]
+    return []
 
 
-def _write_history(ids: set) -> None:
+def load_history_keys() -> set:
+    return {_hist_key(r.get("patient_id", ""), r.get("office_name", "")) for r in load_history_records()}
+
+
+def _write_history(records: list) -> None:
+    # De-duplicate by composite key; keep the original office text for auditability.
+    dedup = {}
+    for r in records:
+        pid = _norm_pid(r.get("patient_id", ""))
+        if not pid:
+            continue
+        office = str(r.get("office_name", "") or "").strip()
+        dedup[_hist_key(pid, office)] = {"patient_id": pid, "office_name": office}
+    ordered = sorted(dedup.values(), key=lambda x: (x["patient_id"], x["office_name"]))
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(
-            {"processed_ids": sorted(ids), "updated_at": datetime.now().isoformat(timespec="seconds")},
+            {"processed": ordered, "updated_at": datetime.now().isoformat(timespec="seconds")},
             f,
             indent=2,
         )
 
 
 def history_info() -> dict:
-    ids = load_history()
+    records = load_history_records()
     updated = None
     if os.path.exists(HISTORY_FILE):
         try:
@@ -137,11 +214,11 @@ def history_info() -> dict:
                 updated = json.load(f).get("updated_at")
         except Exception:
             pass
-    return {"count": len(ids), "updated_at": updated}
+    return {"count": len(records), "updated_at": updated}
 
 
 def reset_history() -> dict:
-    _write_history(set())
+    _write_history([])
     return history_info()
 
 
@@ -165,14 +242,36 @@ def save_exclusions(exclusions: list) -> list:
 
 # ── Core cleansing ─────────────────────────────────────────────────────────────
 def _read_excel(name: str, data: bytes) -> pd.DataFrame:
+    """
+    Read a report, auto-detecting the header row so title/metadata rows above the
+    real column headers (common in Denticon exports) don't break column matching.
+    """
     bio = io.BytesIO(data)
     try:
         if name.lower().endswith(".csv"):
-            df = pd.read_csv(bio, dtype=object)
+            raw = pd.read_csv(bio, header=None, dtype=object)
         else:
-            df = pd.read_excel(bio, dtype=object)
+            raw = pd.read_excel(bio, header=None, dtype=object)
     except Exception as e:
         raise ValueError(f"Could not read '{name}': {e}")
+
+    if raw.empty:
+        raise ValueError(f"'{name}' is empty.")
+
+    hdr = _detect_header_row(raw)
+    if hdr is None:
+        # No recognisable header found in the preamble — assume row 0 and let the
+        # caller surface a clear "Patient ID column not found" error.
+        hdr = 0
+
+    header_vals = list(raw.iloc[hdr])
+    df = raw.iloc[hdr + 1:].copy()
+    df.columns = header_vals
+    df = df.reset_index(drop=True)
+    # Drop columns whose header is blank/NaN (empty spacer columns).
+    df = df.loc[:, [c for c in df.columns if not _is_blank(c)]]
+    # Drop rows that are entirely empty.
+    df = df.dropna(how="all").reset_index(drop=True)
     df["__source_file"] = name
     return df
 
@@ -193,75 +292,140 @@ def process_appointments(files: list[tuple[str, bytes]], commit: bool = True) ->
     # Locate columns
     colmap = _build_column_map(raw.columns)
     if "patient_id" not in colmap:
+        found = [str(c) for c in raw.columns if c != "__source_file"]
         raise ValueError(
-            "Could not find a 'Patient ID' column. Columns found: "
-            + ", ".join(str(c) for c in raw.columns if c != "__source_file")
+            "Could not find a 'Patient ID' column in the upload. "
+            "Make sure the file has a header row containing a column named 'Patient ID' "
+            "(or Pat ID / PatientID / PID). Detected column headers: "
+            + (", ".join(found) if found else "(none)")
         )
 
-    pid_col = colmap["patient_id"]
+    pid_col    = colmap["patient_id"]
+    office_col = colmap.get("office_name")
     df = raw.copy()
     df["__pid"] = df[pid_col].map(_norm_pid)
+    if office_col:
+        df["__office"] = df[office_col].map(lambda v: "" if _is_blank(v) else str(v).strip())
+    else:
+        df["__office"] = ""
+    # Composite previously-processed key: Patient ID + Office Name (SOP Step 2)
+    df["__key"] = [_hist_key(p, o) for p, o in zip(df["__pid"], df["__office"])]
 
     total_input = len(df)
     steps = []
 
-    # ── Step 2: Remove previously processed (Patient ID in history) ─────────────
-    history = load_history()
+    # ── Step 2: Remove previously processed (Patient ID + Office Name) ───────────
+    hist_keys = load_history_keys()
     before = len(df)
-    if history:
-        df = df[~df["__pid"].isin(history)]
+    if hist_keys:
+        df = df[~df["__key"].isin(hist_keys)]
     removed_prev = before - len(df)
-    steps.append({"step": "Removed previously processed", "removed": removed_prev})
+    steps.append({"step": "Removed previously processed (Patient ID + Office)", "removed": removed_prev})
 
     # ── Step 3: Remove invalid records ──────────────────────────────────────────
+    # A record is invalid ONLY when ALL of the following hold together (AND):
+    #   • Patient ID = 0 (or blank)
+    #   • BOTH Dental Primary Ins and Dental Secondary Ins are blank
+    #   • Appointment Notes are blank
     before = len(df)
-    invalid_mask = df["__pid"].isin(["", "0"])
-    if "insurance" in colmap:
-        invalid_mask |= df[colmap["insurance"]].map(_is_blank)
+    pid_zero = df["__pid"].isin(["", "0"])
+
+    ins_cols = [colmap[k] for k in ("dental_primary_ins", "dental_secondary_ins") if k in colmap]
+    if not ins_cols and "insurance" in colmap:
+        ins_cols = [colmap["insurance"]]
+    if ins_cols:
+        ins_blank = pd.Series(True, index=df.index)
+        for c in ins_cols:
+            ins_blank &= df[c].map(_is_blank)
+    else:
+        # No insurance column detected → cannot confirm "blank", so don't flag on this.
+        ins_blank = pd.Series(False, index=df.index)
+
     if "appointment_notes" in colmap:
-        invalid_mask |= df[colmap["appointment_notes"]].map(_is_blank)
+        notes_blank = df[colmap["appointment_notes"]].map(_is_blank)
+    else:
+        notes_blank = pd.Series(False, index=df.index)
+
+    invalid_mask = pid_zero & ins_blank & notes_blank
     df = df[~invalid_mask]
     removed_invalid = before - len(df)
-    steps.append({"step": "Removed invalid records", "removed": removed_invalid})
+    steps.append({"step": "Removed invalid records", "removed": int(removed_invalid)})
 
     # ── Step 4: Remove duplicate appointments (keep earliest time) ──────────────
+    # Duplicate key = Patient ID + Patient Name + Insurance + Appointment Date.
+    #  • Insurance component = Dental Primary Ins Carr (falls back to a generic
+    #    'insurance' column if that's what the report uses).
+    #  • Appointment Date is normalised to the DATE ONLY (this export stores a full
+    #    datetime in that column), so different times on the same day group together.
+    #  • Within a duplicate group, keep the earliest Appointment Time; drop the rest.
     before = len(df)
-    dup_subset = [colmap[k] for k in DUP_KEYS if k in colmap]
-    if not dup_subset:
-        dup_subset = ["__pid"]
+    ins_key_col = colmap.get("dental_primary_ins") or colmap.get("insurance")
+
+    df["__k_pid"]  = df["__pid"]
+    df["__k_name"] = df[colmap["patient_name"]].map(_norm_text) if "patient_name" in colmap else ""
+    df["__k_ins"]  = df[ins_key_col].map(_norm_text) if ins_key_col else ""
+    if "appointment_date" in colmap:
+        _d = pd.to_datetime(df[colmap["appointment_date"]].astype(str), errors="coerce")
+        df["__k_date"] = _d.dt.date.astype(str)
+    else:
+        df["__k_date"] = ""
+
     if "appointment_time" in colmap:
-        df = df.assign(__tkey=_time_sort_key(df[colmap["appointment_time"]]))
+        df["__tkey"] = _time_sort_key(df[colmap["appointment_time"]])
         df = df.sort_values("__tkey", kind="stable")
+
+    dup_subset = ["__k_pid", "__k_name", "__k_ins", "__k_date"]
     df = df.drop_duplicates(subset=dup_subset, keep="first")
-    df = df.drop(columns=[c for c in ["__tkey"] if c in df.columns])
+    df = df.drop(columns=[c for c in ["__k_pid", "__k_name", "__k_ins", "__k_date", "__tkey"] if c in df.columns])
     removed_dupes = before - len(df)
-    steps.append({"step": "Removed duplicate appointments", "removed": removed_dupes})
+    steps.append({"step": "Removed duplicate appointments", "removed": int(removed_dupes)})
 
     # ── Step 5: Exclude non-process insurance plans ─────────────────────────────
+    # Case-insensitive CONTAINS match against the exclusion list, checking BOTH the
+    # Dental Primary and Dental Secondary carriers. A row is excluded if EITHER
+    # carrier text contains any exclusion entry. The operator controls breadth via
+    # the entry: "Cash" catches "Cash - Self Pay Ph#:-", while a specific entry like
+    # "Delta Dental INS" won't catch "Delta Dental WI".
     before = len(df)
-    exclusions = load_exclusions()
-    if exclusions and "insurance" in colmap:
-        excl_lower = {e.strip().lower() for e in exclusions}
-        ins_series = df[colmap["insurance"]].map(lambda v: str(v).strip().lower())
-        df = df[~ins_series.isin(excl_lower)]
+    exclusions = [e.strip().lower() for e in load_exclusions() if e.strip()]
+    excl_cols = [colmap[k] for k in ("dental_primary_ins", "dental_secondary_ins") if k in colmap]
+    if not excl_cols and "insurance" in colmap:
+        excl_cols = [colmap["insurance"]]
+    if exclusions and excl_cols:
+        excl_mask = pd.Series(False, index=df.index)
+        for c in excl_cols:
+            carrier = df[c].map(_norm_text)
+            for term in exclusions:
+                excl_mask |= carrier.str.contains(re.escape(term), na=False)
+        df = df[~excl_mask]
     removed_excluded = before - len(df)
-    steps.append({"step": "Excluded non-process insurance", "removed": removed_excluded})
+    steps.append({"step": "Excluded non-process insurance", "removed": int(removed_excluded)})
 
     # ── Output ──────────────────────────────────────────────────────────────────
-    surviving_ids = set(df["__pid"]) - {""}
+    surviving_ids  = set(df["__pid"]) - {""}
+    surviving_keys = set(df["__key"])
     # Write clean canonical Patient IDs back (avoids Excel's "1001.0" float display).
     df[pid_col] = df["__pid"]
-    output_df = df.drop(columns=[c for c in ["__pid", "__source_file"] if c in df.columns])
+    output_df = df.drop(columns=[c for c in ["__pid", "__office", "__key", "__source_file"] if c in df.columns])
 
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         output_df.to_excel(writer, index=False, sheet_name="Cleaned Appointments")
     out.seek(0)
 
+    # ── Commit surviving Patient ID + Office to history (SOP Step 10) ────────────
     committed = False
-    if commit and surviving_ids:
-        history |= surviving_ids
-        _write_history(history)
+    if commit and surviving_keys:
+        survivors = df.drop_duplicates("__key")
+        # Only real patients go into history — Patient ID 0/blank is not a unique
+        # patient, so committing it would collapse every placeholder slot at an
+        # office into one key and wrongly filter future ones.
+        new_records = [
+            {"patient_id": p, "office_name": o}
+            for p, o in zip(survivors["__pid"], survivors["__office"])
+            if p and p != "0"
+        ]
+        _write_history(load_history_records() + new_records)
         committed = True
 
     return {
@@ -271,8 +435,9 @@ def process_appointments(files: list[tuple[str, bytes]], commit: bool = True) ->
             "steps": steps,
             "final_rows": len(output_df),
             "unique_patients": len(surviving_ids),
+            "unique_patient_offices": len(surviving_keys),
             "committed_to_history": committed,
-            "history_size": len(history),
+            "history_size": len(load_history_records()),
         },
         "xlsx_bytes": out.getvalue(),
     }
