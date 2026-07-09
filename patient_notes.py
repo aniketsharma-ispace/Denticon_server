@@ -90,6 +90,56 @@ def late_dos_ddva(history: list, code: str) -> str:
             return raw
     return "NH"
 
+def late_dos_ddri(procedures: list, code: str) -> str:
+    """
+    DD Rhode Island (content_DD_RI.js) — procedures list where each item has a
+    "history" list of {"service_date": "MM/DD/YYYY", ...}. Return the most
+    recent service date across all history rows for the code, else "NH".
+    """
+    latest = None
+    for p in procedures:
+        if p.get("procedure_code", "").upper() != code.upper():
+            continue
+        for h in p.get("history", []):
+            raw = (h.get("service_date") or "").strip()
+            if not raw or raw in ("NA", "N/A", "—", ""):
+                continue
+            for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
+                try:
+                    parsed = datetime.strptime(raw, fmt)
+                    if latest is None or parsed > latest:
+                        latest = parsed
+                    break
+                except ValueError:
+                    continue
+    return latest.strftime("%m/%d/%Y") if latest else "NH"
+
+
+def late_dos_ucci(service_history: list, code: str) -> str:
+    """
+    UCCI (content_ucci.js) — service_history rows look like
+    {"start": "MM/DD/YYYY", "end": "...", "procedure_code": "D1110", ...}.
+    Prefer the start date, fall back to end, and return the most recent
+    matching date, else "NH".
+    """
+    latest = None
+    for row in service_history:
+        if row.get("procedure_code", "").upper() != code.upper():
+            continue
+        raw = (row.get("start") or row.get("end") or "").strip()
+        if not raw:
+            continue
+        for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
+            try:
+                parsed = datetime.strptime(raw, fmt)
+                if latest is None or parsed > latest:
+                    latest = parsed
+                break
+            except ValueError:
+                continue
+    return latest.strftime("%m/%d/%Y") if latest else "NH"
+
+
 def _normalize_name_for_match(name: str) -> str:
     """
     Normalize a name to 'FIRST LAST' uppercase, regardless of whether
@@ -207,13 +257,15 @@ def build_patient_notes(denticon_data: dict, insurance_data: dict) -> dict:
     is_ucci   = bool(ucci_data) and not is_metlife and not is_cigna and not is_aetna and not is_dd_scraper and not is_dd_wi_pdf and not is_ddri and not is_ddva
 
     pdf_data = ins if (ins.get("benefit_coverage") and not is_metlife and not is_cigna
-                    and not is_aetna and not is_dd_wi_pdf) else {}
+                    and not is_aetna and not is_dd_wi_pdf and not is_ddri) else {}
     is_pdf   = bool(pdf_data)
 
     patient_name = (
         metlife_data.get("patient", {}).get("name") or
         cigna_data.get("patient", {}).get("name")   or
         aetna_data.get("patient", {}).get("name")   or
+        ddri_data.get("patient", {}).get("name")     or
+        ucci_data.get("patient_info", {}).get("patient_name") or
         header.get("patient_name")                   or
         dent.get("patient", {}).get("name")          or
         "UNKNOWN"
@@ -313,6 +365,39 @@ def build_patient_notes(denticon_data: dict, insurance_data: dict) -> dict:
         if not carrier:
             carrier = "DELTA DENTAL"
 
+    elif is_ddri:
+        fin = ddri_data.get("financials", {})
+        def _ddri_used(key: str) -> str:
+            block = fin.get(key, {})
+            val = str(block.get("used", "")).strip()
+            return fmt_money(val) if val and val.upper() not in ("N/A", "NONE", "") else "0.00"
+        ind_max_used = _ddri_used("annual_max")
+        ind_ded_used = _ddri_used("deductible_ind")
+        ortho_used   = _ddri_used("ortho_lifetime")
+        if not carrier:
+            carrier = "DELTA DENTAL"
+
+    elif is_ucci:
+        # UCCI's Deductibles & Maximums table exposes only plan limits (no
+        # "used" column), so derive used amounts by summing the per-procedure
+        # "applied to maximum / deductible" columns across the benefit-category
+        # tables. If those columns turn out to be Yes/No flags rather than
+        # dollar figures, parse_dollars yields 0 and we fall back to "0.00".
+        applied_max = applied_ded = ortho_applied = 0.0
+        for cat in ucci_data.get("benefit_categories", []):
+            is_ortho_cat = "ortho" in str(cat.get("category", "")).lower()
+            for proc in cat.get("procedures", []):
+                amax = parse_dollars(proc.get("applied_to_maximum", ""))
+                applied_max += amax
+                applied_ded += parse_dollars(proc.get("applied_to_deductible", ""))
+                if is_ortho_cat:
+                    ortho_applied += amax
+        ind_max_used = f"{applied_max:.2f}"
+        ind_ded_used = f"{applied_ded:.2f}"
+        ortho_used   = f"{ortho_applied:.2f}"
+        if not carrier:
+            carrier = "UNITED CONCORDIA"
+
     elif is_pdf:
         fin = pdf_data.get("financials", {})
         def _pdf_fin(key: str) -> str:
@@ -362,6 +447,13 @@ def build_patient_notes(denticon_data: dict, insurance_data: dict) -> dict:
     elif is_ddva:
         procedures = ddva_data.get("history", [])
         dos_fn = late_dos_ddva
+    elif is_ddri:
+        procedures = ddri_data.get("benefit_coverage", {}).get("procedures", [])
+        dos_fn = late_dos_ddri
+    elif is_ucci:
+        service_history = ucci_data.get("service_history", [])
+        procedures = []
+        dos_fn = lambda _, code: late_dos_ucci(service_history, code)
     elif is_pdf:
         raw_history = pdf_data.get("history", {})
         def dos_fn_pdf(_, code: str) -> str:
@@ -400,7 +492,11 @@ def build_patient_notes(denticon_data: dict, insurance_data: dict) -> dict:
             "prophy_d1110":         dos_fn(procedures, "D1110"),
             "perio_maint_d4910":    dos_fn(procedures, "D4910"),
             "fmd_d4355":            dos_fn(procedures, "D4355"),
-            "fluoride_d1206_d1208": dos_fn(procedures, "D1206"),
+            "fluoride_d1206_d1208": next(
+                (r for r in (dos_fn(procedures, "D1206"), dos_fn(procedures, "D1208"))
+                 if r and r != "NH"),
+                "NH",
+            ),
             "xray_d0274":           dos_fn(procedures, "D0274"),
             "xray_d0210":           dos_fn(procedures, "D0210"),
         },
