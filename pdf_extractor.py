@@ -1,5 +1,7 @@
 import fitz  # PyMuPDF
 import re
+import os
+import shutil
 import logging
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
@@ -63,19 +65,111 @@ def _age_range(text: str, keyword_re: str) -> str | None:
 # SHARED: TEXT EXTRACTION
 # ──────────────────────────────────────────────────────────────────
 
-def _extract_text(pdf_bytes: bytes) -> str:
-    """Extract all text from a PDF's pages. Shared by every parser."""
+def _extract_text(pdf_bytes: bytes) -> tuple[str, int]:
+    """Extract all text from a PDF's pages. Returns (text, page_count).
+    Shared by every parser."""
     log.info("Extracting text from PDF...")
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         text = "".join(page.get_text() + "\n" for page in doc)
+        page_count = doc.page_count
         doc.close()
     except Exception as e:
         log.error(f"Failed to read PDF: {e}")
         raise ValueError(f"Failed to read PDF: {e}")
 
-    log.info(f"Extracted {len(text)} characters from PDF.")
+    log.info(f"Extracted {len(text)} characters from {page_count} page(s).")
+    return text, page_count
+
+
+# ──────────────────────────────────────────────────────────────────
+# SHARED: OCR FALLBACK  (for image / vector-outline PDFs)
+# ──────────────────────────────────────────────────────────────────
+#
+# Some portals (notably DentaQuest via the browser's "Save as PDF") rasterise
+# their content — every visible label and value is stored as an image or a
+# vector outline, not as selectable text. PyMuPDF's get_text() then returns
+# only the running header/footer/URL, so the normal parsers have nothing to
+# work with. When we detect that, we render each page to a high-resolution
+# image and OCR it, then feed the recovered text back through the same parsers.
+
+_OCR_ZOOM = 3.0   # 3× the 72-dpi base ≈ 216 dpi — a good accuracy/speed balance
+
+# Common Windows install locations for the Tesseract binary. The UB-Mannheim
+# installer usually does NOT add itself to PATH, so we look here as a fallback.
+_TESSERACT_PATHS = [
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
+]
+
+
+def _configure_tesseract() -> None:
+    """Point pytesseract at the Tesseract binary if it isn't already on PATH.
+
+    Honours the TESSERACT_CMD env var first, then falls back to the usual
+    Windows install paths. No-op if the `tesseract` command already resolves.
+    """
+    import pytesseract
+
+    if shutil.which("tesseract"):
+        return
+    candidates = [os.environ.get("TESSERACT_CMD"), *_TESSERACT_PATHS]
+    for cand in candidates:
+        if cand and os.path.isfile(cand):
+            pytesseract.pytesseract.tesseract_cmd = cand
+            return
+
+
+def _ocr_available() -> tuple[bool, str]:
+    """Report whether OCR can run. Returns (ok, reason_if_not)."""
+    try:
+        import pytesseract
+    except ImportError:
+        return False, "the pytesseract package is not installed (pip install pytesseract Pillow)"
+    try:
+        _configure_tesseract()
+        pytesseract.get_tesseract_version()
+    except Exception:
+        return False, ("the Tesseract OCR engine is not installed or could not be found "
+                       "(Windows installer: https://github.com/UB-Mannheim/tesseract/wiki — "
+                       "or set the TESSERACT_CMD env var to its full path)")
+    return True, ""
+
+
+def _ocr_pdf(pdf_bytes: bytes) -> str:
+    """Render each page to an image and OCR it into text."""
+    import io
+    import pytesseract
+    from PIL import Image
+
+    _configure_tesseract()
+    log.info("Text layer is unusable — running OCR fallback...")
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    mat = fitz.Matrix(_OCR_ZOOM, _OCR_ZOOM)
+    parts = []
+    for page in doc:
+        pix = page.get_pixmap(matrix=mat)
+        img = Image.open(io.BytesIO(pix.tobytes("png")))
+        parts.append(pytesseract.image_to_string(img))
+    doc.close()
+    text = "\n".join(parts)
+    log.info(f"OCR produced {len(text)} characters.")
     return text
+
+
+def _has_usable_text(text: str, page_count: int) -> bool:
+    """
+    Decide whether a PDF's text layer carries real, parseable content.
+
+    A genuine benefit PDF has hundreds of characters of labelled content per
+    page. A rasterised "Save as PDF" export leaves only the running
+    header/footer/URL behind (~150 chars/page), so it falls below the bar and
+    triggers the OCR fallback.
+    """
+    meaningful = re.sub(r"https?://\S+", "", text)          # drop URL noise
+    meaningful = re.sub(r"\bpage\b|\d+\s+of\s+\d+", "", meaningful, flags=re.I)
+    return len(meaningful.strip()) >= 200 * max(page_count, 1)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -96,9 +190,10 @@ def detect_format(text: str) -> str:
     if "delta dental" in t or "deltadental" in t:
         return "delta_dental"
 
-    # DentaQuest exports its member page as image/vector outlines with no text
-    # layer, so it can't be parsed here — recognise it to give a clear message.
-    if "dentaquest" in t:
+    # DentaQuest (Sun Life). The portal URL survives in even a rasterised PDF's
+    # text layer; OCR may split the logo into "Denta Quest", so allow a space.
+    if "dentaquest" in t or "providers.dentaquest.com" in t \
+            or re.search(r"denta\s*quest", t):
         return "dentaquest"
 
     # Heuristic fallback for Delta's older layout (colon labels + table headers)
@@ -112,24 +207,11 @@ def detect_format(text: str) -> str:
 # DISPATCHER — public entry point
 # ──────────────────────────────────────────────────────────────────
 
-async def parse_insurance_pdf(pdf_bytes: bytes) -> dict:
-    """
-    Parse any supported insurance benefit PDF into the common structured schema.
-    Auto-detects the insurer, then dispatches to the matching parser.
-    """
-    text = _extract_text(pdf_bytes)
+def _dispatch(text: str) -> dict:
+    """Detect the insurer from `text` and run its parser. Raises ValueError if
+    the format is unrecognised or the parser can't extract the plan info."""
     fmt = detect_format(text)
     log.info(f"Detected insurance format: '{fmt}'")
-
-    # An image-only / scanned PDF yields almost no extractable text. Older
-    # DentaQuest exports are image/vector outlines that land here — the message
-    # points the user at the browser extension as the reliable fallback.
-    if len(text.strip()) < 100:
-        raise ValueError(
-            "This PDF has no readable text layer (it appears to be scanned or "
-            "image-based), so it can't be parsed. Use a text-based PDF export, "
-            "or capture the data with the browser extension."
-        )
 
     parser = _PARSER_REGISTRY.get(fmt)
     if parser is None:
@@ -138,14 +220,71 @@ async def parse_insurance_pdf(pdf_bytes: bytes) -> dict:
             "DentaQuest PDFs are supported."
         )
 
-    result = parser(text)
+    result = parser(text)                       # may raise ValueError itself
     result.setdefault("summary", {})["insurer"] = fmt
     return result
 
 
+async def parse_insurance_pdf(pdf_bytes: bytes) -> dict:
+    """
+    Parse any supported insurance benefit PDF into the common structured schema.
+    Auto-detects the insurer, then dispatches to the matching parser.
+
+    OCR is a LAST RESORT: we always try the PDF's own text layer first, and only
+    fall back to rendering + OCR when that parse fails (e.g. a rasterised
+    "Save as PDF" export whose text is stored as images / vector outlines).
+    """
+    text, page_count = _extract_text(pdf_bytes)
+
+    # ── 1. Try the fast path: parse the embedded text layer directly ──
+    try:
+        return _dispatch(text)
+    except ValueError as text_err:
+        log.info(f"Text-layer parse failed ({text_err}). Considering OCR fallback...")
+
+    # ── 2. Fall back to OCR only because the text layer couldn't be read ──
+    ok, why = _ocr_available()
+    if not ok:
+        # Only steer the user toward OCR when the PDF really is image-based;
+        # a text-rich PDF that failed is a genuine unsupported-format problem.
+        if not _has_usable_text(text, page_count):
+            hint = "DentaQuest " if re.search(r"denta\s*quest", text, re.I) else ""
+            raise ValueError(
+                f"This {hint}PDF has no readable text layer (its text is stored as "
+                f"images or vector outlines), so it can't be parsed directly. The OCR "
+                f"fallback is unavailable because {why}. Install it, use a text-based "
+                f"PDF export, or capture the data with the browser extension."
+            )
+        raise ValueError(
+            "Unrecognized insurance PDF format — only Delta Dental, Guardian, and "
+            "DentaQuest PDFs are supported."
+        )
+
+    ocr_text = _ocr_pdf(pdf_bytes)
+    if len(ocr_text.strip()) <= len(text.strip()):
+        # OCR recovered nothing more than we already had — don't bother retrying.
+        raise ValueError(
+            "This PDF could not be parsed: its text layer is unreadable and OCR "
+            "produced no usable text. Use a text-based PDF export, or capture the "
+            "data with the browser extension."
+        )
+
+    # Keep the original text layer's markers (the portal URL survives there) so
+    # detection stays reliable even if OCR mangles the logo.
+    combined = ocr_text + "\n" + text
+    try:
+        return _dispatch(combined)
+    except ValueError as ocr_err:
+        raise ValueError(
+            f"This PDF could not be parsed even after OCR: {ocr_err} "
+            f"You can also capture the data with the browser extension."
+        )
+
+
 # Backwards-compatible wrapper (kept so existing imports keep working).
 async def parse_delta_dental_pdf(pdf_bytes: bytes) -> dict:
-    return _parse_delta_dental(_extract_text(pdf_bytes))
+    text, _ = _extract_text(pdf_bytes)
+    return _parse_delta_dental(text)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -571,6 +710,11 @@ def _parse_dentaquest(text: str) -> dict:
         name = m.group(1).strip()
     name = name or _dq_label(lines, "Name")
 
+    # OCR frequently misreads an isolated zero in "0 years, 0 months" as the
+    # letter O — normalise it back to a digit for the age string.
+    age = _dq_label(lines, "Age") or "N/A"
+    age = re.sub(r"\bO(?=\s*(?:years?|months?|days?))", "0", age, flags=re.I)
+
     level = _dq_label(lines, "Level of coverage") or "N/A"
     # On these plans the member being viewed IS the patient; treat an
     # employee-only/self level as "Self", otherwise carry the level through
@@ -582,7 +726,7 @@ def _parse_dentaquest(text: str) -> dict:
     patient = {
         "name":              name or "N/A",
         "dob":               _dq_label(lines, "Date of birth") or "N/A",
-        "age":               _dq_label(lines, "Age") or "N/A",
+        "age":               age,
         "member_id":         _dq_label(lines, "ID number") or "N/A",
         "relationship":      relationship,
         "level_of_coverage": level,

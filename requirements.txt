@@ -12,6 +12,15 @@ requests              # sync client used by new_plan.py LLM calls
 PyMuPDF               # provides `fitz`, used to read insurance PDFs (pdf_extractor.py)
 reportlab             # generates the New Plan breakdown PDF (new_plan.py)
 
+# ── OCR fallback for image / vector-outline PDFs ─────────────────────
+# Used by pdf_extractor.py when a PDF (e.g. DentaQuest "Save as PDF") has no
+# usable text layer. pytesseract ALSO requires the Tesseract OCR engine to be
+# installed on the machine — it is not a pip package:
+#   Windows: https://github.com/UB-Mannheim/tesseract/wiki  (add to PATH)
+#   macOS:   brew install tesseract   •   Debian/Ubuntu: apt install tesseract-ocr
+pytesseract
+Pillow                # image handling for pytesseract
+
 # ── Excel / appointment cleansing ───────────────────────────────────
 pandas                # reads/cleanses appointment reports (appointment_processor.py)
 openpyxl              # Excel .xlsx read/write engine used by pandas
