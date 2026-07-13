@@ -164,6 +164,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const isDeltaWA   = url.includes('deltadentalwa.com/');
     const isDentaquest = url.includes('providers.dentaquest.com/');
     const isDeltaCO = url.includes('deltadentalco.com/');
+    const isDeltaIL = url.includes('deltadentalil.com/');
+    const isDeltaMA = url.includes('deltadentalma.com/');    
     // ── Load stored data ──
     const result  = await chrome.storage.local.get("audit_context");
     const context = result.audit_context || {};
@@ -199,6 +201,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         status.innerText = "DentaQuest: Ready";
     } else if (isDeltaCO) {
         status.innerText = "DD_CO: Ready";
+    } else if (isDeltaIL) {
+        status.innerText = "DD_IL: Ready";
+    } else if (isDeltaMA) {
+        status.innerText = "DD_MA: Ready";
     }
     else {
         status.innerText = "Navigate to a Denticon patient page to begin.";

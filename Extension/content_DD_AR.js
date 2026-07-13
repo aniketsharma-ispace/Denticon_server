@@ -16,6 +16,25 @@ const MAX_PER_SEARCH = 5; // portal hard limit
 console.log("Delta Dental AR scraper initialized");
 
 // ══════════════════════════════════════════════════════════════════════════
+// STATE DETECTION — this script is shared across NJ/MA/WA/AR (and any other
+// state on the same Smile/Provider Portal platform). Every hostname follows
+// the same pattern: deltadental<state>.com (e.g. deltadentalma.com,
+// deltadentalnj.com). Extract the 2-letter code from the CURRENT page's own
+// hostname rather than hardcoding one state, so the same script produces the
+// correct filename/source label on whichever site it's actually running on.
+// ══════════════════════════════════════════════════════════════════════════
+
+function getStateCode() {
+    const m = window.location.hostname.match(/deltadental([a-z]{2})\.com/i);
+    if (m) return m[1].toUpperCase();
+    console.warn(`[DeltaDentalState] Could not detect state code from hostname "${window.location.hostname}" — falling back to "XX".`);
+    return "XX";
+}
+
+const STATE_CODE = getStateCode();
+console.log(`Delta Dental scraper running on state: ${STATE_CODE}`);
+
+// ══════════════════════════════════════════════════════════════════════════
 // SECTION 1: PATIENT INFO
 // ══════════════════════════════════════════════════════════════════════════
 
@@ -188,8 +207,11 @@ function parseProcedurePane(paneEl) {
     if (!code) return null;
 
     // Error states — Knockout sets display:none on hidden divs
-    const isVisible = el => el && el.style.display !== 'none';
-    if (isVisible(paneEl.querySelector('[data-test-id="ErrorNotCovered"]')))
+const isVisible = el => {
+    if (!el) return false;
+    const s = window.getComputedStyle(el);
+    return s.display !== 'none' && s.visibility !== 'hidden';
+};    if (isVisible(paneEl.querySelector('[data-test-id="ErrorNotCovered"]')))
         return { code, status: "Not covered under plan" };
     if (isVisible(paneEl.querySelector('[data-test-id="ErrorNotFound"]')))
         return { code, status: "No procedure code found" };
@@ -210,18 +232,24 @@ function parseProcedurePane(paneEl) {
     const description    = clean(col0Divs[1]?.innerText || "");
 
     // Optional tooth type (only visible if set)
-    const toothTypeEl = cols[0].querySelector('[data-bind*="ToothType"]');
-    const tooth_type = isVisible(toothTypeEl) ? clean(toothTypeEl.innerText) : null;
-
+ const toothTypeEl = cols[0].querySelector('[data-bind*="ToothType"]');
+const tooth_type = isVisible(toothTypeEl)
+    ? clean(toothTypeEl.innerText).replace(/^Tooth Type:\s*/i, '')
+    : null;
     // ── Column 1: Coverage details ──
     // innerText naturally excludes display:none elements
-    const col1Text = cols[1].innerText;
+const col1Text = cols[1].innerText;
 
-    const coverage_type = clean(cols[1].querySelector('.font-weight-bold, b, strong')?.innerText || "");
+const coverage_type = clean(cols[1].querySelector('.font-weight-bold, b, strong')?.innerText || "");
 
-    // Plan pays — "Plan Pays 100%" or "Plan Pays $X.XX"
-    const planPaysMatch = col1Text.match(/Plan Pays\s+([^\n]+)/i);
-    const plan_pays = planPaysMatch ? clean(planPaysMatch[1]) : "N/A";
+// BUG-001: Target the Plan Pays element directly to avoid capturing
+const planPaysEl = Array.from(cols[1].querySelectorAll('div, span')).find(el =>
+    isVisible(el) && /^\s*Plan Pays\s+/i.test(el.innerText)
+);
+const planPaysMatch = planPaysEl
+    ? clean(planPaysEl.innerText).match(/Plan Pays\s+(.+)/i)
+    : col1Text.match(/Plan Pays\s+([^\n]+)/i);
+const plan_pays = planPaysMatch ? clean(planPaysMatch[1]) : "N/A";
 
     // Deductible — visible div containing "Deductible"
     const deductible_el = Array.from(cols[1].querySelectorAll('div')).find(d =>
@@ -231,26 +259,39 @@ function parseProcedurePane(paneEl) {
 
     // Frequency + Remaining — last visible non-header line
     // Spans inside the frequency div
-    const freqSpans = Array.from(cols[1].querySelectorAll('div > span'));
-    const frequency_parts = freqSpans
-        .map(s => clean(s.innerText))
-        .filter(t => t && t !== "");
-    const frequency = frequency_parts.join(" ") || "N/A";
+const freqDiv = Array.from(cols[1].querySelectorAll('div')).find(d =>
+    isVisible(d) &&
+    /\bper\b|time limits|remaining/i.test(d.innerText) &&
+    !/plan pays|allowed amount|deductible/i.test(d.innerText)
+);
+const frequency = freqDiv ? clean(freqDiv.innerText) : "N/A";
 
-    // ── Column 2: Variations ──
-    const variations = [];
-    Array.from(cols[2].querySelectorAll('div')).forEach(d => {
-        const t = clean(d.innerText);
-        if (t && !/^Variations$/i.test(t)) variations.push(t);
-    });
+// ── Column 2: Variations ──
+const variationsSeen = new Set();
+const variations = [];
+Array.from(cols[2].querySelectorAll('div')).forEach(d => {
+    if (!isVisible(d)) return;                          // BUG-008
+    if (d.querySelector('div')) return;                 // skip non-leaf
+    const t = clean(d.innerText);
+    if (!t || /^Variations$/i.test(t)) return;
+    if (variationsSeen.has(t)) return;                  // BUG-003 dedupe
+    variationsSeen.add(t);
+    variations.push(t);
+});
 
     // ── Column 3: Treatment History ──
-    const histLines = [];
-    Array.from(cols[3].querySelectorAll('div')).forEach(d => {
-        const t = clean(d.innerText);
-        if (t && !/^Treatment History$/i.test(t)) histLines.push(t);
-    });
-    const treatment_history = histLines.length > 0 ? histLines.join('; ') : "N/A";
+const histSeen = new Set();
+const histLines = [];
+Array.from(cols[3].querySelectorAll('div')).forEach(d => {
+    if (!isVisible(d)) return;                          // BUG-008
+    if (d.querySelector('div')) return;                 // skip non-leaf
+    const t = clean(d.innerText);
+    if (!t || /^Treatment History$/i.test(t)) return;
+    if (histSeen.has(t)) return;                        // BUG-005 dedupe
+    histSeen.add(t);
+    histLines.push(t);
+});
+const treatment_history = histLines.length > 0 ? histLines.join('; ') : "N/A";
 
     const result = {
         code,
@@ -326,15 +367,23 @@ async function scrapeAllProcedureCodes() {
 // DOWNLOAD
 // ══════════════════════════════════════════════════════════════════════════
 
-function triggerARDownload(auditData) {
+function triggerDownload(auditData) {
     const sanitize = s => (s || "").trim().replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "").toLowerCase();
+    // Prefer the actual PATIENT's name (scraped from the page's own "Benefits
+    // for <name>" heading) over the subscriber's name — they're often
+    // different people (e.g. a dependent child's benefits looked up under a
+    // parent's account), and the file should be named for whoever the
+    // benefits actually belong to, not just whoever the account holder is.
     const patient = sanitize(
-        auditData.patient_info?.subscriber_name ||
         auditData.patient_info?.patient_name ||
+        auditData.patient_info?.subscriber_name ||
         auditData.patient_info?.subscriber_number ||
         "patient"
     ) || "patient";
-    const filename = `${patient}_Delta_Dental_AR.json`;
+    // Filename now reflects whichever state this script actually ran on
+    // (STATE_CODE detected from the page's own hostname), instead of always
+    // hardcoding "AR" regardless of the real site.
+    const filename = `${patient}_Delta_Dental_${STATE_CODE}.json`;
 
     const blob = new Blob([JSON.stringify(auditData, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -353,11 +402,14 @@ function triggerARDownload(auditData) {
 // MAIN
 // ══════════════════════════════════════════════════════════════════════════
 
-async function runARAudit() {
-    console.log("=== Delta Dental AR Scraper Starting ===");
+async function runAudit() {
+    console.log(`=== Delta Dental ${STATE_CODE} Scraper Starting ===`);
 
     const auditData = {
-        source: "Delta Dental AR",
+        // "source" now reflects the detected state too, not a hardcoded "AR"
+        // label regardless of which of the 4 sites this actually ran on.
+        source: `Delta Dental ${STATE_CODE}`,
+        state_code: STATE_CODE,
         scraped_at: new Date().toISOString(),
     };
 
@@ -370,15 +422,20 @@ async function runARAudit() {
     console.log("Scraping eligible benefits...");
     auditData.eligible_benefits = scrapeEligibleBenefits();
 
-    console.log("=== Delta Dental AR Scraper Complete ===");
+    console.log(`=== Delta Dental ${STATE_CODE} Scraper Complete ===`);
     console.log("Audit data:", auditData);
 
     chrome.storage.local.get("audit_context", (result) => {
         let context = result.audit_context || {};
-        context.delta_dental_ar_data = auditData;
+        // Storage key is now per-state too (delta_dental_ma_data,
+        // delta_dental_nj_data, etc.) instead of always
+        // "delta_dental_ar_data" regardless of which state actually ran —
+        // avoids one state's data silently overwriting another's key if a
+        // user has multiple patient records queued across states.
+        context[`delta_dental_${STATE_CODE.toLowerCase()}_data`] = auditData;
         chrome.storage.local.set({ audit_context: context }, () => {
-            console.log("✓ Delta Dental AR data stored");
-            triggerARDownload(auditData);
+            console.log(`✓ Delta Dental ${STATE_CODE} data stored`);
+            triggerDownload(auditData);
         });
     });
 
@@ -392,7 +449,7 @@ async function runARAudit() {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.command === "START_CRAWL") {
         sendResponse({ status: "started" });
-        runARAudit().catch(err => console.error("AR scraper error:", err));
+        runAudit().catch(err => console.error(`Delta Dental ${STATE_CODE} scraper error:`, err));
     }
     return true;
 });

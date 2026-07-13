@@ -435,47 +435,152 @@ function scrapeWaitingPeriodsTab() {
 // STEP 5b: TREATMENT HISTORY TAB SCRAPER
 // ══════════════════════════════════════════════════════════════════════════
 
-function scrapeTreatmentHistoryTab() {
-    // Try common data-testid patterns used by Delta Dental for the history table
-    const table =
-        document.querySelector('[data-testid="treatmentHistoryTable"]') ||
-        document.querySelector('[data-testid="claimsHistoryTable"]') ||
-        document.querySelector('[data-testid="procedureHistoryTable"]');
+const TREATMENT_HISTORY_HEADER_MAP = {
+    "description": "description",
+    "limitation": "limitation",
+    "limitation may also apply to": "limitation_may_also_apply_to",
+    "service date": "service_date",
+    "tooth code": "tooth_code",
+    "tooth description": "tooth_description",
+    "tooth surface": "tooth_surface"
+};
 
-    if (!table) {
-        // Fallback: find the first table in the active tab panel
-        const panel = document.querySelector('[role="tabpanel"]');
-        const fallback = panel?.querySelector('table');
-        if (!fallback) return { rows: [], note: "Treatment history table not found" };
-        return parseTreatmentHistoryTable(fallback);
+function isTreatmentHistoryTable(table) {
+    const headerText = clean(
+        Array.from(table.querySelectorAll('thead th, thead td'))
+            .map(c => c.innerText)
+            .join(' ')
+    ).toLowerCase();
+    return headerText.includes('description') &&
+        headerText.includes('limitation') &&
+        headerText.includes('service date');
+}
+
+function findTreatmentHistoryTables() {
+    return Array.from(document.querySelectorAll('table')).filter(isTreatmentHistoryTable);
+}
+
+function findTreatmentHistoryCard(table) {
+    let card = table;
+    let parent = card.parentElement;
+    while (parent) {
+        const qualifyingInParent = Array.from(parent.querySelectorAll('table')).filter(isTreatmentHistoryTable);
+        if (qualifyingInParent.length > 1) break;
+        card = parent;
+        parent = parent.parentElement;
     }
-    return parseTreatmentHistoryTable(table);
+    return card;
+}
+
+function extractCardCode(card, table) {
+    const walker = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+        if (table.contains(node)) continue;
+        const match = clean(node.textContent).match(/\b(D\d{3,4})\b/);
+        if (match) return match[1];
+    }
+    const fallback = clean(card.innerText).match(/\b(D\d{3,4})\b/);
+    return fallback ? fallback[1] : "N/A";
+}
+
+async function waitForTreatmentHistoryTables(maxWaitMs = 8000) {
+    let lastCount = -1;
+    let stableTicks = 0;
+    const start = Date.now();
+
+    while (Date.now() - start < maxWaitMs) {
+        const count = findTreatmentHistoryTables().length;
+        if (count > 0 && count === lastCount) {
+            stableTicks++;
+            if (stableTicks >= 2) break;
+        } else {
+            stableTicks = 0;
+        }
+        lastCount = count;
+        await sleep(400);
+    }
+
+    return findTreatmentHistoryTables();
+}
+
+async function scrapeTreatmentHistoryTab() {
+    const tables = await waitForTreatmentHistoryTables();
+
+    if (tables.length === 0) {
+        return { procedures: [], note: "No treatment history cards found" };
+    }
+
+    const procedures = [];
+    const seenCodes = new Set();
+
+    tables.forEach(table => {
+        const card = findTreatmentHistoryCard(table);
+        const code = extractCardCode(card, table);
+
+        if (seenCodes.has(code)) return;
+        seenCodes.add(code);
+
+        const { headers, rows } = parseTreatmentHistoryTable(table);
+        procedures.push({ code, headers, rows });
+    });
+
+    return { procedures };
 }
 
 function parseTreatmentHistoryTable(table) {
-    // Dynamically map column headers so the scraper survives UI reordering
-    const headers = [];
-    table.querySelectorAll('thead th, thead td').forEach(th => {
-        headers.push(clean(th.innerText));
+    let headerCells = Array.from(table.querySelectorAll('thead th, thead td'));
+    let bodyRows = Array.from(table.querySelectorAll('tbody tr'));
+
+    if (headerCells.length === 0 && bodyRows.length) {
+        const firstRowCells = Array.from(bodyRows[0].querySelectorAll('th, td'));
+        const looksLikeHeader = firstRowCells.some(cell =>
+            /description|limitation|service date|tooth/i.test(clean(cell.innerText))
+        );
+        if (looksLikeHeader) {
+            headerCells = firstRowCells;
+            bodyRows = bodyRows.slice(1);
+        }
+    }
+
+    const headers = headerCells.map(cell => clean(cell.innerText));
+
+    // rowspan/colspan-aware grid — a physical <tr> can be missing cells that a
+    // previous row's rowspan is still covering, so positional cells.forEach()
+    // silently shifts everything left. Expand into a virtual grid instead.
+    const grid = [];
+    bodyRows.forEach((row, rowIndex) => {
+        if (!grid[rowIndex]) grid[rowIndex] = [];
+        let colIndex = 0;
+        Array.from(row.querySelectorAll('th, td')).forEach(cell => {
+            while (grid[rowIndex][colIndex] !== undefined) colIndex++;
+            const text = clean(cell.innerText);
+            const rowSpan = cell.rowSpan || 1;
+            const colSpan = cell.colSpan || 1;
+            for (let r = 0; r < rowSpan; r++) {
+                if (!grid[rowIndex + r]) grid[rowIndex + r] = [];
+                for (let c = 0; c < colSpan; c++) {
+                    grid[rowIndex + r][colIndex + c] = text;
+                }
+            }
+            colIndex += colSpan;
+        });
     });
 
-    const rows = [];
-    table.querySelectorAll('tbody tr').forEach(row => {
-        const cells = row.querySelectorAll('td, th');
-        if (cells.length === 0) return;
+    const rows = grid.map(cellValues => {
         const entry = {};
-        cells.forEach((cell, i) => {
-            const key = headers[i]
-                ? headers[i].toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
-                : `col_${i}`;
-            entry[key] = clean(cell.innerText) || "N/A";
+        cellValues.forEach((value, index) => {
+            const rawHeader = headers[index] ? clean(headers[index]).toLowerCase() : "";
+            const key = TREATMENT_HISTORY_HEADER_MAP[rawHeader] ||
+                rawHeader.replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') ||
+                `col_${index}`;
+            entry[key] = value || "N/A";
         });
-        rows.push(entry);
-    });
+        return entry;
+    }).filter(row => Object.keys(row).length);
 
     return { headers, rows };
 }
-
 // ══════════════════════════════════════════════════════════════════════════
 // STEP 6: BENEFITS SEARCH TAB SCRAPER
 // ══════════════════════════════════════════════════════════════════════════
@@ -787,8 +892,7 @@ async function runDeltaDentalCrawl() {
         console.log("Scraping Treatment History tab...");
         const historyTabClicked = await clickTab("treatmentHistoryTab");
         if (historyTabClicked) {
-            await sleep(1500); // extra wait — history tables can be slow to render
-            auditData.tabs.treatment_history = scrapeTreatmentHistoryTab();
+            auditData.tabs.treatment_history = await scrapeTreatmentHistoryTab();
         } else {
             console.warn("Treatment History tab not found — skipping");
             auditData.tabs.treatment_history = { rows: [], note: "Tab not found" };

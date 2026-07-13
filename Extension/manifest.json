@@ -1,14 +1,7 @@
 {
     "manifest_version": 3,
     "name": "Insurance Auditor Pro",
-    "version": "1.23",
-    "description": "Automates insurance verification and auditing across Denticon, MetLife, Cigna, and DentaQuest portals for dental practices.",
-    "icons": {
-        "16": "face-mask.png",
-        "32": "protection.png",
-        "48": "healthcare.png",
-        "128": "healthcare (1).png"
-    },
+    "version": "1.21",
     "permissions": [
         "storage",
         "activeTab",
@@ -20,139 +13,75 @@
         "*://*.denticon.com/*",
         "*://*.planetdds.com/*",
         "https://dentalprovider.metlife.com/*",
-        "https://cignaforhcp.cigna.com/*",
-        "https://providers.dentaquest.com/*"
+        "*://www.guardiananytime.com/*",
+        "https://www.deltadentalins.com/*",
+        "https://deltadentalva.com/*",
+        "https://claimconnect.dentalxchange.com/*","https://www.dentalxchange.com/*",
+        "https://my.deltadentalar.com/*",
+        "https://www.deltadentalco.com/*",
+        "https://www.deltadentalri.com/*",
+        "https://my.deltadentalcoversme.com/*",
+        "https://www.unitedconcordia.com/*",
+        "https://www.deltadentalnj.com/*",
+        "https://www.deltadentalwa.com/*",
+        "https://providers.dentaquest.com/*",
+	    "https://app.deltadentalil.com/*"
     ],
     "action": {
         "default_popup": "popup.html"
     },
+       
     "content_scripts": [
         {
-            "matches": [
-                "*://*.denticon.com/*",
-                "*://*.planetdds.com/*"
-            ],
-            "js": [
-                "content_denticon.js"
-            ],
+            "matches": ["*://*.denticon.com/*","*://*.planetdds.com/*"],
+            "js": ["content_denticon.js"],
             "all_frames": true
         },
         {
-            "matches": [
-                "https://dentalprovider.metlife.com/*"
-            ],
-            "js": [
-                "content_metlife.js"
-            ],
+            "matches": ["https://dentalprovider.metlife.com/*"],
+            "js": ["content_metlife.js"],
             "all_frames": true
         },
         {
-            "matches": [
-                "https://cignaforhcp.cigna.com/*"
-            ],
-            "js": [
-                "content_cigna.js"
-            ],
+            "matches": ["https://cignaforhcp.cigna.com/*"],
+            "js": ["content_cigna.js"],
             "all_frames": true
         },
         {
-            "matches": [
-                "*://www.guardiananytime.com/*"
-            ],
-            "js": [
-                "content_guardian.js"
-            ],
+            "matches":["*://www.guardiananytime.com/*"],
+            "js":["content_guardian.js"],
+            "all_frames":true
+        },
+        {
+            "matches": ["https://www.deltadentalins.com/*"],
+            "js": ["content_DD_INS.js"],
             "all_frames": true
         },
         {
-            "matches": [
-                "https://www.deltadentalins.com/*"
-            ],
-            "js": [
-                "content_DD_INS.js"
-            ],
-            "all_frames": true
+            "matches": ["https://deltadentalva.com/*","https://app.deltadentalil.com/*","https://www.deltadentalco.com/*"],
+            "js" :["content_DD_VA.js"],
+            "all_frames":true
         },
         {
-            "matches": [
-                "https://deltadentalva.com/*"
-            ],
-            "js": [
-                "content_DD_VA.js"
-            ],
+            "matches": ["https://claimconnect.dentalxchange.com/*"],
+            "js": ["content_aetna.js"],
             "all_frames": true
         },
+
         {
-            "matches": [
-                "https://claimconnect.dentalxchange.com/*"
-            ],
-            "js": [
-                "content_aetna.js"
-            ],
-            "all_frames": true
+            "matches":["https://my.deltadentalar.com/*","https://www.deltadentalnj.com/*","https://www.deltadentalwa.com/*","https://www.deltadentalma.com/*"],
+            "js":["content_DD_AR.js"],
+            "all_frames":true
         },
         {
-            "matches": [
-                "https://my.deltadentalar.com/*"
-            ],
-            "js": [
-                "content_DD_AR.js"
-            ],
-            "all_frames": true
+            "matches":["https://www.deltadentalri.com/*"],
+            "js":["content_DD_RI.js"],
+            "all_frames":true
         },
         {
-            "matches": [
-                "https://www.deltadentalco.com/*"
-            ],
-            "js": [
-                "content_DD_CO.js"
-            ],
-            "all_frames": true
-        },
-        {
-            "matches": [
-                "https://www.deltadentalri.com/*"
-            ],
-            "js": [
-                "content_DD_RI.js"
-            ],
-            "all_frames": true
-        },
-        {
-            "matches": [
-                "https://www.unitedconcordia.com/*"
-            ],
-            "js": [
-                "content_ucci.js"
-            ],
-            "all_frames": true
-        },
-        {
-            "matches": [
-                "https://www.deltadentalnj.com/*"
-            ],
-            "js": [
-                "content_DD_NJ.js"
-            ],
-            "all_frames": true
-        },
-        {
-            "matches": [
-                "https://www.deltadentalwa.com/*"
-            ],
-            "js": [
-                "content_DD_WA.js"
-            ],
-            "all_frames": true
-        },
-        {
-            "matches": [
-                "https://providers.dentaquest.com/*"
-            ],
-            "js": [
-                "content_dentaquest.js"
-            ],
-            "all_frames": true
+            "matches":["https://www.unitedconcordia.com/*"],
+            "js":["content_ucci.js"],
+            "all_frames":true
         }
     ]
 }
