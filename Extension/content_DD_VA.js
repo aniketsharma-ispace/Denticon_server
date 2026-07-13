@@ -9,6 +9,26 @@ const CDT_CODES = [
   "6010","6056"
 ];
 
+// ═══════════════════════════════════════════════════════════════════════
+// STATE DETECTION — this script is shared across VA/CO/IL (and any other
+// state on the same Angular provider portal). Every hostname follows the
+// same pattern already confirmed for the NJ/MA/WA/AR sites:
+// deltadental<state>.com (e.g. www.deltadentalco.com, www.deltadentalva.com).
+// Extract the 2-letter code from the CURRENT page's own hostname instead of
+// hardcoding "dd_va", so the same script produces the correct filename on
+// whichever state's site it's actually running on.
+// ═══════════════════════════════════════════════════════════════════════
+
+function getStateCode() {
+  const m = window.location.hostname.match(/deltadental([a-z]{2})\.com/i);
+  if (m) return m[1].toLowerCase();
+  console.warn(`[DeltaDentalState] Could not detect state code from hostname "${window.location.hostname}" — falling back to "xx".`);
+  return "xx";
+}
+
+const STATE_CODE = getStateCode();
+console.log(`DD_VA-style scraper running on state: ${STATE_CODE.toUpperCase()}`);
+
 async function getJson(url, options = {}) {
   const res = await fetch(url, {
     credentials: "include",
@@ -277,6 +297,10 @@ const result = {
   memberId,
   benefitPlanId,
   benefitPlan,
+  // state_code recorded in the output JSON too, same convention as the
+  // NJ/MA/WA/AR fix — useful for a future patient_notes.py branch that
+  // wants to know which state a file actually came from.
+  state_code: STATE_CODE.toUpperCase(),
   limitations,
   accumulators,
   history,
@@ -294,7 +318,10 @@ const sanitize = (s) =>
     .toLowerCase();
 
 const patientSlug = sanitize(benefitPlan.patientName) || sanitize(memberId) || "patient";
-const filename = `${patientSlug}_dd_va.json`;
+// Filename now reflects whichever state this script actually ran on
+// (STATE_CODE detected from the page's own hostname), instead of always
+// hardcoding "dd_va" regardless of the real site (VA/CO/IL/etc.).
+const filename = `${patientSlug}_dd_${STATE_CODE}.json`;
 
 const blob = new Blob(
   [JSON.stringify(result, null, 2)],
