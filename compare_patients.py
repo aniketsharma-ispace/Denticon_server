@@ -85,6 +85,138 @@ def _num(val) -> float | None:
         return None
 
 
+def _dollar(text) -> float | None:
+    """First dollar amount in a string like '$2,000 Per Calendar Year' → 2000.0."""
+    m = re.search(r"\$\s*([\d,]+(?:\.\d+)?)", str(text or ""))
+    return float(m.group(1).replace(",", "")) if m else None
+
+
+# ──────────────────────────────────────────────────────────────────
+# PHASE 1A-C: PYTHON-NATIVE EXTRACTION FROM UCCI PORTAL JSON
+# ──────────────────────────────────────────────────────────────────
+def _extract_ucci_portal_fields(raw: dict) -> dict:
+    """
+    FORMAT C — UCCI / United Concordia portal scraper output:
+      {
+        "patient_info": {"group_id": "EMPLOYER NAME / 925015000",
+                          "relationship": "CHILD", "your_network": "..."},
+        "deductibles_and_maximums": [{"benefit": "Individual Maximum",
+                                       "coverage": "$2,000 Per Calendar Year"}, ...],
+        "benefit_categories": [{"category": "...", "procedures": [
+            {"procedure_code": "D0120", "coverage_or_copay": "100%",
+             "limitation": "3 Per Calendar Year | ..."}]}]
+      }
+    """
+    out = {}
+    pi = raw.get("patient_info", {})
+
+    # group_id: "ROUND ROCK INDEPENDENT SCHOOL DISTRICT / 925015000"
+    gid = str(pi.get("group_id", "") or "")
+    if "/" in gid:
+        gname, gnum = gid.rsplit("/", 1)
+        out["group_name"]   = gname.strip() or None
+        out["group_number"] = gnum.strip() or None
+    else:
+        out["group_name"], out["group_number"] = gid.strip() or None, None
+
+    rel = str(pi.get("relationship", "") or "").lower()
+    out["has_dependents"] = rel not in ("", "self", "subscriber", "policyholder") if rel else None
+
+    # Patient is out-of-network: the portal displays OON percentages, while
+    # Denticon plan records store in-network values → percentages not comparable.
+    portal_oon = "no network" in str(pi.get("your_network", "")).lower()
+
+    # ── FINANCIALS from deductibles_and_maximums ──
+    out["individual_deductible"] = None
+    out["family_deductible"]     = None
+    out["individual_annual_max"] = None
+    out["ortho_lifetime_max"]    = None
+    for row in raw.get("deductibles_and_maximums", []):
+        b  = str(row.get("benefit", "")).lower()
+        c  = str(row.get("coverage", ""))
+        cl = c.lower().strip()
+        val = _dollar(c)
+        if "individual deductible" in b:
+            # UCCI shows "None" when the plan has no deductible → 0
+            out["individual_deductible"] = 0.0 if cl == "none" else val
+        elif "family deductible" in b:
+            out["family_deductible"] = 0.0 if cl == "none" else val
+        elif "individual maximum" in b:
+            if "accident" in cl or "implant" in cl:
+                continue                      # unrelated special maximums
+            if "ortho" in cl:
+                out["ortho_lifetime_max"] = val
+            elif cl == "none":
+                # No annual maximum; Denticon convention records this as 99999
+                out["individual_annual_max"] = 99999.0
+            elif val is not None:
+                out["individual_annual_max"] = val
+
+    # ── PROCEDURES index from benefit_categories ──
+    procs: dict[str, dict] = {}
+    for cat in raw.get("benefit_categories", []):
+        for p in cat.get("procedures", []):
+            code = str(p.get("procedure_code", "")).upper().strip()
+            if code and code not in procs:
+                procs[code] = p
+
+    def _pct(code: str) -> float | None:
+        p = procs.get(code)
+        if not p or portal_oon:
+            return None
+        lim = str(p.get("limitation", "")).lower()
+        # Patient-specific age gating: the PLAN covers this, but THIS patient
+        # aged out. Denticon stores plan-level pct, so skip instead of using 0%.
+        if "no coverage due to age limitation" in lim:
+            return None
+        return _num(p.get("coverage_or_copay"))
+
+    def _age(code: str) -> float | None:
+        p = procs.get(code)
+        if not p:
+            return None
+        lim = str(p.get("limitation", ""))
+        if "no coverage due to age limitation" in lim.lower():
+            # Patient aged out — the row reflects THIS patient's eligibility,
+            # not reliable plan-level data. Only ortho ("Age 19 And Older ~
+            # Ortho related") reliably states the plan's own age limit there.
+            if code.startswith("D8"):
+                m = re.search(r"age\s+(\d+)\s+and\s+older", lim, re.IGNORECASE)
+                if m:
+                    return float(m.group(1))
+            return None
+        m = re.search(r"under\s+(\d+)\s+years?\s+of\s+age", lim, re.IGNORECASE)
+        return float(m.group(1)) if m else None
+
+    def _first_pct(*codes: str) -> float | None:
+        for c in codes:
+            v = _pct(c)
+            if v is not None:
+                return v
+        return None
+
+    def _first_age(*codes: str) -> float | None:
+        for c in codes:
+            v = _age(c)
+            if v is not None:
+                return v
+        return None
+
+    out["preventative_D0120_pct"] = _first_pct("D0120", "D0150")
+    out["basic_D2331_D2140_pct"]  = _first_pct("D2331", "D2140")
+    out["major_D2740_pct"]        = _pct("D2740")
+    out["fluoride_D1206_pct"]     = _first_pct("D1206", "D1208")
+    out["fluoride_D1206_age"]     = _first_age("D1206", "D1208")
+    out["sealants_D1351_pct"]     = _pct("D1351")
+    out["sealants_D1351_age"]     = _age("D1351")
+    out["space_maint_1510_pct"]   = _pct("D1510")
+    out["space_maint_1510_age"]   = _age("D1510")
+    out["ortho_D8080_pct"]        = _pct("D8080")
+    out["ortho_D8080_age"]        = _age("D8080")
+
+    return out
+
+
 # ──────────────────────────────────────────────────────────────────
 # PHASE 1A: PYTHON-NATIVE EXTRACTION FROM PORTAL DATA
 # ──────────────────────────────────────────────────────────────────
@@ -117,12 +249,19 @@ def extract_portal_fields(portal_raw: dict) -> dict:
     """
     out = {}
 
-    # Unwrap metlife/cigna/anthem/dentaquest top-level wrapper
+    # Unwrap metlife/cigna/anthem/dentaquest/ucci top-level wrapper
     portal = (portal_raw.get("metlife_data") or
               portal_raw.get("cigna_data") or
               portal_raw.get("anthem_data") or
               portal_raw.get("dentaquest_data") or
+              portal_raw.get("ucci_data") or
               portal_raw)
+
+    # ── Detect FORMAT C: UCCI / United Concordia scraper output ──
+    # Identified by its distinctive top-level sections.
+    if isinstance(portal, dict) and portal.get("patient_info") and (
+            portal.get("benefit_categories") or portal.get("deductibles_and_maximums")):
+        return _extract_ucci_portal_fields(portal)
 
     # ── Detect FORMAT A: benefit_coverage.procedures ──
     # benefit_coverage may live inside the unwrapped portal (DentaQuest) or at
@@ -690,14 +829,22 @@ def _group_name_similarity(portal: dict, denticon: dict) -> float:
     return SequenceMatcher(None, pg, dg).ratio()
 
 
+def _digits(val) -> str:
+    """Only the digits of a value — normalises group numbers for comparison."""
+    return re.sub(r"\D", "", str(val or ""))
+
+
 def _python_score(portal: dict, denticon: dict) -> tuple[int, list[str]]:
     """
     Pure-Python field-by-field comparison.
     Returns (score 0-100, list_of_mismatch_strings).
 
     Scoring:
-      - Critical fields  → 10 pts each
-      - Important fields → 5 pts each
+      - Critical fields  → 10 pts each (5 pts when Denticon has no data:
+        a missing value is weaker evidence than a conflicting value)
+      - Important fields → 5 pts each (2 pts when Denticon has no data)
+      - Group NUMBER     → 20 pts when both sides have one (strongest plan
+        identifier); half credit when only the portal has one
       - Group name bonus → up to 5 pts (fuzzy similarity)
 
     Numeric comparisons use a ±2% tolerance so minor rounding differences
@@ -713,7 +860,9 @@ def _python_score(portal: dict, denticon: dict) -> tuple[int, list[str]]:
         if pval is None:
             continue                     # Portal didn't provide → skip
         total_pts += 10
-        if _values_match(pval, dval):
+        if dval is None:
+            earned_pts += 5              # missing data ≠ contradiction
+        elif _values_match(pval, dval):
             earned_pts += 10
         else:
             mismatches.append(f"{field}: portal={pval} vs denticon={dval}")
@@ -724,10 +873,29 @@ def _python_score(portal: dict, denticon: dict) -> tuple[int, list[str]]:
         if pval is None:
             continue
         total_pts += 5
-        if _values_match(pval, dval):
+        if dval is None:
+            earned_pts += 2
+        elif _values_match(pval, dval):
             earned_pts += 5
         else:
             mismatches.append(f"{field}: portal={pval} vs denticon={dval}")
+
+    # ── Group NUMBER — the strongest plan identifier ──
+    pg, dg = _digits(portal.get("group_number")), _digits(denticon.get("group_number"))
+    if pg and dg:
+        total_pts += 20
+        # suffix match tolerates prefixes/subgroup padding (e.g. "0925015000")
+        if pg == dg or pg.endswith(dg) or dg.endswith(pg):
+            earned_pts += 20
+        else:
+            mismatches.append(
+                f"group_number: portal={portal.get('group_number')} vs "
+                f"denticon={denticon.get('group_number')}"
+            )
+    elif pg:
+        # Portal knows the group but this Denticon record has none → half credit
+        total_pts  += 20
+        earned_pts += 10
 
     # ── Soft group-name similarity bonus (max 5 pts) ──
     # This helps differentiate plans that otherwise score identically.
@@ -834,6 +1002,51 @@ Respond ONLY with valid JSON (no prose, no markdown):
 
 
 # ──────────────────────────────────────────────────────────────────
+# TIE-BREAK HELPERS — differentiate duplicate plan records
+# ──────────────────────────────────────────────────────────────────
+# Offices often keep several records of the SAME insurance plan (created by
+# different verifiers over the years). Their benefit values are identical, so
+# scoring ties. Two patient-independent signals break the tie:
+#   1. carrier record match — the patient block's primary_insurance.carrier_name
+#      names the carrier record this patient is attached to in Denticon.
+#   2. recency — newest Created (then Modified) date from the plan-search table
+#      embedded in benefits.full_text.
+
+def _parse_mdY(date_str: str) -> tuple:
+    """'03/05/2026' → (2026, 3, 5); unparseable → (0, 0, 0)."""
+    m = re.match(r"(\d{2})/(\d{2})/(\d{4})", str(date_str or ""))
+    return (int(m.group(3)), int(m.group(1)), int(m.group(2))) if m else (0, 0, 0)
+
+
+def _plan_record_meta(plan: dict, patient_carrier: str) -> tuple[bool, tuple, tuple]:
+    """
+    Returns (carrier_matches, created_date, modified_date) for one Denticon plan,
+    parsed from the plan-search table in benefits.full_text. Row format:
+      "74400 777777018 1274 UCCI FEDVIP PID 54771 FEDVIP HIGH OPTION
+       01/01/2025 ISPACEGA22937 01/30/2026 MEDSMANSURI2937"
+    """
+    pid = str(plan.get("ins_plan_id", "")).strip()
+    ft  = str(plan.get("benefits", {}).get("full_text", "") or "")
+    m = re.search(
+        rf"(?<![\d/]){re.escape(pid)}\s+[\d/]+\s+\d+\s+(.*?)"      # carrier + employer text
+        rf"(\d{{2}}/\d{{2}}/\d{{4}})\s+\S+"                        # created date + user
+        rf"(?:\s+(\d{{2}}/\d{{2}}/\d{{4}}))?",                     # modified date (optional)
+        ft,
+    ) if pid and ft else None
+    if not m:
+        return False, (0, 0, 0), (0, 0, 0)
+    row_text = re.sub(r"\s+", " ", m.group(1)).upper()
+    carrier_ok = bool(patient_carrier) and patient_carrier in row_text
+    return carrier_ok, _parse_mdY(m.group(2)), _parse_mdY(m.group(3) or "")
+
+
+def _normalize_carrier(name) -> str:
+    """Patient carrier name, truncation dots stripped, for substring matching."""
+    s = re.sub(r"\s+", " ", str(name or "")).upper().strip()
+    return s.rstrip(". ").strip()
+
+
+# ──────────────────────────────────────────────────────────────────
 # PUBLIC ENTRY POINT
 # ──────────────────────────────────────────────────────────────────
 async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict:
@@ -859,6 +1072,16 @@ async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict
                 "reason": "Denticon plan list is empty.", "confidence_score": 0}
 
     log.info(f"Found {len(plans)} Denticon plans to evaluate.\n")
+
+    # ── Tie-break metadata: which carrier record is the patient attached to? ──
+    patient_carrier = _normalize_carrier(
+        (denticon_data.get("primary_insurance", {}) or {}).get("carrier_name", "")
+        if isinstance(denticon_data, dict) else ""
+    )
+    plan_meta = {
+        str(p.get("ins_plan_id", "?")): _plan_record_meta(p, patient_carrier)
+        for p in plans
+    }
 
     # ── Step 3: Evaluate ALL Plans concurrently, collect results ──
     async def process_plan(p):
@@ -915,8 +1138,18 @@ async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict
                 "reason": "No viable Denticon plans to evaluate.", "confidence_score": 0,
                 "all_plans_ranked": []}
 
-    # ── Step 4: Rank — higher score first, then fewer critical mismatches ──
-    all_results.sort(key=lambda x: (-x[0], x[1]))
+    # ── Step 4: Rank — higher score first, then fewer critical mismatches.
+    # Equal scores (duplicate plan records) are broken by: the carrier record
+    # the patient is attached to, then the newest Created / Modified dates. ──
+    def _rank_key(x):
+        conf, crit, r = x
+        carrier_ok, created, modified = plan_meta.get(
+            str(r.get("matching_id")), (False, (0, 0, 0), (0, 0, 0))
+        )
+        return (-conf, crit, 0 if carrier_ok else 1,
+                tuple(-v for v in created), tuple(-v for v in modified))
+
+    all_results.sort(key=_rank_key)
 
     # Build the ranked summary list for the UI (all plans)
     all_plans_ranked = [
@@ -941,7 +1174,9 @@ async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict
         for conf, crit, r in all_results
         if conf == best_confidence
     ]
-    if len(tied) > 1:
+    # Only report a tie when the tie-break signals (carrier record, dates)
+    # ALSO tie — otherwise the ranking above already picked a winner.
+    if len(tied) > 1 and _rank_key(all_results[0]) == _rank_key(all_results[1]):
         log.warning(
             f"\n⚠️  TIE detected — {len(tied)} plans share {best_confidence}% confidence: "
             + ", ".join(str(t["plan_id"]) for t in tied)
