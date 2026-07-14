@@ -214,6 +214,12 @@ def _extract_ucci_portal_fields(raw: dict) -> dict:
     out["ortho_D8080_pct"]        = _pct("D8080")
     out["ortho_D8080_age"]        = _age("D8080")
 
+    # Auxiliary differentiator codes (see extract_denticon_plan_fields):
+    # help separate duplicate Denticon records of the same plan.
+    out["veneer_D2962_pct"]   = _pct("D2962")
+    out["curodont_D2991_pct"] = _pct("D2991")
+    out["surg_ext_D7210_pct"] = _pct("D7210")
+
     return out
 
 
@@ -675,6 +681,18 @@ def extract_denticon_plan_fields(plan: dict) -> dict:
         else:
             out["space_maint_1510_age"] = None
 
+    # ── Auxiliary differentiator codes ──
+    # These separate duplicate records of the same plan: stale records lack
+    # these rows (or record them 0/"see plan notes"), current ones hold real
+    # values that the portal can confirm.
+    for _key, _code in (("veneer_D2962_pct", "D2962"),
+                        ("curodont_D2991_pct", "D2991"),
+                        ("surg_ext_D7210_pct", "D7210")):
+        _row = _code_row(_code)
+        out[_key] = _num(_row.get("coverage_pct")) if _row else None
+    if out["curodont_D2991_pct"] is None:
+        out["curodont_D2991_pct"] = _num(_cov(["restorative curodont", "curodont"]))
+
     # ── Orthodontics D8080 ──
     # Coverage table: "Orthodontics Child" (D8080 is the child ortho code)
     cov_ortho = _cov(["orthodontics child", "orthodontics"])
@@ -792,6 +810,11 @@ _IMPORTANT_FIELDS = [
     "fluoride_D1206_pct",
     "sealants_D1351_pct",
     "space_maint_1510_pct",
+    # Auxiliary codes — separate duplicate records of the same plan (only
+    # scored when the portal provides them; currently UCCI/FORMAT C does).
+    "veneer_D2962_pct",
+    "curodont_D2991_pct",
+    "surg_ext_D7210_pct",
 ]
 
 
