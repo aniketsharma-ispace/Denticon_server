@@ -1028,10 +1028,12 @@ btnProcessAppt.addEventListener('click', async () => {
 
 function renderApptResult(d) {
     const s = d.summary;
-    const totalRemoved = s.steps.reduce((a, x) => a + x.removed, 0);
+    const totalRemoved = s.steps.reduce((a, x) => a + (x.removed || 0), 0);
 
     const stepRows = s.steps.map(x =>
-        `<tr><td>${x.step}</td><td class="removed">− ${x.removed}</td></tr>`).join('');
+        x.added != null
+            ? `<tr><td>${x.step}</td><td style="color:#00e676;">+ ${x.added}</td></tr>`
+            : `<tr><td>${x.step}</td><td class="removed">− ${x.removed}</td></tr>`).join('');
 
     // Build download link from base64
     const bytes = Uint8Array.from(atob(d.file_base64), c => c.charCodeAt(0));
