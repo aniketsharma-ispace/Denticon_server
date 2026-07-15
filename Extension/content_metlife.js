@@ -142,6 +142,7 @@ function scrapeProviderInfo() {
         provider_network_status: networkBadge ? (networkBadge.innerText || "").trim() : "N/A"
     };
 }
+
 // ══════════════════════════════════════════════════════════════════════════
 // FINANCIALS
 // ══════════════════════════════════════════════════════════════════════════
@@ -152,7 +153,7 @@ function findCardByLabel(labelText) {
     while ((node = walker.nextNode())) {
         if (node.textContent.trim() !== labelText) continue;
         let el = node.parentElement;
-        for (let i = 0; i < 5; i++) {  // was 8 — reduce to avoid bleeding into sibling cards
+        for (let i = 0; i < 10; i++) {  // bleed protection is content-based (siblingLabels check below), not depth — safe to search deeper
             if (!el) break;
             const dollars = (el.innerText || "").match(/\$\s*[\d,]+/g) || [];
             const text = el.innerText || "";
@@ -178,11 +179,11 @@ function parseCardAmounts(container) {
 
 function scrapeFinancials() {
     const annualCard = findCardByLabel("Annual");
- 
+
     // ── Lifetime: check for "no lifetime" message first ──
     const lifetimeCard = findCardByLabel("Lifetime");
     let ortho_lifetime;
- 
+
     if (!lifetimeCard) {
         ortho_lifetime = { remaining: "0.0", used: "0.0", total: "0.0" };
     } else {
@@ -193,7 +194,7 @@ function scrapeFinancials() {
             ortho_lifetime = parseCardAmounts(lifetimeCard);
         }
     }
-        // ── Family deductible (may not exist for all plans) ──
+    // ── Family deductible (may not exist for all plans) ──
     const famCard = findCardByLabel("Family");
     const deductible_fam = famCard
         ? parseCardAmounts(famCard)
@@ -203,7 +204,7 @@ function scrapeFinancials() {
         annual_max:     parseCardAmounts(annualCard),
         ortho_lifetime,
         deductible_ind: parseCardAmounts(findCardByLabel("Individual")),
-        deductible_fam,                                                   // ← NEW
+        deductible_fam,
     };
 }
 
@@ -341,7 +342,7 @@ function buildPlanOverviewPayload() {
         timestamp: new Date().toISOString(),
         patient: scrapePatientInfo(),
         plan_details: scrapePlanDetails(),
-        provider_info: scrapeProviderInfo(),  // now just { provider_network_status }
+        provider_info: scrapeProviderInfo(),
         financials: scrapeFinancials(),
         covered_services: scrapeCoveredServices(),
         provisions: scrapeProvisions()
@@ -353,10 +354,22 @@ function buildPlanOverviewPayload() {
 // CRAWL — PLAN OVERVIEW
 // ══════════════════════════════════════════════════════════════════════════
 
+async function waitForText(substring, timeout = 5000) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+        if ((document.body.innerText || "").includes(substring)) return true;
+        await sleep(300);
+    }
+    return false;
+}
+
 async function crawlPlanOverview() {
-    const tabEl = findByText("Plan Overview");
-    if (tabEl) { tabEl.click(); await sleep(2500); }
-    
+    const tabEl = findByText("Maximums, Deductibles & Provisions");
+    if (tabEl) {
+        tabEl.click();
+        await waitForText("Benefit Maximums", 5000);
+    }
+
     const data = buildPlanOverviewPayload();
 
     return new Promise((resolve) => {
