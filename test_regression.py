@@ -195,6 +195,20 @@ REAL_CASES = [
      "carranza.pdf",
      "Denticon_DeepAudit_Carranza, Miguel_1784115052290.json",
      "29531", True),
+    # Guardian, 6 duplicate records: correct one is NOT the newest-created —
+    # ZELIS-fee-schedule records must be demoted and the newest-MODIFIED
+    # Guardian-PPO record (re-verified 2026) wins.
+    ("Golab, Daniel (Guardian PDF, ZELIS decoys + modified-date tie-break)",
+     "golab.pdf",
+     "Denticon_DeepAudit_Golab, Daniel_1784115000287.json",
+     "18139", True),
+    # Guardian, 2 duplicates: 84275 is newer-created but empty/never touched;
+    # 83207 is the actively maintained record (modified 05/18/2026) and wins
+    # via the modified-before-created recency order.
+    ("Andreu, Cesar (Guardian PDF, maintained record beats empty newer one)",
+     "andreau.pdf",
+     "Denticon_DeepAudit_Andreu, Cesar_1784115143350.json",
+     "83207", True),
     # UCCI cases verified 2026-07-15 (files were removed from Material/Comparison;
     # restore them to re-enable):
     ("Sellars, Emma (UCCI)",

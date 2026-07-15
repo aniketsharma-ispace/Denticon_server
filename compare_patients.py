@@ -1131,13 +1131,55 @@ def _parse_mdY(date_str: str) -> tuple:
     return (int(m.group(3)), int(m.group(1)), int(m.group(2))) if m else (0, 0, 0)
 
 
-def _plan_record_meta(plan: dict, patient_carrier: str) -> tuple[bool, tuple, tuple]:
+# Fee-schedule declarations inside plan notes ("WHAT FEE SCHEDULE :ZELIS PPO",
+# "Fee Schedule Used: GUARDIAN PPO"). A record whose declared fee schedule
+# names a DIFFERENT network than the carrier record the patient is attached
+# to (e.g. patient on "(IN) Guardian" but record says "ZELIS PPO") is a
+# rental-network / alternate record — not the plan the patient actually uses.
+_FEE_SCHED_RE = re.compile(
+    r"(?:WHAT\s+FEE\s+SCHEDULE|FEE\s+SCHEDULE\s+USED|PAID\s+BY\s+FEE\s+SCHEDULE\s+OR\s*%)"
+    r"\s*:\s*([^\n:]{1,40})",
+    re.IGNORECASE,
+)
+
+# Insurance/rental-network brand tokens we can recognise in a fee-schedule
+# declaration. The check only ever acts on these — template junk captured
+# from empty fields ("CALENDAR YEAR", ...) contains none and stays neutral.
+_NETWORK_BRANDS = (
+    "ZELIS", "DENTEMAX", "CAREINGTON", "DNOA", "GUARDIAN", "CIGNA", "METLIFE",
+    "AETNA", "HUMANA", "DELTA", "UNITED", "UCCI", "CONCORDIA", "ANTHEM",
+    "DENTAQUEST", "PRINCIPAL", "SUNLIFE", "AMERITAS",
+)
+
+
+def _fee_schedule_ok(plan: dict, patient_carrier: str) -> bool:
     """
-    Returns (carrier_matches, created_date, modified_date) for one Denticon plan,
-    parsed from the plan-search table in benefits.full_text. Row format:
+    False ONLY when the patient's carrier brand is known and the record's
+    fee-schedule declaration names a RECOGNISED different network brand
+    (e.g. patient on "(IN) Guardian", record says "ZELIS PPO").
+    Neutral (True) in every other case.
+    """
+    pc = (patient_carrier or "").upper()
+    pbrands = {b for b in _NETWORK_BRANDS if b in pc}
+    if not pbrands:
+        return True
+    notes = str(plan.get("benefits", {}).get("notes", "") or "").upper()
+    for decl in _FEE_SCHED_RE.findall(notes):
+        found = {b for b in _NETWORK_BRANDS if b in decl}
+        if found and not (found & pbrands):
+            return False        # declares a recognised foreign network
+    return True
+
+
+def _plan_record_meta(plan: dict, patient_carrier: str) -> tuple[bool, bool, tuple, tuple]:
+    """
+    Returns (carrier_matches, fee_schedule_ok, created_date, modified_date)
+    for one Denticon plan. Dates come from the plan-search table in
+    benefits.full_text. Row format:
       "74400 777777018 1274 UCCI FEDVIP PID 54771 FEDVIP HIGH OPTION
        01/01/2025 ISPACEGA22937 01/30/2026 MEDSMANSURI2937"
     """
+    fee_ok = _fee_schedule_ok(plan, patient_carrier)
     pid = str(plan.get("ins_plan_id", "")).strip()
     ft  = str(plan.get("benefits", {}).get("full_text", "") or "")
     m = re.search(
@@ -1147,10 +1189,10 @@ def _plan_record_meta(plan: dict, patient_carrier: str) -> tuple[bool, tuple, tu
         ft,
     ) if pid and ft else None
     if not m:
-        return False, (0, 0, 0), (0, 0, 0)
+        return False, fee_ok, (0, 0, 0), (0, 0, 0)
     row_text = re.sub(r"\s+", " ", m.group(1)).upper()
     carrier_ok = bool(patient_carrier) and patient_carrier in row_text
-    return carrier_ok, _parse_mdY(m.group(2)), _parse_mdY(m.group(3) or "")
+    return carrier_ok, fee_ok, _parse_mdY(m.group(2)), _parse_mdY(m.group(3) or "")
 
 
 def _normalize_carrier(name) -> str:
@@ -1256,14 +1298,19 @@ async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict
     # the newest Created / Modified dates. ──
     def _rank_key(x):
         conf, crit, r = x
-        carrier_ok, created, modified = plan_meta.get(
-            str(r.get("matching_id")), (False, (0, 0, 0), (0, 0, 0))
+        carrier_ok, fee_ok, created, modified = plan_meta.get(
+            str(r.get("matching_id")), (False, True, (0, 0, 0), (0, 0, 0))
         )
         # Plans that PASSED six-field validation always outrank rejected ones,
         # even when a rejected plan happens to score higher overall.
+        # Duplicate-record tie-breaks, in order: the carrier record the
+        # patient is attached to, fee-schedule/network consistency, then the
+        # most recently MAINTAINED record (modified date before created date —
+        # offices keep editing the record they actually use).
         return (0 if r.get("match_found") else 1, crit, -conf,
                 0 if carrier_ok else 1,
-                tuple(-v for v in created), tuple(-v for v in modified))
+                0 if fee_ok else 1,
+                tuple(-v for v in modified), tuple(-v for v in created))
 
     all_results.sort(key=_rank_key)
 
