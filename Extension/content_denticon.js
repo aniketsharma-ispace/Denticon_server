@@ -695,6 +695,37 @@ console.log(`[V22] Loaded on: ${window.location.hostname}${window.location.pathn
 const sleep = (ms) => new Promise(res => setTimeout(res, ms));
 const clean = (s)  => (s || "").trim().replace(/\s+/g, ' ');
 
+// Simulate cursor activity at a point — a content script can't move the real
+// OS cursor, but dispatching mousemove/mouseover onto whatever element sits
+// at (x, y) triggers the same hover/lazy-render logic the page wires up.
+function simulateMouseAt(x, y) {
+    const el = document.elementFromPoint(x, y) || document.body;
+    ['mousemove', 'mouseover', 'mouseenter'].forEach(type => {
+        el.dispatchEvent(new MouseEvent(type, {
+            view: window, bubbles: type !== 'mouseenter', cancelable: true,
+            clientX: x, clientY: y
+        }));
+    });
+}
+
+// Wait a random 10–13 s while continuously "moving the cursor" around the
+// visible page so slow/lazy-rendered tab content has time (and hover events)
+// to fully populate before we scrape it.
+async function waitWithMouseMovement(minMs = 10000, maxMs = 13000) {
+    const total = minMs + Math.random() * (maxMs - minMs);
+    const start = Date.now();
+    console.log(`[V22] Waiting ${(total / 1000).toFixed(1)}s with simulated mouse movement...`);
+    let x = Math.floor(window.innerWidth / 2);
+    let y = Math.floor(window.innerHeight / 2);
+    while (Date.now() - start < total) {
+        // Drift the cursor in small random steps, clamped to the viewport
+        x = Math.min(Math.max(x + Math.floor(Math.random() * 200) - 100, 5), window.innerWidth - 5);
+        y = Math.min(Math.max(y + Math.floor(Math.random() * 200) - 100, 5), window.innerHeight - 5);
+        simulateMouseAt(x, y);
+        await sleep(200 + Math.random() * 300);
+    }
+}
+
 function findElementByText(text) {
     const tags = ['a', 'span', 'li', 'td', 'div', 'b', 'button'];
     for (let tag of tags) {
@@ -1137,16 +1168,18 @@ async function deepCrawlInsurance() {
         console.log(`[V22] Auditing plan ${i + 1}/${planLinks.length} — ID: ${planId}`);
         currentLinks[i].click();
 
-        await sleep(3500);
+        // Give each tab 10–13 s to fully render, jiggling the cursor the
+        // whole time so hover/lazy-loaded content actually populates.
+        await waitWithMouseMovement();
 
         const plan = scrapePlanTab();
 
         const benTab = findElementByText("BEN");
-        if (benTab) { benTab.click(); await sleep(2000); }
+        if (benTab) { benTab.click(); await waitWithMouseMovement(); }
         const ben = scrapeBenTab();
 
         const covTab = findElementByText("COVERAGE AND LIMITATIONS");
-        if (covTab) { covTab.click(); await sleep(2000); }
+        if (covTab) { covTab.click(); await waitWithMouseMovement(); }
         const cov = scrapeCoverageTab();
 
         allPlanAudits.push({ ins_plan_id: planId, plan_details: plan, benefits: ben, coverage: cov });
