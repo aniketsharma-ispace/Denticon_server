@@ -2650,7 +2650,7 @@ def _parse_guardian(text: str) -> dict:
     if m:
         plan_name = m.group(1).strip()
 
-    annual_max_total = annual_max_used = annual_max_rem = "$ 0.00"
+    annual_max_total = annual_max_used = annual_max_rem = None
     m = re.search(r"(?:DG\s*Preferred|In\s*network)\s+\$([\d,]+\.\d{2})\s+\$([\d,]+\.\d{2})", flat)
     if m:
         total = _parse_dollars(m.group(1))
@@ -2660,7 +2660,7 @@ def _parse_guardian(text: str) -> dict:
         annual_max_rem   = _money_str(rem)
         annual_max_used  = _money_str(used)
 
-    ind_ded_total = ind_ded_used = ind_ded_rem = "$ 0.00"
+    ind_ded_total = ind_ded_used = ind_ded_rem = None
     m = re.search(
         r"(?:DG\s*Preferred|In\s*network)\s+\$([\d,]+\.\d{2})\s+(?:Yes|No)\s+\$([\d,]+\.\d{2})",
         flat, re.IGNORECASE
@@ -2672,7 +2672,7 @@ def _parse_guardian(text: str) -> dict:
         ind_ded_rem   = _money_str(ded_rem)
         ind_ded_used  = _money_str(max(0.0, ded_total - ded_rem))
 
-    ortho_total = ortho_used = "$ 0.00"
+    ortho_total = ortho_used = None
     ortho_section_m = re.search(r"Orthodon\s*tic\b", flat, re.IGNORECASE)
     if ortho_section_m:
         m = re.search(
@@ -2696,9 +2696,6 @@ def _parse_guardian(text: str) -> dict:
     ortho_pct = _cat_pct("Ortho")
     ortho_not_covered = bool(re.search(r"OrthodonticsNotCovered", nospace))
 
-    def _pct(val: str | None, default: str) -> str:
-        return f"{val}%" if val else default
-
     def _age(pattern: str) -> str | None:
         mm = re.search(pattern, flat, re.IGNORECASE)
         return mm.group(1) if mm else None
@@ -2706,27 +2703,64 @@ def _parse_guardian(text: str) -> dict:
     fluoride_age = _age(r"Fluoride \(D1206[^)]*\)[^.]*?up to age (\d+)")
     sealant_age  = _age(r"Sealant \(D1351\)[^.]*?up to age (\d+)")
     space_age    = _age(r"Space maintainers[^.]*?under the age of (\d+)")
+    # Eligibility pages state the plan's ortho age limit as its own labelled
+    # field ("Orthodontics age limit  19"). Do NOT confuse it with the
+    # "Dependent age limit" / "Student age limit" fields next to it.
+    ortho_age    = _age(r"Orthodontics?\s+age\s+limit\s+(\d+)")
 
     history = _parse_guardian_history(text)
 
-    procedures = [
-        {"procedure_code": "D0120", "benefit_level": _pct(prev_pct, "100%"), "age_limit": "0-99"},
-        {"procedure_code": "D1206", "benefit_level": _pct(prev_pct, "100%"),
-         "age_limit": f"0-{fluoride_age}" if fluoride_age else "0-14"},
-        {"procedure_code": "D1351", "benefit_level": _pct(prev_pct, "100%"),
-         "age_limit": f"0-{sealant_age}" if sealant_age else "0-16"},
-        {"procedure_code": "D1510", "benefit_level": _pct(prev_pct, "100%"),
-         "age_limit": f"0-{space_age}" if space_age else "0-16"},
-        {"procedure_code": "D2331", "benefit_level": _pct(basic_pct, "80%")},
-        {"procedure_code": "D2140", "benefit_level": _pct(basic_pct, "80%")},
-        {"procedure_code": "D2740", "benefit_level": _pct(major_pct, "50%")},
-    ]
+    # IMPORTANT: only emit values the PDF actually states. Eligibility pages
+    # are often printed with the Deductibles / Plan maximums / Plan options
+    # accordions COLLAPSED — no financials or percentages in the text at all.
+    # Fabricated defaults ($0.00, 100/80/50%) create false mismatches against
+    # every correct Denticon plan downstream.
+    procedures = []
+
+    def _add_proc(code: str, pct: str | None, age: str | None, **extra):
+        row = {"procedure_code": code}
+        if pct is not None:
+            row["benefit_level"] = f"{pct}%"
+        if age is not None:
+            row["age_limit"] = f"0-{age}"
+        row.update(extra)
+        if len(row) > 1:                 # skip rows with no actual data
+            procedures.append(row)
+
+    _add_proc("D0120", prev_pct, None)
+    # No pct inheritance for D1206/D1351/D1510 — Guardian only states
+    # category percentages; assigning the preventive pct to them fabricates
+    # portal values the page never showed.
+    _add_proc("D1206", None, fluoride_age)
+    _add_proc("D1351", None, sealant_age)
+    _add_proc("D1510", None, space_age)
+    _add_proc("D2331", basic_pct, None)
+    _add_proc("D2140", basic_pct, None)
+    _add_proc("D2740", major_pct, None)
     if ortho_not_covered:
-        procedures.append({"procedure_code": "D8080", "benefit_level": "0%",
-                           "age_limit": "0-26", "frequency_limit": "Not Covered"})
+        _add_proc("D8080", "0", ortho_age, frequency_limit="Not Covered")
     else:
-        procedures.append({"procedure_code": "D8080",
-                           "benefit_level": _pct(ortho_pct, "50%"), "age_limit": "0-26"})
+        _add_proc("D8080", ortho_pct, ortho_age)
+
+    financials = {}
+    if ind_ded_total is not None:
+        financials["individual_deductible"] = {
+            "total":     ind_ded_total,
+            "used":      ind_ded_used,
+            "remaining": ind_ded_rem,
+        }
+    if annual_max_total is not None:
+        financials["annual_max"] = {
+            "total":     annual_max_total,
+            "used":      annual_max_used,
+            "remaining": annual_max_rem,
+        }
+    if ortho_total is not None:
+        financials["ortho_lifetime"] = {
+            "total": ortho_total,
+            "used":  ortho_used,
+        }
+    # family_deductible intentionally absent — Guardian pages don't state it.
 
     result = {
         "summary": {
@@ -2734,23 +2768,7 @@ def _parse_guardian(text: str) -> dict:
             "group_number": group_number,
             "plan_name":    plan_name,
         },
-        "financials": {
-            "individual_deductible": {
-                "total":     ind_ded_total,
-                "used":      ind_ded_used,
-                "remaining": ind_ded_rem,
-            },
-            "family_deductible": {"total": "$ 0.00"},
-            "annual_max": {
-                "total":     annual_max_total,
-                "used":      annual_max_used,
-                "remaining": annual_max_rem,
-            },
-            "ortho_lifetime": {
-                "total": ortho_total,
-                "used":  ortho_used,
-            },
-        },
+        "financials": financials,
         "patient":   {"relationship": "Self"},
         "benefit_coverage": {"procedures": procedures},
         "history":   history,

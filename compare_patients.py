@@ -707,9 +707,9 @@ def extract_denticon_plan_fields(plan: dict) -> dict:
     if out["ortho_D8080_pct"] is None:
         out["ortho_D8080_pct"] = _nnum(r"ORTHO\s*:\s*(\d+)%") or _nnum(r"Ortho\s+Coverage\s*%\s*:\s*(\d+)")
 
-    # Age: explicit ortho age limit
+    # Age: explicit ortho age limit. Newer templates write "AGE LIMIT : UNDER 19".
     ortho_age_m = re.search(
-        r"(?:Ortho\s+Age\s+Limit|ORTHO[^\n]*AGE\s+LIMIT)\s*:?\s*(\d+|NAL|NC)",
+        r"(?:Ortho\s+Age\s+Limit|ORTHO[^\n]*AGE\s+LIMIT)\s*:?\s*(?:UNDER\s+)?(\d+|NAL|NC)",
         notes, re.IGNORECASE
     )
     if ortho_age_m:

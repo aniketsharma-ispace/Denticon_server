@@ -191,6 +191,10 @@ REAL_CASES = [
      "cigna_Kathleen_Gilligan-megrue_2026-07-15 (2).json",
      "Denticon_DeepAudit_Gilligan-Megrue, Kathleen_1784105277586.json",
      "24299", True),
+    ("Carranza, Daniel (Guardian PDF, collapsed accordions)",
+     "carranza.pdf",
+     "Denticon_DeepAudit_Carranza, Miguel_1784115052290.json",
+     "29531", True),
     # UCCI cases verified 2026-07-15 (files were removed from Material/Comparison;
     # restore them to re-enable):
     ("Sellars, Emma (UCCI)",
@@ -209,10 +213,15 @@ async def case_real_data():
         ppath = os.path.join(COMPARISON_DIR, pfile)
         dpath = os.path.join(COMPARISON_DIR, dfile)
         if not (os.path.exists(ppath) and os.path.exists(dpath)):
-            report(f"real: {name}", SKIP, "JSON files not present")
+            report(f"real: {name}", SKIP, "files not present")
             continue
-        with open(ppath, encoding="utf-8") as f:
-            portal = json.load(f)
+        if ppath.lower().endswith(".pdf"):
+            from pdf_extractor import parse_insurance_pdf
+            with open(ppath, "rb") as f:
+                portal = await parse_insurance_pdf(f.read())
+        else:
+            with open(ppath, encoding="utf-8") as f:
+                portal = json.load(f)
         with open(dpath, encoding="utf-8") as f:
             denticon = json.load(f)
         r = await match_insurance_plan(portal, denticon)
