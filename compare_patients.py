@@ -454,17 +454,10 @@ def extract_portal_fields(portal_raw: dict) -> dict:
     rel = patient.get("relationship", "").lower()
     out["has_dependents"] = rel not in ("", "self", "subscriber") if rel else None
 
-    # ── FAMILY DEDUCTIBLE RULE ──
-    # Portal typically only shows individual deductible; if no family listed → 3x individual
-    ind = out["individual_deductible"]
-    fam = out["family_deductible"]
-    has_dep = out["has_dependents"]
-    if (fam is None or fam == 0) and ind is not None:
-        out["family_deductible"] = (ind * 3) if has_dep else ind
-        log.info(
-            f"Family Deductible Rule applied: ind={ind}, dependents={has_dep} "
-            f"→ family={out['family_deductible']}"
-        )
+    # NOTE: no family-deductible inference. When the portal doesn't list a
+    # family deductible we leave it None so the comparison SKIPS the field —
+    # a fabricated value (e.g. 3× individual) contradicts the real plan-level
+    # value stored in Denticon and falsely fails six-field validation.
 
     return out
 
@@ -788,34 +781,57 @@ def _is_out_of_network_plan(plan: dict) -> bool:
 
 
 # ──────────────────────────────────────────────────────────────────
-# PHASE 2: PYTHON-NATIVE SCORING + AI TIEBREAKER
+# PHASE 2: SIX-FIELD VALIDATION + COVERAGE SCORING
 # ──────────────────────────────────────────────────────────────────
+# Required audit fields, per spec:
+#
+#   SIX-FIELD VALIDATION (plan identity — these decide whether the portal
+#   plan and the Denticon record are the SAME plan):
+#     1. Group Number            2. Group Name
+#     3. Individual Deductible   4. Family Deductible
+#     5. Individual Annual Max   6. Ortho Lifetime Max
+#
+#   COVERAGE PERCENTAGES:
+#     Preventative D0120 | Basic/Restorative D2331+D2140 | Major D2740
+#     Fluoride D1206 | Sealants D1351 | Space Maintainer D1510 | Ortho D8080
+#
+#   AGE LIMITS (required for): Fluoride, Sealants, Space Maintainer, Ortho
 
-# Fields weighted by importance for plan matching
-_CRITICAL_FIELDS = [
-    "individual_annual_max",    # Most differentiating — plans have $1500 vs $2000
-    "ortho_lifetime_max",
-    "major_D2740_pct",
-    "ortho_D8080_pct",
-    "ortho_D8080_age",
-    "basic_D2331_D2140_pct",
-    "preventative_D0120_pct",
-]
-_IMPORTANT_FIELDS = [
-    "individual_deductible",
-    "family_deductible",
-    "fluoride_D1206_age",
-    "sealants_D1351_age",
-    "space_maint_1510_age",
-    "fluoride_D1206_pct",
-    "sealants_D1351_pct",
-    "space_maint_1510_pct",
-    # Auxiliary codes — separate duplicate records of the same plan (only
-    # scored when the portal provides them; currently UCCI/FORMAT C does).
-    "veneer_D2962_pct",
-    "curodont_D2991_pct",
-    "surg_ext_D7210_pct",
-]
+_SIX_FIELD_WEIGHTS = {
+    "group_number":          20,   # strongest single plan identifier
+    "group_name":            10,   # fuzzy-matched (formatting varies)
+    "individual_deductible": 10,
+    "family_deductible":     10,
+    "individual_annual_max": 10,
+    "ortho_lifetime_max":    10,
+}
+_COVERAGE_PCT_WEIGHTS = {
+    "preventative_D0120_pct": 5,
+    "basic_D2331_D2140_pct":  5,
+    "major_D2740_pct":        5,
+    "fluoride_D1206_pct":     5,
+    "sealants_D1351_pct":     5,
+    "space_maint_1510_pct":   5,
+    "ortho_D8080_pct":        5,
+}
+_AGE_LIMIT_WEIGHTS = {
+    "fluoride_D1206_age":   3,
+    "sealants_D1351_age":   3,
+    "space_maint_1510_age": 3,
+    "ortho_D8080_age":      3,
+}
+# Auxiliary codes — not part of the audit spec, but they separate duplicate
+# Denticon records of the same plan: stale records lack these coverage rows.
+# Only scored when the portal provides them (currently UCCI/FORMAT C does).
+_AUX_WEIGHTS = {
+    "veneer_D2962_pct":   2,
+    "curodont_D2991_pct": 2,
+    "surg_ext_D7210_pct": 2,
+}
+
+# Credit granted when the portal has a value but the Denticon record has
+# none: missing data is weaker evidence than a contradicting value.
+_MISSING_CREDIT = 0.4
 
 
 # Tolerance for numeric comparisons (±2% of the portal value).
@@ -839,145 +855,213 @@ def _values_match(pval, dval) -> bool:
     return pval == dval
 
 
-def _group_name_similarity(portal: dict, denticon: dict) -> float:
-    """
-    Returns a 0.0-1.0 fuzzy similarity ratio between group names.
-    Uses SequenceMatcher (stdlib) — no extra deps.
-    Returns 1.0 if either side has no group name (skip the check).
-    """
-    pg = str(portal.get("group_name") or "").strip().lower()
-    dg = str(denticon.get("group_name") or "").strip().lower()
-    if not pg or not dg:
-        return 1.0   # Can't compare → don't penalise
-    return SequenceMatcher(None, pg, dg).ratio()
-
-
 def _digits(val) -> str:
     """Only the digits of a value — normalises group numbers for comparison."""
     return re.sub(r"\D", "", str(val or ""))
 
 
-def _python_score(portal: dict, denticon: dict) -> tuple[int, list[str]]:
+def _group_numbers_match(pnum, dnum) -> bool:
+    """Digits-only comparison; suffix match tolerates prefixes/subgroup
+    padding (e.g. '0925015000' vs '925015000')."""
+    pg, dg = _digits(pnum), _digits(dnum)
+    return bool(pg and dg) and (pg == dg or pg.endswith(dg) or dg.endswith(pg))
+
+
+def _group_name_ratio(pname, dname) -> float:
     """
-    Pure-Python field-by-field comparison.
-    Returns (score 0-100, list_of_mismatch_strings).
-
-    Scoring:
-      - Critical fields  → 10 pts each (5 pts when Denticon has no data:
-        a missing value is weaker evidence than a conflicting value)
-      - Important fields → 5 pts each (2 pts when Denticon has no data)
-      - Group NUMBER     → 20 pts when both sides have one (strongest plan
-        identifier); half credit when only the portal has one
-      - Group name bonus → up to 5 pts (fuzzy similarity)
-
-    Numeric comparisons use a ±2% tolerance so minor rounding differences
-    (e.g. 1999.0 vs 2000.0) don't generate false mismatches.
+    0.0-1.0 similarity between group names. Containment counts as a full
+    match ('CITY OF RACINE' inside 'CITY OF RACINE WI GROUP').
     """
-    total_pts  = 0
-    earned_pts = 0
-    mismatches = []
+    pn = re.sub(r"\s+", " ", str(pname or "")).strip().lower()
+    dn = re.sub(r"\s+", " ", str(dname or "")).strip().lower()
+    if not pn or not dn:
+        return 0.0
+    if pn in dn or dn in pn:
+        return 1.0
+    return SequenceMatcher(None, pn, dn).ratio()
 
-    for field in _CRITICAL_FIELDS:
-        pval = portal.get(field)
-        dval = denticon.get(field)
-        if pval is None:
-            continue                     # Portal didn't provide → skip
-        total_pts += 10
-        if dval is None:
-            earned_pts += 5              # missing data ≠ contradiction
-        elif _values_match(pval, dval):
-            earned_pts += 10
-        else:
+
+def _python_score(portal: dict, denticon: dict) -> dict:
+    """
+    Deterministic field-by-field validation per the audit spec.
+
+    Every field where the PORTAL has a value is checked (portal is the
+    source of truth; portal-null fields are skipped entirely):
+      - match            → full weight
+      - denticon missing → _MISSING_CREDIT × weight (missing ≠ contradiction)
+      - mismatch         → 0 points, recorded
+
+    Numeric comparisons use a ±2% tolerance so rounding differences
+    (e.g. 1999.0 vs 2000.0) don't create false mismatches.
+
+    Returns:
+      {
+        "score":                  0-100, normalised to the fields checked,
+        "mismatches":             ["field: portal=X vs denticon=Y", ...],
+        "six_field_mismatches":   [field, ...]  (subset of the six identity fields),
+        "six_field_summary":      {"passed": n, "failed": n, "missing": n, "checked": n},
+        "validation":             {field: {"portal", "denticon", "status", "tier"}},
+      }
+    """
+    earned, total = 0.0, 0.0
+    mismatches: list[str] = []
+    six_failed: list[str] = []
+    validation: dict[str, dict] = {}
+
+    def _record(field, pval, dval, status, weight, credit, tier):
+        nonlocal earned, total
+        validation[field] = {"portal": pval, "denticon": dval,
+                             "status": status, "tier": tier}
+        if status == "not_checked":
+            return
+        total  += weight
+        earned += credit * weight
+        if status == "mismatch":
             mismatches.append(f"{field}: portal={pval} vs denticon={dval}")
+            if tier == "six_field":
+                six_failed.append(field)
 
-    for field in _IMPORTANT_FIELDS:
-        pval = portal.get(field)
-        dval = denticon.get(field)
+    def _status(pval, dval) -> tuple[str, float]:
         if pval is None:
-            continue
-        total_pts += 5
+            return "not_checked", 0.0
         if dval is None:
-            earned_pts += 2
-        elif _values_match(pval, dval):
-            earned_pts += 5
+            return "denticon_missing", _MISSING_CREDIT
+        if _values_match(pval, dval):
+            return "match", 1.0
+        return "mismatch", 0.0
+
+    # ── 1. SIX-FIELD VALIDATION ─────────────────────────────
+    # Group Number
+    pnum, dnum = portal.get("group_number"), denticon.get("group_number")
+    if not _digits(pnum):
+        st, cr = "not_checked", 0.0
+    elif not _digits(dnum):
+        st, cr = "denticon_missing", _MISSING_CREDIT
+    elif _group_numbers_match(pnum, dnum):
+        st, cr = "match", 1.0
+    else:
+        st, cr = "mismatch", 0.0
+    _record("group_number", pnum, dnum, st, _SIX_FIELD_WEIGHTS["group_number"], cr, "six_field")
+
+    # Group Name — fuzzy: formatting/abbreviation differences shouldn't
+    # disqualify a plan, but a clearly different employer should.
+    pname, dname = portal.get("group_name"), denticon.get("group_name")
+    if not str(pname or "").strip():
+        st, cr = "not_checked", 0.0
+    elif not str(dname or "").strip():
+        st, cr = "denticon_missing", _MISSING_CREDIT
+    else:
+        ratio = _group_name_ratio(pname, dname)
+        if ratio >= 0.75:
+            st, cr = "match", 1.0
+        elif ratio >= 0.50:
+            st, cr = "partial", 0.5      # likely same employer, abbreviated
         else:
-            mismatches.append(f"{field}: portal={pval} vs denticon={dval}")
+            st, cr = "mismatch", 0.0
+    _record("group_name", pname, dname, st, _SIX_FIELD_WEIGHTS["group_name"], cr, "six_field")
 
-    # ── Group NUMBER — the strongest plan identifier ──
-    pg, dg = _digits(portal.get("group_number")), _digits(denticon.get("group_number"))
-    if pg and dg:
-        total_pts += 20
-        # suffix match tolerates prefixes/subgroup padding (e.g. "0925015000")
-        if pg == dg or pg.endswith(dg) or dg.endswith(pg):
-            earned_pts += 20
-        else:
-            mismatches.append(
-                f"group_number: portal={portal.get('group_number')} vs "
-                f"denticon={denticon.get('group_number')}"
-            )
-    elif pg:
-        # Portal knows the group but this Denticon record has none → half credit
-        total_pts  += 20
-        earned_pts += 10
+    # Deductibles & maximums
+    for field in ("individual_deductible", "family_deductible",
+                  "individual_annual_max", "ortho_lifetime_max"):
+        pval, dval = portal.get(field), denticon.get(field)
+        st, cr = _status(pval, dval)
+        _record(field, pval, dval, st, _SIX_FIELD_WEIGHTS[field], cr, "six_field")
 
-    # ── Soft group-name similarity bonus (max 5 pts) ──
-    # This helps differentiate plans that otherwise score identically.
-    grp_sim = _group_name_similarity(portal, denticon)
-    total_pts  += 5
-    earned_pts += round(grp_sim * 5)
-    if grp_sim < 0.6:
-        mismatches.append(
-            f"group_name: portal='{portal.get('group_name')}' vs "
-            f"denticon='{denticon.get('group_name')}' (similarity={grp_sim:.0%})"
-        )
+    # ── 2. COVERAGE PERCENTAGES ─────────────────────────────
+    for field, weight in _COVERAGE_PCT_WEIGHTS.items():
+        pval, dval = portal.get(field), denticon.get(field)
+        st, cr = _status(pval, dval)
+        _record(field, pval, dval, st, weight, cr, "coverage_pct")
 
-    score = round(earned_pts / total_pts * 100) if total_pts else 0
-    return score, mismatches
+    # ── 3. AGE LIMITS ───────────────────────────────────────
+    for field, weight in _AGE_LIMIT_WEIGHTS.items():
+        pval, dval = portal.get(field), denticon.get(field)
+        st, cr = _status(pval, dval)
+        _record(field, pval, dval, st, weight, cr, "age_limit")
+
+    # ── 4. AUXILIARY DIFFERENTIATORS ────────────────────────
+    for field, weight in _AUX_WEIGHTS.items():
+        pval, dval = portal.get(field), denticon.get(field)
+        st, cr = _status(pval, dval)
+        _record(field, pval, dval, st, weight, cr, "auxiliary")
+
+    six_statuses = [v["status"] for f, v in validation.items() if v["tier"] == "six_field"]
+    six_summary = {
+        "passed":  sum(1 for s in six_statuses if s in ("match", "partial")),
+        "failed":  len(six_failed),
+        "missing": sum(1 for s in six_statuses if s == "denticon_missing"),
+        "checked": sum(1 for s in six_statuses if s != "not_checked"),
+    }
+
+    return {
+        "score":                round(earned / total * 100) if total else 0,
+        "mismatches":           mismatches,
+        "six_field_mismatches": six_failed,
+        "six_field_summary":    six_summary,
+        "validation":           validation,
+    }
 
 
 async def compare_plans(plan_id: str, portal_sim: dict, denticon_sim: dict) -> dict:
     """
     Phase 2 comparison:
-    - Run Python-native scoring for a fast, deterministic result.
-    - Only call AI if the Python score is ambiguous (60-80 range).
+    - Deterministic six-field validation + coverage/age scoring.
+    - AI is consulted only for genuinely ambiguous scores (50-79%).
     """
-    score, mismatches = _python_score(portal_sim, denticon_sim)
+    result_s   = _python_score(portal_sim, denticon_sim)
+    score      = result_s["score"]
+    mismatches = result_s["mismatches"]
+    six_failed = result_s["six_field_mismatches"]
 
-    # Determine critical mismatch count
-    critical_mismatches = [m for m in mismatches
-                           if any(f in m for f in _CRITICAL_FIELDS)]
+    base = {
+        "confidence_score":         score,
+        "mismatches":               mismatches,
+        "matching_id":              plan_id,
+        "six_field_validation":     result_s["six_field_summary"],
+        "six_field_mismatches":     six_failed,
+        "six_field_mismatch_count": len(six_failed),
+        "field_validation":         result_s["validation"],
+    }
+
+    # ── Hard rule: ANY six-field mismatch = not the same plan ──
+    # The six identity fields (group number/name, deductibles, annual max,
+    # ortho lifetime max) define the plan; a contradiction in any of them
+    # is a deterministic rejection — no AI needed.
+    if six_failed:
+        return {**base, "match_found": False,
+                "reason": (f"Six-field validation FAILED — mismatched field(s): "
+                           f"{', '.join(six_failed)} (score {score}%).")}
 
     # ── Fast path: clear match or clear rejection ──
-    if score >= 80 and len(critical_mismatches) == 0:
-        return {
-            "match_found": True,
-            "confidence_score": score,
-            "mismatches": mismatches,
-            "reason": f"Python scoring: {score}% with no critical mismatches.",
-            "matching_id": plan_id,
-        }
-    if score < 50 or len(critical_mismatches) >= 2:
-        return {
-            "match_found": False,
-            "confidence_score": score,
-            "mismatches": mismatches,
-            "reason": f"Python scoring: {score}% — {len(critical_mismatches)} critical field(s) differ.",
-            "matching_id": plan_id,
-        }
+    summary = result_s["six_field_summary"]
+    if score >= 80:
+        return {**base, "match_found": True,
+                "reason": (f"Six-field validation passed "
+                           f"({summary['passed']}/{summary['checked']} identity fields), "
+                           f"score {score}%.")}
+    if score < 50:
+        return {**base, "match_found": False,
+                "reason": (f"Score {score}% — too many coverage fields differ "
+                           f"or are missing from the Denticon record.")}
 
-    # ── Ambiguous zone (50-79%): ask AI to adjudicate ──
+    # ── Ambiguous zone (50-79%, no six-field failures): ask AI ──
+    # Typically a sparse Denticon record or coverage-percentage disagreements.
     log.info(f"Plan {plan_id}: ambiguous score {score}%, escalating to AI.")
 
-    critical_context = ", ".join(_CRITICAL_FIELDS)
-    important_context = ", ".join(_IMPORTANT_FIELDS)
+    six_context      = ", ".join(_SIX_FIELD_WEIGHTS)
+    coverage_context = ", ".join(_COVERAGE_PCT_WEIGHTS)
+    age_context      = ", ".join(_AGE_LIMIT_WEIGHTS)
 
     prompt = f"""You are an expert dental insurance auditor. Your task is to decide if a portal plan and a Denticon plan refer to the SAME insurance plan.
 
-CRITICAL FIELDS (weight 10 pts each — a mismatch here strongly indicates a different plan):
-{critical_context}
+SIX IDENTITY FIELDS (a mismatch here strongly indicates a different plan):
+{six_context}
 
-IMPORTANT FIELDS (weight 5 pts each — minor differences may be acceptable):
-{important_context}
+COVERAGE PERCENTAGE FIELDS (minor differences may be acceptable):
+{coverage_context}
+
+AGE LIMIT FIELDS (minor differences may be acceptable):
+{age_context}
 
 SOURCE OF TRUTH (Portal data scraped live from the insurer):
 {json.dumps(portal_sim, indent=2)}
@@ -1003,23 +1087,15 @@ Respond ONLY with valid JSON (no prose, no markdown):
     result.setdefault("confidence_score", score)
     result.setdefault("mismatches", mismatches)
     result.setdefault("reason", f"AI adjudicated ambiguous case (python_score={score}%).")
-    result["matching_id"] = plan_id
+    # Deterministic validation detail always comes from the Python pass,
+    # regardless of what the AI returned (the AI may adjust confidence_score).
+    for k, v in base.items():
+        if k != "confidence_score":
+            result[k] = v
 
-    # ── Normalise mismatches: AI can return objects instead of strings ──
-    raw_mm = result.get("mismatches", [])
-    cleaned_mm = list(mismatches) # always keep the deterministic Python mismatches
-    
-    for m in raw_mm:
-        s = f"{m.get('field', '?')}: portal={m.get('portal')} vs denticon={m.get('denticon')}" if isinstance(m, dict) else str(m)
-        # Filter out hallucinated matches or fields where portal provided no data
-        if "None vs None" in s or "null vs null" in s.lower() or "portal=None" in s or "portal=null" in s.lower():
-            continue
-        # Only add if we didn't already catch this field in Python
-        field = s.split(':')[0] if ':' in s else s
-        if not any(field in py_m for py_m in cleaned_mm):
-            cleaned_mm.append(s)
-
-    result["mismatches"] = cleaned_mm
+    # The AI only adjudicates match_found/confidence — its mismatch lists
+    # hallucinate (e.g. reporting merely-missing fields as contradictions),
+    # so the mismatch list stays the deterministic Python one (set above).
     return result
 
 
@@ -1144,14 +1220,13 @@ async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict
             continue
 
 
-        confidence    = result.get("confidence_score", 0)
-        is_match      = result.get("match_found", False)
-        critical_count = len([m for m in result.get("mismatches", [])
-                               if any(f in m for f in _CRITICAL_FIELDS)])
+        confidence     = result.get("confidence_score", 0)
+        is_match       = result.get("match_found", False)
+        critical_count = result.get("six_field_mismatch_count", 0)
 
         log.info(
             f"Plan {result.get('matching_id')}: match={is_match}, confidence={confidence}%, "
-            f"critical_mismatches={critical_count}, "
+            f"six_field_mismatches={critical_count}, "
             f"mismatches={result.get('mismatches', [])}"
         )
         all_results.append((confidence, critical_count, result))
@@ -1161,27 +1236,34 @@ async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict
                 "reason": "No viable Denticon plans to evaluate.", "confidence_score": 0,
                 "all_plans_ranked": []}
 
-    # ── Step 4: Rank — higher score first, then fewer critical mismatches.
-    # Equal scores (duplicate plan records) are broken by: the carrier record
-    # the patient is attached to, then the newest Created / Modified dates. ──
+    # ── Step 4: Rank — six-field passes first, then fewer six-field
+    # mismatches, then higher score. Equal scores (duplicate plan records)
+    # are broken by: the carrier record the patient is attached to, then
+    # the newest Created / Modified dates. ──
     def _rank_key(x):
         conf, crit, r = x
         carrier_ok, created, modified = plan_meta.get(
             str(r.get("matching_id")), (False, (0, 0, 0), (0, 0, 0))
         )
-        return (-conf, crit, 0 if carrier_ok else 1,
+        # Plans that PASSED six-field validation always outrank rejected ones,
+        # even when a rejected plan happens to score higher overall.
+        return (0 if r.get("match_found") else 1, crit, -conf,
+                0 if carrier_ok else 1,
                 tuple(-v for v in created), tuple(-v for v in modified))
 
     all_results.sort(key=_rank_key)
 
-    # Build the ranked summary list for the UI (all plans)
+    # Build the ranked summary list for the UI (all plans).
+    # "critical_mismatches" = failures among the SIX identity fields
+    # (group number/name, deductibles, annual max, ortho lifetime max).
     all_plans_ranked = [
         {
-            "plan_id":          r.get("matching_id"),
-            "confidence_score": conf,
-            "critical_mismatches": crit,
-            "mismatches":       r.get("mismatches", []),
-            "match_found":      r.get("match_found", False),
+            "plan_id":              r.get("matching_id"),
+            "confidence_score":     conf,
+            "critical_mismatches":  crit,
+            "six_field_validation": r.get("six_field_validation"),
+            "mismatches":           r.get("mismatches", []),
+            "match_found":          r.get("match_found", False),
         }
         for conf, crit, r in all_results
     ]
@@ -1195,7 +1277,8 @@ async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict
     tied = [
         {"plan_id": r.get("matching_id"), "confidence_score": conf, "critical_mismatches": crit}
         for conf, crit, r in all_results
-        if conf == best_confidence
+        if (r.get("match_found", False), crit, conf)
+           == (best_result.get("match_found", False), best_critical, best_confidence)
     ]
     # Only report a tie when the tie-break signals (carrier record, dates)
     # ALSO tie — otherwise the ranking above already picked a winner.

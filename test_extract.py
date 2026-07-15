@@ -17,7 +17,8 @@ for p in denticon_data.get("plans", []):
     if str(p.get("ins_plan_id")) == "32321":
         dent_sim = extract_denticon_plan_fields(p)
         print(json.dumps(dent_sim, indent=2))
-        score, mm = _python_score(portal_sim, dent_sim)
+        s = _python_score(portal_sim, dent_sim)
+        score, mm = s["score"], s["mismatches"]
         print("SCORE 32321:", score)
         print("MISMATCHES:", mm)
 
@@ -26,6 +27,7 @@ for p in denticon_data.get("plans", []):
     if str(p.get("ins_plan_id")) == "23183":
         dent_sim = extract_denticon_plan_fields(p)
         print(json.dumps(dent_sim, indent=2))
-        score, mm = _python_score(portal_sim, dent_sim)
+        s = _python_score(portal_sim, dent_sim)
+        score, mm = s["score"], s["mismatches"]
         print("SCORE 23183:", score)
         print("MISMATCHES:", mm)
