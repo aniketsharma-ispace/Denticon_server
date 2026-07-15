@@ -1,5 +1,12 @@
 // content_ddri.js - DDRI Provider Portal Auditor
 
+const STORAGE_KEYS = {
+    AUDIT_CONTEXT: "audit_context",
+    PROGRESS: "crawl_progress",
+    CURRENT_CARRIER: "current_carrier",
+    CACHED_PATIENT_NOTES: "cached_patient_notes"
+};
+
 const PROCEDURE_CODES = [
     "D0120", "D0180", "D0140", "D0150", "D0274", "D0210", "D0330",
     "D0220", "D0364", "D0431", "D1110", "D1120", "D1206", "D1351",
@@ -11,6 +18,41 @@ const PROCEDURE_CODES = [
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const clean = str => (str || "").replace(/[\n\r\t]/g, " ").replace(/\s+/g, " ").trim();
+
+// Logging helper
+function logState(state) {
+    console.log(`[DDRI][${state}]`);
+}
+
+function broadcastState(state, title, message = "", progress = 0) {
+    const payload = {
+        carrier: "DDRI",
+        state: state,
+        stage: 0,
+        progress: progress,
+        title: title,
+        message: message,
+        timestamp: Date.now()
+    };
+    
+    // Storage (Persistent)
+    chrome.storage.local.set({ [STORAGE_KEYS.PROGRESS]: payload });
+    
+    // Runtime (Live to Popup)
+    chrome.runtime.sendMessage({ type: "PROGRESS_UPDATE", payload: payload }).catch(() => {});
+}
+
+async function clearPreviousSession() {
+    return new Promise(resolve => {
+        chrome.storage.local.remove([STORAGE_KEYS.AUDIT_CONTEXT, STORAGE_KEYS.PROGRESS, "partial_json"], () => {
+            resolve();
+        });
+    });
+}
+
+// ------------------------------------------------------------------
+// SCRAPING LOGIC
+// ------------------------------------------------------------------
 
 function getLabelValue(tableSelector, labelText) {
     const table = document.querySelector(tableSelector);
@@ -45,7 +87,7 @@ function getEligibilityRow(labelText) {
     return null;
 }
 
-function scrapePatient() {
+function collectPatient() {
     const subName = getLabelValue('.SubscriberProfile', 'Subscriber Name');
     let elig = getEligibilityRow(subName);
     
@@ -75,7 +117,7 @@ function scrapePatient() {
     };
 }
 
-function scrapePlanDetails() {
+function collectPlan() {
     const dates = getEligibilityRow(getLabelValue('.SubscriberProfile', 'Subscriber Name'))?.dates || "N/A";
     let start = "N/A", end = "N/A";
     if (dates.includes('-')) {
@@ -93,22 +135,20 @@ function scrapePlanDetails() {
     };
 }
 
-function scrapeFinancials() {
+function collectFinancials() {
     const financials = {
         maximums: [],
         deductibles: [],
-        annual_max: { total: "N/A", used: "N/A", remaining: "N/A" },
-        deductible_ind: { total: "N/A", used: "N/A", remaining: "N/A" },
-        deductible_fam: { total: "N/A", used: "N/A", remaining: "N/A" },
-        ortho_lifetime: { total: "N/A", used: "N/A", remaining: "N/A" },
-        ortho_deductible: { total: "None", used: "None", remaining: "None" }
+        annual_limits: [],
+        orthodontic: []
     };
 
-    // 1. Parse the Maximums Table (has used/remaining)
     const maxRows = document.querySelectorAll('tr.DataTableRow, tr.DataTableOddRow');
+    let hasInd = false;
+    let hasFam = false;
+
     for (const row of maxRows) {
         const catCell = row.querySelector('.MaximumsFreqCategory');
-        // Only include rows with .MaximumsAmount
         if (catCell && row.querySelector('.MaximumsAmount')) {
             const category = clean(catCell.textContent);
             const total = clean(row.querySelector('.MaximumsAmount')?.textContent);
@@ -117,18 +157,25 @@ function scrapeFinancials() {
             
             if (category) {
                 const entry = { category, total: total || "N/A", used: used || "N/A", remaining: remaining || "N/A" };
-                
                 const catLower = category.toLowerCase();
-                if (catLower.includes('annual max')) financials.annual_max = entry;
-                else if (catLower.includes('individual deductible')) financials.deductible_ind = entry;
-                else if (catLower.includes('family deductible')) financials.deductible_fam = entry;
-                else if (catLower.includes('orthodontic lifetime')) financials.ortho_lifetime = entry;
-                else financials.maximums.push(entry);
+                
+                if (catLower.includes('annual max')) {
+                    financials.annual_limits.push(entry);
+                } else if (catLower.includes('individual deductible')) {
+                    financials.deductibles.push(entry);
+                    hasInd = true;
+                } else if (catLower.includes('family deductible')) {
+                    financials.deductibles.push(entry);
+                    hasFam = true;
+                } else if (catLower.includes('orthodontic')) {
+                    financials.orthodontic.push(entry);
+                } else {
+                    financials.maximums.push(entry);
+                }
             }
         }
     }
 
-    // 2. Parse the Deductibles OONTbl table (basic amounts)
     const oonTables = document.querySelectorAll('.OONTbl table');
     for (const table of oonTables) {
         const rows = table.querySelectorAll('tr');
@@ -138,18 +185,15 @@ function scrapeFinancials() {
                 const category = clean(cells[0].textContent).replace(/:$/, '');
                 const amount = clean(cells[1].textContent);
                 if (category && amount) {
-                    // Fallbacks for top-level keys
                     const catLower = category.toLowerCase();
-                    if (catLower.includes('individual deductible')) {
-                        if (financials.deductible_ind.total === "N/A") {
-                            financials.deductible_ind = { category, total: amount, used: "N/A", remaining: "N/A" };
-                        }
-                    } else if (catLower.includes('family deductible')) {
-                        if (financials.deductible_fam.total === "N/A") {
-                            financials.deductible_fam = { category, total: amount, used: "N/A", remaining: "N/A" };
-                        }
-                    } else {
-                        financials.deductibles.push({ category, amount });
+                    const entry = { category, total: amount, used: "N/A", remaining: "N/A" };
+                    
+                    if (catLower.includes('individual deductible') && !hasInd) {
+                        financials.deductibles.push(entry);
+                        hasInd = true;
+                    } else if (catLower.includes('family deductible') && !hasFam) {
+                        financials.deductibles.push(entry);
+                        hasFam = true;
                     }
                 }
             }
@@ -159,7 +203,7 @@ function scrapeFinancials() {
     return financials;
 }
 
-function scrapeFrequencies() {
+function collectFrequencies() {
     const freqs = [];
     const rows = document.querySelectorAll('tr.DataTableRow, tr.DataTableOddRow');
     for (const row of rows) {
@@ -176,7 +220,7 @@ function scrapeFrequencies() {
     return freqs;
 }
 
-function scrapeProvisions() {
+function collectProvisions() {
     const provisions = [];
     const benefitDiv = document.getElementById('benefits');
     if (!benefitDiv) return provisions;
@@ -195,7 +239,7 @@ function scrapeProvisions() {
     return provisions;
 }
 
-function scrapeBenefitCategories() {
+function collectBenefitCategories() {
     const categories = [];
     const benefitDiv = document.getElementById('benefits');
     if (!benefitDiv) return categories;
@@ -242,7 +286,6 @@ function getHiddenParams() {
 async function fetchProcedure(code, params) {
     const rawCode = code.replace(/^D/i, '');
     let procData = null;
-    // Helper: DOMParser docs don't support innerText, must use textContent
     const txt = el => (el?.textContent || '').replace(/[\n\r\t]/g, ' ').replace(/\s+/g, ' ').trim();
     
     try {
@@ -325,41 +368,18 @@ async function fetchProcedure(code, params) {
     return procData;
 }
 
-function showProgressOverlay(text) {
-    let overlay = document.getElementById('ddri-audit-progress');
-    if (!overlay) {
-        overlay = document.createElement('div');
-        overlay.id = 'ddri-audit-progress';
-        overlay.style.cssText = `
-            position: fixed; top: 20px; right: 20px; z-index: 999999;
-            background: rgba(0,0,0,0.85); color: white; padding: 15px 25px;
-            border-radius: 8px; font-family: sans-serif; font-size: 16px;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.5); min-width: 280px; text-align: center;
-            font-weight: bold;
-        `;
-        document.body.appendChild(overlay);
-    }
-    overlay.textContent = text;
-}
-
-function hideProgressOverlay() {
-    const overlay = document.getElementById('ddri-audit-progress');
-    if (overlay) overlay.remove();
-}
-
-async function crawlProcedures() {
-    const params = getHiddenParams();
+async function collectProcedures(requestedCodes = null) {
     const results = [];
+    const params = getHiddenParams();
     
     if (!params.memberId) {
-        console.warn("No MemberId found. Cannot crawl procedures.");
-        return results;
+        throw new Error("No MemberId found. Cannot crawl procedures.");
     }
 
     const BATCH_SIZE = 10;
-    const codes = PROCEDURE_CODES;
+    const codes = requestedCodes || PROCEDURE_CODES;
     
-    const benefitCats = scrapeBenefitCategories();
+    const benefitCats = collectBenefitCategories();
     const findLimits = (keywords) => {
         for (const cat of benefitCats) {
             for (const svc of cat.services) {
@@ -376,9 +396,9 @@ async function crawlProcedures() {
         const batch = codes.slice(i, i + BATCH_SIZE);
         const batchNum = Math.floor(i / BATCH_SIZE) + 1;
         const totalBatches = Math.ceil(codes.length / BATCH_SIZE);
-        const progressText = `[Audit] Fetching procedures batch ${batchNum} of ${totalBatches}...`;
-        console.log(progressText);
-        showProgressOverlay(`Auditing Procedures: ${Math.round((i/codes.length)*100)}%\nFetching batch ${batchNum} of ${totalBatches}...`);
+        const pct = Math.round((i/codes.length)*100);
+        
+        broadcastState("FETCHING PROCEDURES", "Fetching Procedures", `Batch ${batchNum} of ${totalBatches}`, pct);
         
         const batchPromises = batch.map(async (code) => {
             const data = await fetchProcedure(code, params);
@@ -410,33 +430,62 @@ async function crawlProcedures() {
     return results;
 }
 
-function buildPayload() {
+function generateJSON(auditData) {
     return {
-        carrier: "DDRI",
-        patient: scrapePatient(),
-        plan_details: scrapePlanDetails(),
-        financials: scrapeFinancials(),
-        plan_provisions: scrapeProvisions(),
-        frequency_status: scrapeFrequencies(),
-        benefit_categories: scrapeBenefitCategories()
+        ...auditData,
+        ddri_data: true
     };
 }
 
-setInterval(() => {
-    if (!chrome.runtime?.id) return;
-    if (!document.querySelector('.SubscriberProfile')) return;
+function generatePatientNotesJSON(auditData) {
+    const getFin = (catLower) => {
+        if (!auditData.financials) return "";
+        for (const item of (auditData.financials.maximums || [])) {
+            if (item.category.toLowerCase().includes(catLower)) return item.used || "";
+        }
+        for (const item of (auditData.financials.annual_limits || [])) {
+            if (item.category.toLowerCase().includes(catLower)) return item.used || "";
+        }
+        for (const item of (auditData.financials.orthodontic || [])) {
+            if (item.category.toLowerCase().includes(catLower)) return item.used || "";
+        }
+        return "";
+    };
 
-    const data = buildPayload();
-    chrome.storage.local.get("audit_context", (res) => {
-        const ctx = res.audit_context || {};
-        const merged = { ...ctx, ...data, ddri_data: true }; 
-        chrome.storage.local.set({ audit_context: merged });
-    });
-}, 5000);
+    const getHistory = (code) => {
+        if (!auditData.benefit_coverage || !auditData.benefit_coverage.procedures) return "";
+        const proc = auditData.benefit_coverage.procedures.find(p => p.procedure_code === code);
+        if (!proc || !proc.history || proc.history.length === 0) return "";
+        const sorted = [...proc.history].sort((a, b) => new Date(b.service_date) - new Date(a.service_date));
+        return sorted[0].service_date;
+    };
 
-function downloadAuditJSON() {
-    chrome.storage.local.get("audit_context", (res) => {
-        const data = res.audit_context || {};
+    return {
+        "appointment_date": "",
+        "verified_by": "",
+        "verification_date": new Date().toLocaleDateString(),
+        "eligibility_status": auditData.patient?.eligibility_status || "",
+        "carrier": "DDRI",
+        "primary_or_secondary": "",
+        "plan_type": auditData.patient?.plan_type || "",
+        "patient_assigned_to_office": "",
+
+        "individual_maximum_used": getFin("annual max"),
+        "ortho_maximum_used": getFin("orthodontic"),
+
+        "history_periodic_exam_d0120": getHistory("D0120"),
+        "history_comp_exam_d0150": getHistory("D0150"),
+        "history_prophy_d1110": getHistory("D1110"),
+        "history_perio_maint_d4910": getHistory("D4910"),
+        "history_fmd_d4355": getHistory("D4355"),
+        "history_fluoride_d1206_d1208": getHistory("D1206") || getHistory("D1208"),
+        "history_xray_d0274": getHistory("D0274"),
+        "history_xray_d0210": getHistory("D0210")
+    };
+}
+
+async function downloadJSON(data) {
+    return new Promise(resolve => {
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -447,37 +496,148 @@ function downloadAuditJSON() {
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
+        setTimeout(resolve, 500);
     });
+}
+
+function validatePage() {
+    return !!document.querySelector('.SubscriberProfile');
+}
+
+async function clearPreviousSession(clearCachedNotes = true) {
+    const keysToClear = [STORAGE_KEYS.PROGRESS, STORAGE_KEYS.AUDIT_CONTEXT, 'crawl_progress', 'partial_json', 'audit_context'];
+    if (clearCachedNotes) {
+        keysToClear.push(STORAGE_KEYS.CACHED_PATIENT_NOTES);
+        keysToClear.push('cached_patient_notes');
+    }
+    const safeKeys = keysToClear.filter(Boolean);
+    await new Promise(resolve => chrome.storage.local.remove(safeKeys, resolve));
+}
+
+let isCrawling = false;
+let timeoutHandle = null;
+
+function resetCacheTimeout() {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+    timeoutHandle = setTimeout(async () => {
+        await clearPreviousSession(true);
+        console.log("[DDRI] Cache timeout expired. Cleaned up.");
+    }, 60000); // 60 seconds
+}
+
+async function startCrawl() {
+    if (isCrawling) return;
+    isCrawling = true;
+    try {
+        await clearPreviousSession(true);
+        logState("STARTING");
+        broadcastState("STARTING", "Initializing...");
+        
+        const auditData = {};
+        
+        logState("COLLECTING PATIENT");
+        broadcastState("COLLECTING PATIENT", "Collecting Patient Data", "Extracting subscriber info...", 10);
+        auditData.patient = collectPatient();
+        
+        logState("COLLECTING PLAN");
+        broadcastState("COLLECTING PLAN", "Collecting Plan Details", "Extracting plan limits...", 20);
+        auditData.plan_details = collectPlan();
+        
+        logState("COLLECTING FINANCIALS");
+        broadcastState("COLLECTING FINANCIALS", "Collecting Financials", "Extracting deductibles and maximums...", 30);
+        auditData.financials = collectFinancials();
+        
+        logState("COLLECTING BENEFIT CATEGORIES");
+        auditData.benefit_categories = collectBenefitCategories();
+        
+        logState("FETCHING PROCEDURES");
+        auditData.benefit_coverage = { procedures: await collectProcedures() };
+        
+        logState("GENERATING JSON");
+        broadcastState("GENERATING JSON", "Preparing Audit", "Generating JSON...");
+        const finalJson = generateJSON(auditData);
+        const patientNotes = generatePatientNotesJSON(auditData);
+        
+        await new Promise(resolve => chrome.storage.local.set({ 
+            [STORAGE_KEYS.AUDIT_CONTEXT]: finalJson,
+            [STORAGE_KEYS.CACHED_PATIENT_NOTES]: patientNotes 
+        }, resolve));
+        
+        logState("INITIATING DOWNLOAD");
+        broadcastState("DOWNLOADING", "Downloading Audit JSON...");
+        await downloadJSON(finalJson);
+        
+        logState("CLEANUP");
+        await clearPreviousSession(false); // Keep cached_patient_notes for subsequent manual download
+        resetCacheTimeout();
+        
+        logState("COMPLETE");
+        broadcastState("COMPLETE", "Download Complete", "Audit Saved Successfully");
+        
+    } catch (err) {
+        logState("FAILED");
+        broadcastState("FAILED", "Audit Failed", err.message);
+        await clearPreviousSession(true);
+    } finally {
+        isCrawling = false;
+    }
+}
+
+async function startLightweightCrawl() {
+    if (isCrawling) return;
+    isCrawling = true;
+    try {
+        await clearPreviousSession(true);
+        logState("STARTING LIGHTWEIGHT");
+        broadcastState("STARTING", "Initializing Patient JSON...");
+        
+        const auditData = {};
+        
+        auditData.patient = collectPatient();
+        auditData.plan_details = collectPlan();
+        auditData.financials = collectFinancials();
+        
+        const requiredCodes = ["D0120", "D0150", "D1110", "D4910", "D4355", "D1206", "D1208", "D0274", "D0210"];
+        auditData.benefit_coverage = { procedures: await collectProcedures(requiredCodes) };
+        
+        const patientNotes = generatePatientNotesJSON(auditData);
+        
+        broadcastState("DOWNLOADING", "Downloading Patient JSON...");
+        await downloadJSON(patientNotes);
+        
+        await clearPreviousSession(true);
+        
+        broadcastState("COMPLETE", "Download Complete", "Patient JSON Saved");
+    } catch (err) {
+        broadcastState("FAILED", "Audit Failed", err.message);
+        await clearPreviousSession(true);
+    } finally {
+        isCrawling = false;
+    }
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.command === "START_CRAWL") {
-        if (!document.querySelector('.SubscriberProfile')) {
-            sendResponse({ status: "Please navigate to the ViewPatientBenefits page first." });
-            return true;
-        }
-
-        (async () => {
-            const data = buildPayload();
-            const procedures = await crawlProcedures();
-            
-            const audit_payload = {
-                ...data,
-                ddri_data: true,
-                benefit_coverage: { procedures: procedures }
-            };
-
-            chrome.storage.local.get("audit_context", (res) => {
-                let ctx = res.audit_context || {};
-                ctx = { ...ctx, ...audit_payload };
-                chrome.storage.local.set({ audit_context: ctx }, () => {
-                    downloadAuditJSON();
-                    showProgressOverlay("Crawl Complete! JSON Downloaded.");
-                    setTimeout(hideProgressOverlay, 4000);
-                    sendResponse({ status: "[+] DDRI JSON downloaded." });
-                });
-            });
-        })();
+        startCrawl();
+        sendResponse({ status: "ACK" });
+        return true;
+    } else if (request.command === "GENERATE_PATIENT_JSON" || request.command === "DOWNLOAD_JSON") {
+        chrome.storage.local.get([STORAGE_KEYS.CACHED_PATIENT_NOTES], async (result) => {
+            const cached = result[STORAGE_KEYS.CACHED_PATIENT_NOTES];
+            if (cached) {
+                broadcastState("DOWNLOADING", "Downloading Patient JSON...");
+                await downloadJSON(cached);
+                await clearPreviousSession(true);
+                if (timeoutHandle) clearTimeout(timeoutHandle);
+                broadcastState("COMPLETE", "Download Complete", "Patient JSON Saved");
+            } else {
+                startLightweightCrawl();
+            }
+            sendResponse({ status: "ACK" });
+        });
         return true;
     }
 });
+
+// Initialization: check if we just loaded a page
+logState("READY");
