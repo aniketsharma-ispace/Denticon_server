@@ -383,19 +383,18 @@ def extract_portal_fields(portal_raw: dict) -> dict:
         # Major — D2740 (crown)
         out["major_D2740_pct"] = _proc_pct("D2740")
 
-        # Fluoride — D1206 (varnish) then D1208
-        fl_pct = _first_pct("D1206", "D1208")
-        out["fluoride_D1206_pct"] = fl_pct if fl_pct is not None else pct_prev
+        # Fluoride — D1206 (varnish) then D1208.
+        # NOTE: no inheritance from the preventive pct — a value the portal
+        # never stated must not be compared (it fabricates mismatches).
+        out["fluoride_D1206_pct"] = _first_pct("D1206", "D1208")
         out["fluoride_D1206_age"] = _first_age("D1206", "D1208")
 
         # Sealants — D1351
-        seal_pct = _proc_pct("D1351")
-        out["sealants_D1351_pct"] = seal_pct if seal_pct is not None else pct_prev
+        out["sealants_D1351_pct"] = _proc_pct("D1351")
         out["sealants_D1351_age"] = _proc_age("D1351")
 
         # Space Maintainer — D1510
-        sm_pct = _proc_pct("D1510")
-        out["space_maint_1510_pct"] = sm_pct if sm_pct is not None else pct_prev
+        out["space_maint_1510_pct"] = _proc_pct("D1510")
         out["space_maint_1510_age"] = _proc_age("D1510")
 
         # Orthodontics — D8080
@@ -437,15 +436,18 @@ def extract_portal_fields(portal_raw: dict) -> dict:
                         return float(m.group(1))
             return None
 
-        pct_prev = _find_pct(["diagnostic", "preventive", "preventative"])
-        out["preventative_D0120_pct"] = pct_prev
+        # Only the categories the portal actually states. Fluoride, sealants
+        # and space maintainer have NO category of their own in this format —
+        # do NOT inherit the preventive pct for them (a fabricated portal
+        # value creates false mismatches against real Denticon data).
+        out["preventative_D0120_pct"] = _find_pct(["diagnostic", "preventive", "preventative"])
         out["basic_D2331_D2140_pct"]  = _find_pct(["basic restorative", "basic"])
         out["major_D2740_pct"]        = _find_pct(["major restorative", "major", "prosthodontics"])
-        out["fluoride_D1206_pct"]     = pct_prev
+        out["fluoride_D1206_pct"]     = None
         out["fluoride_D1206_age"]     = _find_age(["fluoride"])
-        out["sealants_D1351_pct"]     = pct_prev
+        out["sealants_D1351_pct"]     = None
         out["sealants_D1351_age"]     = _find_age(["sealant"])
-        out["space_maint_1510_pct"]   = pct_prev
+        out["space_maint_1510_pct"]   = None
         out["space_maint_1510_age"]   = _find_age(["space maintainer", "space maint"])
         out["ortho_D8080_pct"]        = _find_pct(["orthodontics", "ortho"])
         out["ortho_D8080_age"]        = _find_age(["ortho"])
@@ -547,6 +549,27 @@ def extract_denticon_plan_fields(plan: dict) -> dict:
     raw_name = re.split(r"GROUP\s*#|WHAT\s+FEE|NETWORK|\n|_", raw_name, maxsplit=1)[0].strip()
     out["group_name"] = raw_name or None
 
+    # Fallback: newer notes templates omit the GROUP #/EMPLOYER lines
+    # entirely, but the plan-search table embedded in benefits.full_text has
+    # a row per plan:  "<plan_id> <group_number> <fee#> <carrier + employer>
+    # <created date> <user> [<modified date> <user>]"
+    if not out["group_number"] or not out["group_name"]:
+        pid = str(plan.get("ins_plan_id", "")).strip()
+        ft  = str(plan.get("benefits", {}).get("full_text", "") or "")
+        row_m = re.search(
+            rf"(?<![\d/]){re.escape(pid)}\s+0*(\d+)\S*\s+(.*?)\d{{2}}/\d{{2}}/\d{{4}}",
+            ft,
+        ) if pid and ft else None
+        if row_m:
+            if not out["group_number"]:
+                out["group_number"] = row_m.group(1)
+            if not out["group_name"]:
+                # carrier + employer blob (e.g. "1360 (IN) Cigna PPO CT
+                # TEACHERS' RETIREMENT BOARD") — the fuzzy group-name
+                # comparison handles the extra tokens via containment.
+                blob = re.sub(r"\s+", " ", row_m.group(2)).strip()
+                out["group_name"] = blob or None
+
     # ─────────────────────────────────────────────
     # 2. FINANCIALS — NOTES ARE PRIMARY (plan-specific)
     #                 COVERAGE TABLE IS FALLBACK (live eligibility, shared across all plans)
@@ -593,11 +616,12 @@ def extract_denticon_plan_fields(plan: dict) -> dict:
     # ─────────────────────────────────────────────
 
     # ── Preventative D0120 ──
-    # Try specific code row first, then category row
+    # Try specific code row first, then category row. The code row can be a
+    # junk template row ("D0120 - Periodic Exam" with all N/A values) — fall
+    # through to the category row whenever it yields no number.
     d0120_row = _code_row("D0120")
-    if d0120_row:
-        out["preventative_D0120_pct"] = _num(d0120_row.get("coverage_pct"))
-    else:
+    out["preventative_D0120_pct"] = _num(d0120_row.get("coverage_pct")) if d0120_row else None
+    if out["preventative_D0120_pct"] is None:
         cov_prev = _cov(["diagnostic (d0120)", "diagnostic exam periodic", "preventive prophy"])
         out["preventative_D0120_pct"] = _num(cov_prev) or (
             _nnum(r"PREVENTATIVE\s*%\s*:\s*(\d+)") or _nnum(r"PREVENTIVE\s*%\s*:\s*(\d+)")
@@ -648,31 +672,21 @@ def extract_denticon_plan_fields(plan: dict) -> dict:
         out["sealants_D1351_age"] = _code_age("D1351")
 
     # ── Space Maintainer D1510 ──
-    # Coverage table: exact code row "D1510" is very reliable here
+    # Coverage table: exact code row "D1510" is very reliable here; fall
+    # through to the category row / notes when it yields no number.
     d1510_row = _code_row("D1510")
-    if d1510_row:
-        out["space_maint_1510_pct"] = _num(d1510_row.get("coverage_pct"))
-        out["space_maint_1510_age"] = _code_age("D1510")
-        # If _code_age returned None (verbose row missing), fallback to notes
-        if out["space_maint_1510_age"] is None:
-            sm_notes_m = re.search(
-                r"SPACE\s+MAINT[^\n]*?(?:1[xX](\d+)\s*[Yy]ears|AGE\s+LIMIT\s*:?\s*(\d+))",
-                notes, re.IGNORECASE
-            )
-            if sm_notes_m:
-                out["space_maint_1510_age"] = _num(sm_notes_m.group(1) or sm_notes_m.group(2))
-    else:
+    out["space_maint_1510_pct"] = _num(d1510_row.get("coverage_pct")) if d1510_row else None
+    if out["space_maint_1510_pct"] is None:
         cov_space = _cov(["space maint", "space maintainer"])
         out["space_maint_1510_pct"] = _num(cov_space) or _nnum(r"SPACE\s+MAINT[^\n]*(\d+)%")
-        # Look for AGE LIMIT after SPACE MAINT context in notes
-        space_age_m = re.search(
+    out["space_maint_1510_age"] = _code_age("D1510")
+    if out["space_maint_1510_age"] is None:
+        sm_notes_m = re.search(
             r"SPACE\s+MAINT[^\n]*?(?:1[xX](\d+)\s*[Yy]ears|AGE\s+LIMIT\s*:?\s*(\d+))",
             notes, re.IGNORECASE
         )
-        if space_age_m:
-            out["space_maint_1510_age"] = _num(space_age_m.group(1) or space_age_m.group(2))
-        else:
-            out["space_maint_1510_age"] = None
+        if sm_notes_m:
+            out["space_maint_1510_age"] = _num(sm_notes_m.group(1) or sm_notes_m.group(2))
 
     # ── Auxiliary differentiator codes ──
     # These separate duplicate records of the same plan: stale records lack

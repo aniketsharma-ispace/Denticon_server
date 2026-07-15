@@ -1,0 +1,246 @@
+"""
+Regression suite for the plan-comparison engine (compare_patients.py).
+
+Run after EVERY change to the matching logic:
+    python test_regression.py
+
+Each verified real-world case gets added here so later fixes can't silently
+break earlier ones. Real-data cases are skipped (not failed) when their JSON
+files are missing from Material/Comparison.
+"""
+import asyncio
+import json
+import logging
+import os
+import sys
+
+logging.disable(logging.CRITICAL)
+
+from compare_patients import (
+    compare_plans,
+    extract_denticon_plan_fields,
+    extract_portal_fields,
+    match_insurance_plan,
+)
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+COMPARISON_DIR = os.path.join(HERE, "Material", "Comparison")
+
+PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
+_results: list[tuple[str, str, str]] = []
+
+
+def report(name: str, status: str, detail: str = ""):
+    _results.append((name, status, detail))
+    print(f"[{status}] {name}" + (f" — {detail}" if detail else ""))
+
+
+# ──────────────────────────────────────────────────────────────────
+# SYNTHETIC CASE 1: six-field validation decisions (compare_plans)
+# ──────────────────────────────────────────────────────────────────
+SYNTH_PORTAL = {
+    "group_number": "925015000", "group_name": "ROUND ROCK INDEPENDENT SCHOOL DISTRICT",
+    "individual_deductible": 50.0, "family_deductible": 150.0,
+    "individual_annual_max": 2000.0, "ortho_lifetime_max": 3500.0,
+    "preventative_D0120_pct": 100.0, "basic_D2331_D2140_pct": 80.0,
+    "major_D2740_pct": 50.0,
+    "fluoride_D1206_pct": 100.0, "fluoride_D1206_age": 14.0,
+    "sealants_D1351_pct": 100.0, "sealants_D1351_age": 14.0,
+    "space_maint_1510_pct": 100.0, "space_maint_1510_age": 16.0,
+    "ortho_D8080_pct": 50.0, "ortho_D8080_age": 19.0,
+}
+
+
+async def case_six_field_decisions():
+    # Same plan, abbreviated group name → must MATCH
+    r = await compare_plans("A", SYNTH_PORTAL, dict(SYNTH_PORTAL, group_name="ROUND ROCK ISD"))
+    ok = r["match_found"] and r["six_field_mismatch_count"] == 0
+    report("six-field: same plan w/ abbreviated group name matches", PASS if ok else FAIL, r["reason"])
+
+    # Different group number → deterministic REJECT (no AI)
+    r = await compare_plans("B", SYNTH_PORTAL, dict(SYNTH_PORTAL, group_number="111222333"))
+    ok = not r["match_found"] and "group_number" in r["six_field_mismatches"]
+    report("six-field: wrong group number rejected", PASS if ok else FAIL, r["reason"])
+
+    # Different annual max → deterministic REJECT
+    r = await compare_plans("C", SYNTH_PORTAL, dict(SYNTH_PORTAL, individual_annual_max=1500.0))
+    ok = not r["match_found"] and "individual_annual_max" in r["six_field_mismatches"]
+    report("six-field: wrong annual max rejected", PASS if ok else FAIL, r["reason"])
+
+    # Value within ±2% tolerance → must MATCH
+    r = await compare_plans("E", SYNTH_PORTAL, dict(SYNTH_PORTAL, individual_annual_max=2001.0))
+    ok = r["match_found"] and r["six_field_mismatch_count"] == 0
+    report("six-field: 2001 vs 2000 rounding tolerated", PASS if ok else FAIL, r["reason"])
+
+
+# ──────────────────────────────────────────────────────────────────
+# SYNTHETIC CASE 2: FORMAT A end-to-end with duplicate records
+# ──────────────────────────────────────────────────────────────────
+def _metlife_portal():
+    return {"metlife_data": {
+        "financials": {"annual_max": {"total": "$ 2000.00 total"},
+                       "deductible_ind": {"total": "$ 50.00 total"},
+                       "ortho_lifetime": {"total": "$ 3500.00 total"}},
+        "plan_details": {"employer_group": "CITY OF RACINE", "group_number": "305111"},
+        "patient": {"relationship": "Self"}},
+        "benefit_coverage": {"procedures": [
+            {"procedure_code": "D0120", "benefit_level": "100%"},
+            {"procedure_code": "D2140", "benefit_level": "80%"},
+            {"procedure_code": "D2740", "benefit_level": "50%"},
+            {"procedure_code": "D1206", "benefit_level": "100%", "age_limit": "0-14"},
+            {"procedure_code": "D1351", "benefit_level": "100%", "age_limit": "0-14"},
+            {"procedure_code": "D1510", "benefit_level": "100%", "age_limit": "0-16"},
+            {"procedure_code": "D8080", "benefit_level": "50%", "age_limit": "0-19"}]}}
+
+
+def _metlife_plan(pid, grp, mx, created="01/01/2024"):
+    notes = (f"EMPLOYER: CITY OF RACINE GROUP # : {grp} "
+             f"DEDUCTIBLE $ : 50 MAXIMUM $ : {mx} LIFETIME MAX : 3500")
+    ft = f"{pid} {grp} 1274 METLIFE PID 111 CITY OF RACINE {created} USERX"
+    return {"ins_plan_id": pid, "plan_details": {},
+            "benefits": {"notes": notes, "full_text": ft},
+            "coverage": [
+                {"category": "D0120", "coverage_pct": "100"},
+                {"category": "Restorative Fillings", "coverage_pct": "80"},
+                {"category": "Restorative Crowns", "coverage_pct": "50"},
+                {"category": "Preventive Fluoride", "coverage_pct": "100"},
+                {"category": "Preventive Sealant", "coverage_pct": "100"},
+                {"category": "D1510", "coverage_pct": "100"},
+                {"category": "D1510 YES 100 Once per Lifetime 16 0", "coverage_pct": "100"},
+                {"category": "Orthodontics Child", "coverage_pct": "50"},
+                {"category": "Deductible", "ded_waived": "$50.00", "limitation": "$150.00"},
+            ]}
+
+
+async def case_metlife_duplicates():
+    wrapper = {"denticon_data": {
+        "primary_insurance": {"carrier_name": "METLIFE"},
+        "plans": [
+            _metlife_plan("1001", "305111", "2000", "01/01/2023"),  # correct, older dup
+            _metlife_plan("1002", "305111", "2000", "06/15/2025"),  # correct, newest dup
+            _metlife_plan("1003", "999999", "2000"),                # wrong group number
+            _metlife_plan("1004", "305111", "1500"),                # wrong annual max
+        ]}}
+    r = await match_insurance_plan(_metlife_portal(), wrapper)
+    ok = r.get("matching_id") == "1002" and r.get("match_found") is True and not r.get("tie")
+    report("FORMAT A: newest duplicate wins, wrong plans rejected",
+           PASS if ok else FAIL,
+           f"picked={r.get('matching_id')} match={r.get('match_found')} tie={r.get('tie', False)}")
+
+
+# ──────────────────────────────────────────────────────────────────
+# SYNTHETIC CASE 3: extraction rules that were fixed
+# ──────────────────────────────────────────────────────────────────
+def case_extraction_rules():
+    # 3a. No fabricated family deductible (was: 3x individual)
+    portal = extract_portal_fields({"metlife_data": {
+        "financials": {"deductible_ind": {"total": "$ 50.00 total"}},
+        "plan_details": {}, "patient": {"relationship": "Self"}}})
+    ok = portal.get("family_deductible") is None
+    report("extraction: family deductible NOT fabricated from individual",
+           PASS if ok else FAIL, f"family_deductible={portal.get('family_deductible')}")
+
+    # 3b. FORMAT B must not inherit preventive pct into fluoride/sealants/space
+    portal = extract_portal_fields({
+        "summary": {"group_number": "123", "group_name": "TEST GROUP"},
+        "financials": {}, "patient": {},
+        "coinsurance": [{"category": "Diagnostic and Preventive", "patient_pays": "0%"}],
+        "frequencies": [], "age_limits": []})
+    ok = (portal.get("preventative_D0120_pct") == 100.0
+          and portal.get("fluoride_D1206_pct") is None
+          and portal.get("sealants_D1351_pct") is None
+          and portal.get("space_maint_1510_pct") is None)
+    report("extraction: FORMAT B does not fabricate fluoride/sealant/space pct",
+           PASS if ok else FAIL,
+           f"prev={portal.get('preventative_D0120_pct')} fl={portal.get('fluoride_D1206_pct')}")
+
+    # 3c. Group number/name fallback from full_text plan-search row
+    plan = {"ins_plan_id": "24299",
+            "plan_details": {},
+            "benefits": {
+                "notes": "Plan Notes Verified by: X Last Update: 01/28/2026 In / Out of Network: In-Network",
+                "full_text": "24299 3339901 1360 (IN) Cigna PPO CT TEACHERS' RETIREMENT BOARD "
+                             "01/07/2025 ISPACEGA22693 06/26/2026 ISPACE712693"},
+            "coverage": []}
+    d = extract_denticon_plan_fields(plan)
+    ok = d.get("group_number") == "3339901" and "TEACHERS" in str(d.get("group_name", ""))
+    report("extraction: group number/name fall back to full_text plan row",
+           PASS if ok else FAIL,
+           f"group_number={d.get('group_number')} group_name={d.get('group_name')}")
+
+    # 3d. Junk N/A code row must not shadow the real category row
+    plan = {"ins_plan_id": "1", "plan_details": {},
+            "benefits": {"notes": "", "full_text": ""},
+            "coverage": [
+                {"category": "D0120 - Periodic Exam", "ded_waived": "N/A",
+                 "coverage_pct": "N/A", "limitation": "N/A"},
+                {"category": "Diagnostic (d0120)", "ded_waived": "Yes",
+                 "coverage_pct": "100", "limitation": "Twice per Benefit Year"}]}
+    d = extract_denticon_plan_fields(plan)
+    ok = d.get("preventative_D0120_pct") == 100.0
+    report("extraction: N/A junk row falls through to category row",
+           PASS if ok else FAIL, f"preventative={d.get('preventative_D0120_pct')}")
+
+
+# ──────────────────────────────────────────────────────────────────
+# REAL-DATA CASES — add one entry per verified audit result.
+# (portal_file, denticon_file, expected_plan_id, expect_match)
+# ──────────────────────────────────────────────────────────────────
+REAL_CASES = [
+    ("Gilligan-Megrue, Kathleen (Cigna)",
+     "cigna_Kathleen_Gilligan-megrue_2026-07-15 (2).json",
+     "Denticon_DeepAudit_Gilligan-Megrue, Kathleen_1784105277586.json",
+     "24299", True),
+    # UCCI cases verified 2026-07-15 (files were removed from Material/Comparison;
+    # restore them to re-enable):
+    ("Sellars, Emma (UCCI)",
+     "ucci/emma_sellars_ucci.json",
+     "ucci/Denticon_DeepAudit_Sellars, Emma Emma_1784015110273.json",
+     "22272", True),
+    ("Jorns, Gavriel (UCCI)",
+     "ucci/gavriel_r_jorns_ucci.json",
+     "ucci/Denticon_DeepAudit_Jorns, Gavriel_1784015309916.json",
+     "22272", True),
+]
+
+
+async def case_real_data():
+    for name, pfile, dfile, expected_id, expect_match in REAL_CASES:
+        ppath = os.path.join(COMPARISON_DIR, pfile)
+        dpath = os.path.join(COMPARISON_DIR, dfile)
+        if not (os.path.exists(ppath) and os.path.exists(dpath)):
+            report(f"real: {name}", SKIP, "JSON files not present")
+            continue
+        with open(ppath, encoding="utf-8") as f:
+            portal = json.load(f)
+        with open(dpath, encoding="utf-8") as f:
+            denticon = json.load(f)
+        r = await match_insurance_plan(portal, denticon)
+        ok = (str(r.get("matching_id")) == expected_id
+              and bool(r.get("match_found")) == expect_match)
+        report(f"real: {name} expects plan {expected_id}",
+               PASS if ok else FAIL,
+               f"picked={r.get('matching_id')} match={r.get('match_found')} "
+               f"conf={r.get('confidence_score')} tie={r.get('tie', False)}")
+
+
+async def main():
+    await case_six_field_decisions()
+    await case_metlife_duplicates()
+    case_extraction_rules()
+    await case_real_data()
+
+    print()
+    fails = [n for n, s, _ in _results if s == FAIL]
+    skips = [n for n, s, _ in _results if s == SKIP]
+    print(f"{len(_results)} checks: {len(_results) - len(fails) - len(skips)} passed, "
+          f"{len(fails)} failed, {len(skips)} skipped")
+    if fails:
+        print("FAILED:")
+        for n in fails:
+            print(f"  - {n}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
