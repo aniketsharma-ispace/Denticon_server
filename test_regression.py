@@ -72,6 +72,19 @@ async def case_six_field_decisions():
     ok = r["match_found"] and r["six_field_mismatch_count"] == 0
     report("six-field: 2001 vs 2000 rounding tolerated", PASS if ok else FAIL, r["reason"])
 
+    # Portal reports base group only, Denticon stores GROUP-SUBGROUP → must MATCH
+    # (Shelton/Delta case: portal '3250' vs denticon '3250-1001')
+    r = await compare_plans("F", dict(SYNTH_PORTAL, group_number="3250"),
+                            dict(SYNTH_PORTAL, group_number="3250-1001"))
+    ok = r["match_found"] and r["six_field_mismatch_count"] == 0
+    report("six-field: base group matches GROUP-SUBGROUP record", PASS if ok else FAIL, r["reason"])
+
+    # But two DIFFERENT sub-groups of the same employer → deterministic REJECT
+    r = await compare_plans("G", dict(SYNTH_PORTAL, group_number="3250-2002"),
+                            dict(SYNTH_PORTAL, group_number="3250-1001"))
+    ok = not r["match_found"] and "group_number" in r["six_field_mismatches"]
+    report("six-field: different sub-groups rejected", PASS if ok else FAIL, r["reason"])
+
 
 # ──────────────────────────────────────────────────────────────────
 # SYNTHETIC CASE 2: FORMAT A end-to-end with duplicate records
@@ -209,6 +222,14 @@ REAL_CASES = [
      "andreau.pdf",
      "Denticon_DeepAudit_Andreu, Cesar_1784115143350.json",
      "83207", True),
+    # Delta Dental MI, 2 duplicate records sharing group '3250-1001' while the
+    # PDF reports base group '3250': sub-group-aware group matching must pass
+    # six-field, then the newest-MODIFIED record (21272, re-verified 03/2026)
+    # beats the stale 2022 record (8750).
+    ("Shelton, Kenneth (Delta PDF, group/sub-group + modified-date tie-break)",
+     "Patient Name_ KENNETH SHELTON Group_Sub Group_ 3250-1001 Relationship_ Subscriber.pdf",
+     "Denticon_DeepAudit_Shelton, Kenneth Ken_1784193820818.json",
+     "21272", True),
     # UCCI cases verified 2026-07-15 (files were removed from Material/Comparison;
     # restore them to re-enable):
     ("Sellars, Emma (UCCI)",

@@ -878,7 +878,20 @@ def _group_numbers_match(pnum, dnum) -> bool:
     """Digits-only comparison; suffix match tolerates prefixes/subgroup
     padding (e.g. '0925015000' vs '925015000')."""
     pg, dg = _digits(pnum), _digits(dnum)
-    return bool(pg and dg) and (pg == dg or pg.endswith(dg) or dg.endswith(pg))
+    if not (pg and dg):
+        return False
+    if pg == dg or pg.endswith(dg) or dg.endswith(pg):
+        return True
+    # Sub-group suffixes: Denticon often stores 'GROUP-SUBGROUP' (e.g.
+    # '3250-1001') while the portal/PDF reports only the base group ('3250').
+    # When exactly ONE side carries a sub-group suffix, compare base groups.
+    # Two full 'GROUP-SUBGROUP' values still require the exact match above,
+    # so different sub-groups of the same employer are NOT conflated.
+    pbase = _digits(re.split(r"[-/]", str(pnum or "").strip(), 1)[0])
+    dbase = _digits(re.split(r"[-/]", str(dnum or "").strip(), 1)[0])
+    p_has_sub = pbase != pg
+    d_has_sub = dbase != dg
+    return bool(pbase and dbase) and pbase == dbase and (p_has_sub != d_has_sub)
 
 
 def _group_name_ratio(pname, dname) -> float:
@@ -1183,7 +1196,7 @@ def _plan_record_meta(plan: dict, patient_carrier: str) -> tuple[bool, bool, tup
     pid = str(plan.get("ins_plan_id", "")).strip()
     ft  = str(plan.get("benefits", {}).get("full_text", "") or "")
     m = re.search(
-        rf"(?<![\d/]){re.escape(pid)}\s+[\d/]+\s+\d+\s+(.*?)"      # carrier + employer text
+        rf"(?<![\d/]){re.escape(pid)}\s+[\d/-]+\s+\d+\s+(.*?)"     # group # (may contain '-' sub-group) + carrier id, then carrier/employer text
         rf"(\d{{2}}/\d{{2}}/\d{{4}})\s+\S+"                        # created date + user
         rf"(?:\s+(\d{{2}}/\d{{2}}/\d{{4}}))?",                     # modified date (optional)
         ft,
