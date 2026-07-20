@@ -138,14 +138,12 @@ function collectPlan() {
 function collectFinancials() {
     const financials = {
         maximums: [],
-        deductibles: [],
-        annual_limits: [],
-        orthodontic: []
+        deductibles: []
     };
+    const maximumKeys = new Set();
+    const deductibleKeys = new Set();
 
     const maxRows = document.querySelectorAll('tr.DataTableRow, tr.DataTableOddRow');
-    let hasInd = false;
-    let hasFam = false;
 
     for (const row of maxRows) {
         const catCell = row.querySelector('.MaximumsFreqCategory');
@@ -157,19 +155,11 @@ function collectFinancials() {
             
             if (category) {
                 const entry = { category, total: total || "N/A", used: used || "N/A", remaining: remaining || "N/A" };
-                const catLower = category.toLowerCase();
-                
-                if (catLower.includes('annual max')) {
-                    financials.annual_limits.push(entry);
-                } else if (catLower.includes('individual deductible')) {
-                    financials.deductibles.push(entry);
-                    hasInd = true;
-                } else if (catLower.includes('family deductible')) {
-                    financials.deductibles.push(entry);
-                    hasFam = true;
-                } else if (catLower.includes('orthodontic')) {
-                    financials.orthodontic.push(entry);
-                } else {
+                const key = [entry.category, entry.total, entry.used, entry.remaining]
+                    .map(value => clean(value).toLowerCase())
+                    .join('\u0000');
+                if (!maximumKeys.has(key)) {
+                    maximumKeys.add(key);
                     financials.maximums.push(entry);
                 }
             }
@@ -182,18 +172,16 @@ function collectFinancials() {
         for (const row of rows) {
             const cells = row.querySelectorAll('td');
             if (cells.length >= 2) {
-                const category = clean(cells[0].textContent).replace(/:$/, '');
+                const category = clean(cells[0].textContent).replace(/:\s*$/, '');
                 const amount = clean(cells[1].textContent);
-                if (category && amount) {
-                    const catLower = category.toLowerCase();
-                    const entry = { category, total: amount, used: "N/A", remaining: "N/A" };
-                    
-                    if (catLower.includes('individual deductible') && !hasInd) {
+                if (category) {
+                    const entry = { category, total: amount || "N/A", used: "N/A", remaining: "N/A" };
+                    const key = [entry.category, entry.total, entry.used, entry.remaining]
+                        .map(value => clean(value).toLowerCase())
+                        .join('\u0000');
+                    if (!deductibleKeys.has(key)) {
+                        deductibleKeys.add(key);
                         financials.deductibles.push(entry);
-                        hasInd = true;
-                    } else if (catLower.includes('family deductible') && !hasFam) {
-                        financials.deductibles.push(entry);
-                        hasFam = true;
                     }
                 }
             }
@@ -441,12 +429,6 @@ function generatePatientNotesJSON(auditData) {
     const getFin = (catLower) => {
         if (!auditData.financials) return "";
         for (const item of (auditData.financials.maximums || [])) {
-            if (item.category.toLowerCase().includes(catLower)) return item.used || "";
-        }
-        for (const item of (auditData.financials.annual_limits || [])) {
-            if (item.category.toLowerCase().includes(catLower)) return item.used || "";
-        }
-        for (const item of (auditData.financials.orthodontic || [])) {
             if (item.category.toLowerCase().includes(catLower)) return item.used || "";
         }
         return "";
