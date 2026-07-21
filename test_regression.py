@@ -222,6 +222,13 @@ REAL_CASES = [
      "andreau.pdf",
      "Denticon_DeepAudit_Andreu, Cesar_1784115143350.json",
      "83207", True),
+    # Delta Dental WI PDF: orthodontics % must be read from the coverage line
+    # ("Orthodontics(8010) 50%") instead of the old hardcoded 0%, otherwise the
+    # portal falsely reports ortho_D8080_pct=0 and mismatches the Denticon 50%.
+    ("Wakefield, Kyle (Delta WI PDF, orthodontics % extraction)",
+     "Kyle.pdf",
+     "Denticon_DeepAudit_Wakefield, Kyle Kyle_1784616647482.json",
+     "30829", True),
     # Delta Dental MI, 2 duplicate records sharing group '3250-1001' while the
     # PDF reports base group '3250': sub-group-aware group matching must pass
     # six-field, then the newest-MODIFIED record (21272, re-verified 03/2026)

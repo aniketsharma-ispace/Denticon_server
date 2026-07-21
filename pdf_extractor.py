@@ -2074,6 +2074,10 @@ def _parse_delta_dental_wi(text: str) -> dict:
     basic_pct = _wi_pct(r"Basic Restor", "80%")
     major_pct = _wi_pct(r"Major Restor", "50%")
     perio_pct = _wi_pct(r"Perio Maint", basic_pct)
+    # Orthodontics % is stated on the coverage line ("Orthodontics(8010) 50%").
+    # Default to 0% when the plan has no ortho row (so ortho-less plans behave
+    # as before), but read the real percentage when it is present.
+    ortho_pct = _wi_pct(r"Orthodontics", "0%")
 
     result = {
         "summary": {
@@ -2097,7 +2101,7 @@ def _parse_delta_dental_wi(text: str) -> dict:
                 {"procedure_code": "D2740", "benefit_level": major_pct},
                 {"procedure_code": "D4910", "benefit_level": perio_pct},
                 {"procedure_code": "D4355", "benefit_level": perio_pct},
-                {"procedure_code": "D8080", "benefit_level": "0%"},
+                {"procedure_code": "D8080", "benefit_level": ortho_pct},
             ]
         },
         "history": {},
