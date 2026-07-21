@@ -21,6 +21,7 @@ import io
 import json
 import os
 import re
+import zipfile
 from datetime import datetime
 
 import pandas as pd
@@ -65,6 +66,19 @@ COLUMN_ALIASES = {
     "appointment_status": ["appointment status", "status", "appt status", "appointmentstatus"],
     "office_name":        ["office name", "office", "officename", "location", "practice"],
 }
+
+# Office-wise Day Start Report columns (SOP Step 6), in exact output order.
+# Each entry is (output header, canonical column key); "__pid" = cleaned Patient ID.
+DAY_START_COLUMNS = [
+    ("Office Name",               "office_name"),
+    ("Appointment ID",            "appointment_id"),
+    ("Appointment Date",          "appointment_date"),
+    ("Appointment Time",          "appointment_time"),
+    ("Appointment Status",        "appointment_status"),
+    ("Patient ID",                "__pid"),
+    ("Dental Primary Ins Carr",   "dental_primary_ins"),
+    ("Dental Secondary Ins Carr", "dental_secondary_ins"),
+]
 
 
 # ── Header helpers ─────────────────────────────────────────────────────────────
@@ -170,6 +184,29 @@ def _norm_text(v) -> str:
 def _norm_office(v) -> str:
     """Canonicalise an Office Name for matching (trim, lower-case, collapse whitespace)."""
     return _norm_text(v)
+
+
+def _fmt_date(v) -> str:
+    """Format a value to date only (MM/DD/YYYY); leave unparseable values as-is."""
+    if _is_blank(v):
+        return ""
+    d = pd.to_datetime(str(v), errors="coerce")
+    return d.strftime("%m/%d/%Y") if pd.notna(d) else str(v).strip()
+
+
+def _fmt_time(v) -> str:
+    """Format a value to time only (hh:MM AM/PM); leave unparseable values as-is."""
+    if _is_blank(v):
+        return ""
+    d = pd.to_datetime(str(v), errors="coerce")
+    return d.strftime("%I:%M %p") if pd.notna(d) else str(v).strip()
+
+
+def _safe_filename(s) -> str:
+    """Turn an office name into a filesystem-safe file stem."""
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "_", str(s).strip())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or "Unknown_Office"
 
 
 def _hist_key(pid: str, office: str, name: str = "") -> str:
@@ -325,12 +362,14 @@ def _read_excel(name: str, data: bytes) -> pd.DataFrame:
     return df
 
 
-def process_appointments(files: list[tuple[str, bytes]], commit: bool = True) -> dict:
+def _cleanse(files: list[tuple[str, bytes]]) -> dict:
     """
-    files  : list of (filename, bytes) — one or more appointment reports to union.
-    commit : if True, add the surviving Patient IDs to the processed-history store.
+    Run the shared cleansing pipeline (SOP Steps 2–5 + Block Appointments) and
+    return the cleaned rows BEFORE the primary/secondary split. Shared by the
+    cleaned-dataset output and the office-wise Day Start reports.
 
-    Returns a dict with the per-step summary and the cleaned workbook bytes.
+    Returns: {df, colmap, steps, total_input, pid_col}. `df` keeps the internal
+    helper columns (__pid/__office/__name/__key) for downstream callers.
     """
     if not files:
         raise ValueError("No files provided.")
@@ -473,6 +512,22 @@ def process_appointments(files: list[tuple[str, bytes]], commit: bool = True) ->
     removed_excluded = before - len(df)
     steps.append({"step": "Excluded non-process insurance", "removed": int(removed_excluded)})
 
+    return {"df": df, "colmap": colmap, "steps": steps,
+            "total_input": total_input, "pid_col": pid_col}
+
+
+def process_appointments(files: list[tuple[str, bytes]], commit: bool = True) -> dict:
+    """
+    files  : list of (filename, bytes) — one or more appointment reports to union.
+    commit : if True, add the surviving Patient IDs to the processed-history store.
+
+    Returns a dict with the per-step summary and the cleaned workbook bytes
+    (one row per appointment split into Primary/Secondary rows).
+    """
+    c = _cleanse(files)
+    df, colmap, steps = c["df"], c["colmap"], c["steps"]
+    total_input, pid_col = c["total_input"], c["pid_col"]
+
     # ── Split Primary & Secondary insurance into separate rows (SOP Step 7) ─────
     # A patient with BOTH a Dental Primary and a Dental Secondary carrier gets two
     # rows — one marked "Primary", one "Secondary" — so each insurance can be
@@ -546,4 +601,65 @@ def process_appointments(files: list[tuple[str, bytes]], commit: bool = True) ->
             "history_size": len(load_history_records()),
         },
         "xlsx_bytes": out.getvalue(),
+    }
+
+
+def generate_day_start_reports(files: list[tuple[str, bytes]]) -> dict:
+    """
+    SOP Step 6 — Generate an office-wise Day Start Report.
+
+    Runs the shared cleansing pipeline (Steps 2–5 + block), then produces ONE
+    Excel per office (one row per appointment, both carriers shown — no P/S split)
+    containing only the Step-6 columns, and returns them bundled in a ZIP. Offices
+    with no surviving appointments get no file (tester #18). Does NOT commit to
+    history — this is a report view, not the processing action.
+    """
+    c = _cleanse(files)
+    df, colmap = c["df"], c["colmap"]
+
+    # Build the report frame with the Step-6 columns that exist in this upload.
+    report = pd.DataFrame(index=df.index)
+    present_headers = []
+    for header, key in DAY_START_COLUMNS:
+        if key == "__pid":
+            report[header] = df["__pid"]
+        elif key in colmap:
+            src = df[colmap[key]]
+            if key == "appointment_date":
+                report[header] = src.map(_fmt_date)
+            elif key == "appointment_time":
+                report[header] = src.map(_fmt_time)
+            else:
+                report[header] = src
+        else:
+            continue
+        present_headers.append(header)
+
+    report["__office_group"] = df["__office"].values
+
+    date_tag = datetime.now().strftime("%Y%m%d")
+    offices = []
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for office, group in report.groupby("__office_group", sort=True):
+            office_name = office or "Unknown Office"
+            out_df = group[present_headers]
+            xb = io.BytesIO()
+            with pd.ExcelWriter(xb, engine="openpyxl") as writer:
+                out_df.to_excel(writer, index=False, sheet_name="Day Start")
+            fname = f"DayStart_{_safe_filename(office_name)}_{date_tag}.xlsx"
+            zf.writestr(fname, xb.getvalue())
+            offices.append({"office": office_name, "rows": int(len(out_df)), "file": fname})
+    zip_buf.seek(0)
+
+    return {
+        "summary": {
+            "files": [name for name, _ in files],
+            "steps": c["steps"],
+            "columns": present_headers,
+            "office_count": len(offices),
+            "total_report_rows": int(len(report)),
+            "offices": offices,
+        },
+        "zip_bytes": zip_buf.getvalue(),
     }

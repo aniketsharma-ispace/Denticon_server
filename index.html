@@ -333,8 +333,9 @@
     </div>
 
     <div class="section-label">03 — Run</div>
-    <div class="btn-row" style="grid-template-columns:1fr;">
+    <div class="btn-row" style="grid-template-columns:1fr 1fr;">
         <button class="run-btn appt-btn" id="btnProcessAppt" disabled>✨ Process &amp; Download Cleaned Report</button>
+        <button class="run-btn appt-btn" id="btnDayStart" disabled style="background:linear-gradient(90deg,#00b8d4 0%,#0277bd 100%);box-shadow:0 4px 15px rgba(0,184,212,0.3);">🏢 Generate Day Start Reports (ZIP)</button>
     </div>
 
     <div class="loader appt-loader" id="apptLoader">🧹 Cleansing appointments…</div>
@@ -943,6 +944,7 @@ const fileAppt        = document.getElementById('fileAppt');
 const statusAppt      = document.getElementById('statusAppt');
 const boxAppt         = document.getElementById('boxAppt');
 const btnProcessAppt  = document.getElementById('btnProcessAppt');
+const btnDayStart     = document.getElementById('btnDayStart');
 const apptLoader      = document.getElementById('apptLoader');
 const apptOutput      = document.getElementById('apptOutput');
 const histCount       = document.getElementById('histCount');
@@ -958,11 +960,13 @@ fileAppt.addEventListener('change', e => {
         statusAppt.textContent = `✓ ${apptFiles.length} file(s): ${apptFiles.map(f => f.name).join(', ')}`;
         statusAppt.style.color = '#00d2ff';
         btnProcessAppt.disabled = false;
+        btnDayStart.disabled = false;
     } else {
         boxAppt.classList.remove('ready');
         statusAppt.textContent = 'Waiting for files…';
         statusAppt.style.color = '#a0aabf';
         btnProcessAppt.disabled = true;
+        btnDayStart.disabled = true;
     }
 });
 
@@ -1093,6 +1097,62 @@ function renderApptResult(d) {
             <div style="margin-top:8px;font-size:0.8rem;color:#a0aabf;">Files merged: ${s.files.join(', ')} &nbsp;·&nbsp; ${committed}</div>
             <a href="${url}" download="${d.filename}" style="text-decoration:none;">
                 <button class="run-btn appt-btn" style="margin-top:18px;">⬇ Download ${d.filename}</button>
+            </a>
+        </div>`;
+}
+
+btnDayStart.addEventListener('click', async () => {
+    if (!apptFiles.length) return;
+    apptLoader.textContent = '🏢 Building office-wise Day Start reports…';
+    apptLoader.classList.add('visible');
+    apptOutput.innerHTML = '';
+    btnDayStart.disabled = true;
+
+    const fd = new FormData();
+    apptFiles.forEach(f => fd.append('files', f));
+
+    try {
+        const r = await fetch('/api/appointments/day-start-reports', { method: 'POST', body: fd });
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            throw new Error(err.detail || `Server error ${r.status}`);
+        }
+        const d = await r.json();
+        renderDayStartResult(d);
+    } catch (e) {
+        apptOutput.innerHTML =
+            `<div class="result-card match-fail"><b>❌ Report generation failed</b><div class="reason-box">${e.message}</div></div>`;
+    } finally {
+        apptLoader.classList.remove('visible');
+        apptLoader.textContent = '🧹 Cleansing appointments…';
+        btnDayStart.disabled = false;
+    }
+});
+
+function renderDayStartResult(d) {
+    const s = d.summary;
+    const bytes = Uint8Array.from(atob(d.file_base64), c => c.charCodeAt(0));
+    const blob  = new Blob([bytes], { type: 'application/zip' });
+    const url   = URL.createObjectURL(blob);
+
+    const rows = (s.offices || [])
+        .sort((a, b) => b.rows - a.rows)
+        .map(o => `<tr><td>${o.office}</td><td>${o.rows}</td></tr>`).join('');
+
+    apptOutput.innerHTML = `
+        <div class="result-card appt-success" style="border-left-color:#00b8d4;">
+            <div class="stat-row">
+                <div class="stat-pill keep"><div class="num">${s.office_count}</div><div class="lbl">Office Files</div></div>
+                <div class="stat-pill"><div class="num">${s.total_report_rows}</div><div class="lbl">Total Rows</div></div>
+            </div>
+            <div style="font-size:0.8rem;color:#a0aabf;margin-bottom:10px;">Columns: ${(s.columns || []).join(' · ')}</div>
+            <div class="ranked-plans-header"><span>Per-Office Report</span><span class="divider"></span></div>
+            <table class="appt-summary">
+                <tr style="color:#a0aabf;font-size:0.72rem;text-transform:uppercase;letter-spacing:0.08em;"><td>Office</td><td>Appointments</td></tr>
+                ${rows}
+            </table>
+            <a href="${url}" download="${d.filename}" style="text-decoration:none;">
+                <button class="run-btn appt-btn" style="margin-top:18px;background:linear-gradient(90deg,#00b8d4,#0277bd);">⬇ Download ${d.filename}</button>
             </a>
         </div>`;
 }

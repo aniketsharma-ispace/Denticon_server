@@ -34,6 +34,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 from pdf_extractor import parse_insurance_pdf
 from Appointment_Scheduler.appointment_processor import (
     process_appointments,
+    generate_day_start_reports,
     load_exclusions,
     save_exclusions,
     load_block_names,
@@ -185,6 +186,37 @@ async def process_appointments_api(
         "summary": result["summary"],
         "filename": f"cleaned_appointments_{datetime.now():%Y%m%d}.xlsx",
         "file_base64": base64.b64encode(result["xlsx_bytes"]).decode("ascii"),
+    }
+
+
+@app.post("/api/appointments/day-start-reports")
+async def day_start_reports_api(files: List[UploadFile] = File(...)):
+    """
+    SOP Step 6 — Generate an office-wise Day Start Report from the cleaned data
+    and return them bundled as a ZIP (one Excel per office). Read-only: does not
+    commit to history.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="Upload at least one appointment report.")
+
+    payload = []
+    for f in files:
+        name = f.filename or "report.xlsx"
+        if not name.lower().endswith((".xlsx", ".xls", ".csv")):
+            raise HTTPException(status_code=400, detail=f"'{name}' must be an .xlsx, .xls or .csv file.")
+        payload.append((name, await f.read()))
+
+    try:
+        result = generate_day_start_reports(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Report generation failed: {e}")
+
+    return {
+        "summary": result["summary"],
+        "filename": f"day_start_reports_{datetime.now():%Y%m%d}.zip",
+        "file_base64": base64.b64encode(result["zip_bytes"]).decode("ascii"),
     }
 
 
