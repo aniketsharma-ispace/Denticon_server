@@ -36,6 +36,8 @@ from Appointment_Scheduler.appointment_processor import (
     process_appointments,
     load_exclusions,
     save_exclusions,
+    load_block_names,
+    save_block_names,
     history_info,
     reset_history,
 )
@@ -77,6 +79,9 @@ class NewPlanRequest(BaseModel):
 
 class ExclusionRequest(BaseModel):
     exclusions: list
+
+class BlockNamesRequest(BaseModel):
+    block_names: list
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -191,6 +196,16 @@ def get_exclusions():
 @app.post("/api/appointments/exclusions")
 def update_exclusions(req: ExclusionRequest):
     return {"exclusions": save_exclusions(req.exclusions)}
+
+
+@app.get("/api/appointments/block-names")
+def get_block_names():
+    return {"block_names": load_block_names()}
+
+
+@app.post("/api/appointments/block-names")
+def update_block_names(req: BlockNamesRequest):
+    return {"block_names": save_block_names(req.block_names)}
 
 
 @app.get("/api/appointments/history")

@@ -26,11 +26,28 @@ from datetime import datetime
 import pandas as pd
 
 # ── Persistent stores (simple JSON files next to the app) ──────────────────────
-BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
-HISTORY_FILE   = os.path.join(BASE_DIR, "processed_history.json")
-EXCLUSION_FILE = os.path.join(BASE_DIR, "insurance_exclusion.json")
+BASE_DIR         = os.path.dirname(os.path.abspath(__file__))
+HISTORY_FILE     = os.path.join(BASE_DIR, "processed_history.json")
+EXCLUSION_FILE   = os.path.join(BASE_DIR, "insurance_exclusion.json")
+BLOCK_NAMES_FILE = os.path.join(BASE_DIR, "block_names.json")
 
 DEFAULT_EXCLUSIONS = ["Dentrite", "Smile Alliance Care", "Cash"]
+
+# Placeholder/operatory-block "patients" (Patient ID = 0) seen in real exports.
+# These are not real patients and must never reach the allocation sheet.
+# Operations can add to this list; matching is EXACT (case/whitespace-insensitive)
+# on Patient Name — unlike the insurance exclusion list, this must NOT be a
+# substring match, otherwise a real patient surnamed "Block" would be caught.
+DEFAULT_BLOCK_NAMES = [
+    "BLOCK, BLOCK",
+    "14, Patient",
+    "MANAGER BLOCK, Manager Block",
+    "Block-, Block",
+    "Adult 1st Chair, Adult Prophy 1st Chair",
+    "Adult PATIENT 1st Chair, ADULT PATIENT 1ST CHAIR",
+    "Adult PROPHY 1st Chair, Adult Prophy 1st Chair",
+    "Adult 1st Chair, ADULT 1ST CHAIR",
+]
 
 # ── Canonical columns and the header aliases we accept for each ────────────────
 COLUMN_ALIASES = {
@@ -254,6 +271,24 @@ def save_exclusions(exclusions: list) -> list:
     return cleaned
 
 
+def load_block_names() -> list:
+    if not os.path.exists(BLOCK_NAMES_FILE):
+        save_block_names(DEFAULT_BLOCK_NAMES)
+        return list(DEFAULT_BLOCK_NAMES)
+    try:
+        with open(BLOCK_NAMES_FILE, "r", encoding="utf-8") as f:
+            return list(json.load(f).get("block_names", DEFAULT_BLOCK_NAMES))
+    except Exception:
+        return list(DEFAULT_BLOCK_NAMES)
+
+
+def save_block_names(block_names: list) -> list:
+    cleaned = [str(x).strip() for x in block_names if str(x).strip()]
+    with open(BLOCK_NAMES_FILE, "w", encoding="utf-8") as f:
+        json.dump({"block_names": cleaned}, f, indent=2)
+    return cleaned
+
+
 # ── Core cleansing ─────────────────────────────────────────────────────────────
 def _read_excel(name: str, data: bytes) -> pd.DataFrame:
     """
@@ -340,6 +375,21 @@ def process_appointments(files: list[tuple[str, bytes]], commit: bool = True) ->
         df = df[~df["__key"].isin(hist_keys)]
     removed_prev = before - len(df)
     steps.append({"step": "Removed previously processed (Patient ID + Office)", "removed": removed_prev})
+
+    # ── Additional Requirement 8: Remove Block Appointments ──────────────────────
+    # Operatory/schedule-block placeholder rows (Patient ID = 0) with a Patient Name
+    # matching the configurable block-name list, e.g. "BLOCK, BLOCK" or
+    # "Adult 1st Chair, Adult Prophy 1st Chair". This is an EXACT match (normalised
+    # for case/whitespace) — never a substring match — so a real patient surnamed
+    # "Block" is not caught. Runs before Step 3 so a block row is removed even if it
+    # happens to carry notes/insurance that would otherwise save it from that rule.
+    before = len(df)
+    block_names = {_norm_text(b) for b in load_block_names()}
+    if block_names:
+        block_mask = df["__pid"].isin(["", "0"]) & df["__name"].map(_norm_text).isin(block_names)
+        df = df[~block_mask]
+    removed_block = before - len(df)
+    steps.append({"step": "Removed block appointments", "removed": int(removed_block)})
 
     # ── Step 3: Remove invalid records ──────────────────────────────────────────
     # A record is invalid ONLY when ALL of the following hold together (AND):
@@ -447,6 +497,12 @@ def process_appointments(files: list[tuple[str, bytes]], commit: bool = True) ->
             df = pd.concat([df, sec_rows], ignore_index=True)
             # Keep a stable order: office, then patient, then Primary before Secondary.
             df = df.sort_values(["__office", "__pid", "Primary / Secondary"], kind="stable").reset_index(drop=True)
+
+        # SOP 6.5: once split, each row shows ONLY the insurance being verified in
+        # that row — clear the Secondary carrier on Primary rows and the Primary
+        # carrier on Secondary rows.
+        df.loc[df["Primary / Secondary"] == "Primary",   sec_col]  = ""
+        df.loc[df["Primary / Secondary"] == "Secondary", prim_col] = ""
     else:
         added_split = 0
     steps.append({"step": "Split primary & secondary insurance", "added": int(added_split)})
