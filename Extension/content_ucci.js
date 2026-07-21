@@ -5,7 +5,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Some sections of this page (confirmed: Deductibles and Maximums,
 // Coordination and Other Benefits) appear to populate slightly later than
-// the rest of the DOM — a live scrape immediately on page-open sometimes
+// the rest of the DOM � a live scrape immediately on page-open sometimes
 // caught them still empty, even though the 27 procedure-category tables
 // were reliably present from the very first render. Rather than trust a
 // fixed delay, poll until the target table actually has rows (or give up
@@ -22,9 +22,9 @@ async function waitForRows(selector, { maxWaitMs = 4000, pollMs = 200 } = {}) {
   return document.querySelector(selector);
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
 // SECTION 1: PATIENT INFO
-// ══════════════════════════════════════════════════════════════════════════
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
 
 function scrapePatientInfo() {
   const info = {};
@@ -33,7 +33,7 @@ function scrapePatientInfo() {
   info.patient_name = clean(nameEl?.textContent || "");
 
   // Label/value table rows: <td class="text-muted text-end">Label</td><td>Value</td>
-  // Resilient to this JSF app's id churn — walked by row structure, not id.
+  // Resilient to this JSF app's id churn � walked by row structure, not id.
   document.querySelectorAll(".member-information table tbody tr").forEach((tr) => {
     const cells = tr.querySelectorAll("td");
     if (cells.length < 2) return;
@@ -74,23 +74,14 @@ function scrapePatientInfo() {
   return info;
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
 // SECTION 2: SERVICE HISTORY SNAPSHOT
 // Plain <table id="serviceHistoryPanelList">, all rows already in the DOM
-// on page load — no pagination needed (confirmed: scrolling triggers no
+// on page load � no pagination needed (confirmed: scrolling triggers no
 // network request, and every visible row is a real <tr>).
-// ══════════════════════════════════════════════════════════════════════════
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
 
-const SERVICE_HISTORY_SELECTORS = {
-  form: "#serviceHistoryPanelOptionInput",
-  procInput: '[id="serviceHistoryPanelOptionInput:serviceHistoryInputProc"]',
-  toothInput: '[id="serviceHistoryPanelOptionInput:serviceHistoryInputTooth"]',
-  filterButton: '[id="serviceHistoryPanelOptionInput:buttonServiceHistoryFilter"]',
-  clearButton: '[id="serviceHistoryPanelOptionInput:j_id_gv"]',
-  container: "#serviceHistoryPanelContainer",
-  table: "#serviceHistoryPanelList",
-  loader: '[id="serviceHistoryPanelOptionInput:ajaxLoaderImage"]',
-};
+const SERVICE_HISTORY_TABLE_SELECTOR = "#serviceHistoryPanelList";
 
 const CDT_CODES = [
   "0120", "0180", "0140", "0150", "0274", "0210", "0330", "0220",
@@ -98,15 +89,15 @@ const CDT_CODES = [
   "2740", "2950", "2962", "6750", "5110", "9110", "9222", "9230",
   "9243", "9310", "9944", "4341", "4355", "4346", "4910", "4381",
   "4260", "4249", "3310", "3330", "7140", "7210", "7240", "7953",
-  "6010", "6056", "0272",
+  "6010", "6056", "0272", "0270"
 ];
 
 function parseServiceHistoryRows(root = document) {
   if (!root) return [];
 
-  const table = root.matches?.(SERVICE_HISTORY_SELECTORS.table)
+  const table = root.matches?.(SERVICE_HISTORY_TABLE_SELECTOR)
     ? root
-    : root.querySelector?.(SERVICE_HISTORY_SELECTORS.table);
+    : root.querySelector?.(SERVICE_HISTORY_TABLE_SELECTOR);
   if (!table) return [];
 
   return [...table.querySelectorAll("tbody tr")]
@@ -139,23 +130,8 @@ function normalizeProcedureCode(code) {
   return "";
 }
 
-function getUniqueProcedureCodes(rows) {
-  return [
-    ...new Set(
-      rows
-        .map((row) => normalizeProcedureCode(row.procedure_code))
-        .filter(Boolean)
-    ),
-  ];
-}
-
 function getTargetProcedureCodes() {
   return [...new Set(CDT_CODES.map(normalizeProcedureCode).filter(Boolean))];
-}
-
-function getServiceHistorySearchValue(code) {
-  const normalized = normalizeProcedureCode(code);
-  return normalized ? normalized.replace(/^D/, "") : "";
 }
 
 function parseUcciDate(dateString) {
@@ -186,281 +162,341 @@ function sortDatesNewestFirst(dates) {
   });
 }
 
-function getServiceHistorySignature(root = document) {
-  return parseServiceHistoryRows(root)
-    .map((row) => [row.start, row.end, row.procedure_code, row.tooth, row.surface].join("|"))
-    .join("~");
-}
 
-function setNativeInputValue(input, value) {
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-  if (setter) setter.call(input, value);
-  else input.value = value;
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-  input.dispatchEvent(new Event("change", { bubbles: true }));
-}
 
-function pressEnterOnInput(input) {
-  ["keydown", "keypress", "keyup"].forEach((type) => {
-    input.dispatchEvent(
-      new KeyboardEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        key: "Enter",
-        code: "Enter",
-        keyCode: 13,
-        which: 13,
-      })
-    );
-  });
-}
+function mapServiceHistoryFromSnapshot(rawRows) {
+  const rowsByCode = new Map();
 
-function isServiceHistoryLoading() {
-  const loader = document.querySelector(SERVICE_HISTORY_SELECTORS.loader);
-  return !!loader && getComputedStyle(loader).display !== "none";
-}
+  for (const row of rawRows || []) {
+    if (!row || typeof row !== "object") continue;
 
-async function waitForServiceHistoryUpdate(
-  previousSignature,
-  { maxWaitMs = 12000, pollMs = 150 } = {}
-) {
-  const start = Date.now();
-  const originalContainer = document.querySelector(SERVICE_HISTORY_SELECTORS.container);
-  let mutationCount = 0;
-  let loaderWasVisible = isServiceHistoryLoading();
-  const observerRoot = originalContainer?.parentElement || document.body;
-  const observer = new MutationObserver(() => {
-    mutationCount++;
-  });
+    const code = normalizeProcedureCode(row.procedure_code);
+    const date = clean(row.start);
 
-  observer.observe(observerRoot, { childList: true, subtree: true, characterData: true });
+    if (!code || !date || !parseUcciDate(date)) continue;
 
-  try {
-    while (Date.now() - start < maxWaitMs) {
-      const container = document.querySelector(SERVICE_HISTORY_SELECTORS.container);
-      const signature = getServiceHistorySignature(document);
-      const replaced = !!originalContainer && !!container && container !== originalContainer;
-      const changed = signature !== previousSignature;
-      const loading = isServiceHistoryLoading();
-      if (loading) loaderWasVisible = true;
-      const settled = !loading;
-      const loaderCompleted = loaderWasVisible && settled;
-      const mutationSettledLongEnough = mutationCount > 0 && settled && Date.now() - start > 1000;
-
-      if ((changed || replaced || loaderCompleted || mutationSettledLongEnough) && settled) {
-        await sleep(150);
-        return parseServiceHistoryRows(document);
-      }
-
-      await sleep(pollMs);
+    if (!rowsByCode.has(code)) {
+      rowsByCode.set(code, new Set());
     }
-  } finally {
-    observer.disconnect();
+
+    rowsByCode.get(code).add(date);
   }
 
-  throw new Error("Timed out waiting for service-history results");
+  return getTargetProcedureCodes().map((code) => ({
+    procedure_code: code,
+    dates: sortDatesNewestFirst([...(rowsByCode.get(code) || new Set())]),
+  }));
 }
 
-function getLiveViewState() {
-  return document.querySelector('input[name="javax.faces.ViewState"]')?.value || "";
-}
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
+// LEGACY SERVICE-HISTORY SEARCH IMPLEMENTATION - RETAINED FOR ROLLBACK
+// Disabled because the complete history is now extracted in one pass.
+// Do not delete unless the new implementation has been fully validated.
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
+// const SERVICE_HISTORY_SELECTORS = {
+//   form: "#serviceHistoryPanelOptionInput",
+//   procInput: '[id="serviceHistoryPanelOptionInput:serviceHistoryInputProc"]',
+//   toothInput: '[id="serviceHistoryPanelOptionInput:serviceHistoryInputTooth"]',
+//   filterButton: '[id="serviceHistoryPanelOptionInput:buttonServiceHistoryFilter"]',
+//   clearButton: '[id="serviceHistoryPanelOptionInput:j_id_gv"]',
+//   container: "#serviceHistoryPanelContainer",
+//   table: "#serviceHistoryPanelList",
+//   loader: '[id="serviceHistoryPanelOptionInput:ajaxLoaderImage"]',
+// };
 
-function updateLiveViewState(newViewState) {
-  if (!newViewState) return;
-  document.querySelectorAll('input[name="javax.faces.ViewState"]').forEach((input) => {
-    input.value = newViewState;
-  });
-}
+// function getUniqueProcedureCodes(rows) {
+//   return [
+//     ...new Set(
+//       rows
+//         .map((row) => normalizeProcedureCode(row.procedure_code))
+//         .filter(Boolean)
+//     ),
+//   ];
+// }
 
-function buildUrlEncodedBody(formData) {
-  const params = new URLSearchParams();
-  for (const [key, value] of formData.entries()) {
-    params.append(key, value);
-  }
-  return params;
-}
+// function getServiceHistorySearchValue(code) {
+//   const normalized = normalizeProcedureCode(code);
+//   return normalized ? normalized.replace(/^D/, "") : "";
+// }
 
-function parseServiceHistoryAjaxResponse(xmlText) {
-  const xml = new DOMParser().parseFromString(xmlText, "text/xml");
-  if (xml.querySelector("parsererror")) {
-    throw new Error("Invalid JSF partial-response XML");
-  }
+// function getServiceHistorySignature(root = document) {
+//   return parseServiceHistoryRows(root)
+//     .map((row) => [row.start, row.end, row.procedure_code, row.tooth, row.surface].join("|"))
+//     .join("~");
+// }
+// 
+// function setNativeInputValue(input, value) {
+//   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+//   if (setter) setter.call(input, value);
+//   else input.value = value;
+//   input.dispatchEvent(new Event("input", { bubbles: true }));
+//   input.dispatchEvent(new Event("change", { bubbles: true }));
+// }
+// 
+// function pressEnterOnInput(input) {
+//   ["keydown", "keypress", "keyup"].forEach((type) => {
+//     input.dispatchEvent(
+//       new KeyboardEvent(type, {
+//         bubbles: true,
+//         cancelable: true,
+//         key: "Enter",
+//         code: "Enter",
+//         keyCode: 13,
+//         which: 13,
+//       })
+//     );
+//   });
+// }
+// 
+// function isServiceHistoryLoading() {
+//   const loader = document.querySelector(SERVICE_HISTORY_SELECTORS.loader);
+//   return !!loader && getComputedStyle(loader).display !== "none";
+// }
+// 
+// async function waitForServiceHistoryUpdate(
+//   previousSignature,
+//   { maxWaitMs = 12000, pollMs = 150 } = {}
+// ) {
+//   const start = Date.now();
+//   const originalContainer = document.querySelector(SERVICE_HISTORY_SELECTORS.container);
+//   let mutationCount = 0;
+//   let loaderWasVisible = isServiceHistoryLoading();
+//   const observerRoot = originalContainer?.parentElement || document.body;
+//   const observer = new MutationObserver(() => {
+//     mutationCount++;
+//   });
+// 
+//   observer.observe(observerRoot, { childList: true, subtree: true, characterData: true });
+// 
+//   try {
+//     while (Date.now() - start < maxWaitMs) {
+//       const container = document.querySelector(SERVICE_HISTORY_SELECTORS.container);
+//       const signature = getServiceHistorySignature(document);
+//       const replaced = !!originalContainer && !!container && container !== originalContainer;
+//       const changed = signature !== previousSignature;
+//       const loading = isServiceHistoryLoading();
+//       if (loading) loaderWasVisible = true;
+//       const settled = !loading;
+//       const loaderCompleted = loaderWasVisible && settled;
+//       const mutationSettledLongEnough = mutationCount > 0 && settled && Date.now() - start > 1000;
+// 
+//       if ((changed || replaced || loaderCompleted || mutationSettledLongEnough) && settled) {
+//         await sleep(150);
+//         return parseServiceHistoryRows(document);
+//       }
+// 
+//       await sleep(pollMs);
+//     }
+//   } finally {
+//     observer.disconnect();
+//   }
+// 
+//   throw new Error("Timed out waiting for service-history results");
+// }
+// 
+// function getLiveViewState() {
+//   return document.querySelector('input[name="javax.faces.ViewState"]')?.value || "";
+// }
+// 
+// function updateLiveViewState(newViewState) {
+//   if (!newViewState) return;
+//   document.querySelectorAll('input[name="javax.faces.ViewState"]').forEach((input) => {
+//     input.value = newViewState;
+//   });
+// }
+// 
+// function buildUrlEncodedBody(formData) {
+//   const params = new URLSearchParams();
+//   for (const [key, value] of formData.entries()) {
+//     params.append(key, value);
+//   }
+//   return params;
+// }
+// 
+// function parseServiceHistoryAjaxResponse(xmlText) {
+//   const xml = new DOMParser().parseFromString(xmlText, "text/xml");
+//   if (xml.querySelector("parsererror")) {
+//     throw new Error("Invalid JSF partial-response XML");
+//   }
+// 
+//   const updates = [...xml.querySelectorAll("update")];
+//   const viewStateUpdate = updates.find((node) =>
+//     (node.getAttribute("id") || "").includes("javax.faces.ViewState")
+//   );
+//   if (viewStateUpdate) updateLiveViewState(clean(viewStateUpdate.textContent));
+// 
+//   const update = updates.find(
+//     (node) => node.getAttribute("id") === "serviceHistoryPanelContainer"
+//   );
+//   if (!update) {
+//     throw new Error("serviceHistoryPanelContainer update missing");
+//   }
+// 
+//   const wrapper = document.createElement("div");
+//   wrapper.innerHTML = update.textContent || "";
+//   const table = wrapper.querySelector(SERVICE_HISTORY_SELECTORS.table);
+//   return parseServiceHistoryRows(table);
+// }
+// 
+// async function directFetchServiceHistoryCode(code) {
+//   const form = document.getElementById("serviceHistoryPanelOptionInput");
+//   const searchValue = getServiceHistorySearchValue(code);
+//   const viewState = getLiveViewState();
+//   if (!form || !searchValue || !viewState) {
+//     throw new Error("Service-history form, procedure code, or ViewState is missing");
+//   }
+// 
+//   const formData = new FormData(form);
+//   formData.set("serviceHistoryPanelOptionInput:serviceHistoryInputProc", searchValue);
+//   formData.set("serviceHistoryPanelOptionInput:serviceHistoryInputTooth", "");
+//   formData.set("serviceHistoryPanelOptionInput_SUBMIT", "1");
+//   formData.set("javax.faces.ViewState", viewState);
+//   formData.set("javax.faces.behavior.event", "action");
+//   formData.set("javax.faces.partial.event", "click");
+//   formData.set("javax.faces.source", "serviceHistoryPanelOptionInput:buttonServiceHistoryFilter");
+//   formData.set("javax.faces.partial.ajax", "true");
+//   formData.set("javax.faces.partial.execute", "@all");
+//   formData.set(
+//     "javax.faces.partial.render",
+//     "serviceHistoryPanelContainer serviceHistoryModalForm serviceHistoryPanelContainer"
+//   );
+//   formData.set("serviceHistoryPanelOptionInput", "serviceHistoryPanelOptionInput");
+// 
+//   const action = new URL(form.getAttribute("action") || location.href, location.href).href;
+// 
+//   const response = await fetch(action, {
+//     method: "POST",
+//     headers: {
+//       "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+//       "Faces-Request": "partial/ajax",
+//     },
+//     credentials: "include",
+//     body: buildUrlEncodedBody(formData),
+//   });
+// 
+//   if (!response.ok) throw new Error(`Service-history fetch failed: HTTP ${response.status}`);
+// 
+//   return parseServiceHistoryAjaxResponse(await response.text());
+// }
+// 
+// async function liveButtonSearchServiceHistoryCode(code) {
+//   const normalized = normalizeProcedureCode(code);
+//   const searchValue = getServiceHistorySearchValue(normalized);
+//   if (!normalized || !searchValue) return [];
+// 
+//   const input = document.querySelector(SERVICE_HISTORY_SELECTORS.procInput);
+//   const toothInput = document.querySelector(SERVICE_HISTORY_SELECTORS.toothInput);
+//   const button = document.querySelector(SERVICE_HISTORY_SELECTORS.filterButton);
+//   const previousSignature = getServiceHistorySignature(document);
+// 
+//   if (input && button) {
+//     input.focus();
+//     if (toothInput) setNativeInputValue(toothInput, "");
+//     setNativeInputValue(input, searchValue);
+//     pressEnterOnInput(input);
+//     button.click();
+//     return waitForServiceHistoryUpdate(previousSignature);
+//   }
+// 
+//   throw new Error("Service-history input or filter button not found");
+// }
+// 
+// async function searchServiceHistoryCode(code) {
+//   return liveButtonSearchServiceHistoryCode(code);
+// }
+// 
+// function collectSortedUniqueDates(rows) {
+//   return sortDatesNewestFirst([...new Set(rows.map((row) => clean(row.start)).filter(Boolean))]);
+// }
+// 
+// function getRawFallbackDates(rawRows, code) {
+//   return collectSortedUniqueDates(
+//     rawRows.filter((row) => normalizeProcedureCode(row.procedure_code) === code)
+//   );
+// }
+// 
+// async function scrapeMappedServiceHistory(rawRows) {
+//   const uniqueCodes = getTargetProcedureCodes();
+//   console.log(`[UCCI] Captured ${rawRows.length} raw history rows`);
+//   console.log(`[UCCI] Target service-history codes: ${uniqueCodes.length}`);
+// 
+//   const mappedRows = [];
+//   let usedVisibleSearch = false;
+// 
+//   for (let i = 0; i < uniqueCodes.length; i++) {
+//     const code = uniqueCodes[i];
+//     const searchValue = getServiceHistorySearchValue(code);
+//     console.log(`[UCCI] Searching ${code} as ${searchValue} (${i + 1}/${uniqueCodes.length})`);
+// 
+//     try {
+//       const rows = await searchServiceHistoryCode(code);
+//       let dates = collectSortedUniqueDates(rows);
+//       if (!dates.length) {
+//         const fallbackDates = getRawFallbackDates(rawRows, code);
+//         if (fallbackDates.length) {
+//           console.warn(`[UCCI] ${code} AJAX response had no dates; using raw fallback dates`);
+//           dates = fallbackDates;
+//         }
+//       }
+// 
+//       console.log(`[UCCI] ${code} AJAX response returned ${rows.length} rows and ${dates.length} dates`);
+//       mappedRows.push({ procedure_code: code, dates });
+//     } catch (error) {
+//       console.warn(`[UCCI] Live Enter/button search failed for ${code}, retrying with direct AJAX:`, error);
+// 
+//       try {
+//         const rows = await directFetchServiceHistoryCode(code);
+//         const dates = collectSortedUniqueDates(rows);
+//         console.log(`[UCCI] ${code} direct AJAX retry returned ${rows.length} rows and ${dates.length} dates`);
+//         mappedRows.push({ procedure_code: code, dates });
+//       } catch (retryError) {
+//         const dates = getRawFallbackDates(rawRows, code);
+//         console.warn(`[UCCI] Both searches failed for ${code}; using raw fallback dates:`, retryError);
+//         mappedRows.push({ procedure_code: code, dates });
+//       }
+//     }
+//     usedVisibleSearch = true;
+//   }
+// 
+//   if (usedVisibleSearch) await clearServiceHistorySearch();
+//   return mappedRows;
+// }
+// 
+// async function clearServiceHistorySearch() {
+//   const input = document.querySelector(SERVICE_HISTORY_SELECTORS.procInput);
+//   const toothInput = document.querySelector(SERVICE_HISTORY_SELECTORS.toothInput);
+//   const clearButton = document.querySelector(SERVICE_HISTORY_SELECTORS.clearButton);
+//   if (!input || !clearButton) return;
+// 
+//   const previousSignature = getServiceHistorySignature(document);
+// 
+//   try {
+//     setNativeInputValue(input, "");
+//     if (toothInput) setNativeInputValue(toothInput, "");
+//     clearButton.click();
+//     await waitForServiceHistoryUpdate(previousSignature, { maxWaitMs: 12000 });
+//     console.log("[UCCI] Restored unfiltered service history");
+//   } catch (error) {
+//     console.warn("[UCCI] Could not restore unfiltered service history:", error);
+//   }
+// }
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
+// END LEGACY SERVICE-HISTORY SEARCH IMPLEMENTATION
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
 
-  const updates = [...xml.querySelectorAll("update")];
-  const viewStateUpdate = updates.find((node) =>
-    (node.getAttribute("id") || "").includes("javax.faces.ViewState")
-  );
-  if (viewStateUpdate) updateLiveViewState(clean(viewStateUpdate.textContent));
-
-  const update = updates.find(
-    (node) => node.getAttribute("id") === "serviceHistoryPanelContainer"
-  );
-  if (!update) {
-    throw new Error("serviceHistoryPanelContainer update missing");
-  }
-
-  const wrapper = document.createElement("div");
-  wrapper.innerHTML = update.textContent || "";
-  const table = wrapper.querySelector(SERVICE_HISTORY_SELECTORS.table);
-  return parseServiceHistoryRows(table);
-}
-
-async function directFetchServiceHistoryCode(code) {
-  const form = document.getElementById("serviceHistoryPanelOptionInput");
-  const searchValue = getServiceHistorySearchValue(code);
-  const viewState = getLiveViewState();
-  if (!form || !searchValue || !viewState) {
-    throw new Error("Service-history form, procedure code, or ViewState is missing");
-  }
-
-  const formData = new FormData(form);
-  formData.set("serviceHistoryPanelOptionInput:serviceHistoryInputProc", searchValue);
-  formData.set("serviceHistoryPanelOptionInput:serviceHistoryInputTooth", "");
-  formData.set("serviceHistoryPanelOptionInput_SUBMIT", "1");
-  formData.set("javax.faces.ViewState", viewState);
-  formData.set("javax.faces.behavior.event", "action");
-  formData.set("javax.faces.partial.event", "click");
-  formData.set("javax.faces.source", "serviceHistoryPanelOptionInput:buttonServiceHistoryFilter");
-  formData.set("javax.faces.partial.ajax", "true");
-  formData.set("javax.faces.partial.execute", "@all");
-  formData.set(
-    "javax.faces.partial.render",
-    "serviceHistoryPanelContainer serviceHistoryModalForm serviceHistoryPanelContainer"
-  );
-  formData.set("serviceHistoryPanelOptionInput", "serviceHistoryPanelOptionInput");
-
-  const action = new URL(form.getAttribute("action") || location.href, location.href).href;
-
-  const response = await fetch(action, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-      "Faces-Request": "partial/ajax",
-    },
-    credentials: "include",
-    body: buildUrlEncodedBody(formData),
-  });
-
-  if (!response.ok) throw new Error(`Service-history fetch failed: HTTP ${response.status}`);
-
-  return parseServiceHistoryAjaxResponse(await response.text());
-}
-
-async function liveButtonSearchServiceHistoryCode(code) {
-  const normalized = normalizeProcedureCode(code);
-  const searchValue = getServiceHistorySearchValue(normalized);
-  if (!normalized || !searchValue) return [];
-
-  const input = document.querySelector(SERVICE_HISTORY_SELECTORS.procInput);
-  const toothInput = document.querySelector(SERVICE_HISTORY_SELECTORS.toothInput);
-  const button = document.querySelector(SERVICE_HISTORY_SELECTORS.filterButton);
-  const previousSignature = getServiceHistorySignature(document);
-
-  if (input && button) {
-    input.focus();
-    if (toothInput) setNativeInputValue(toothInput, "");
-    setNativeInputValue(input, searchValue);
-    pressEnterOnInput(input);
-    button.click();
-    return waitForServiceHistoryUpdate(previousSignature);
-  }
-
-  throw new Error("Service-history input or filter button not found");
-}
-
-async function searchServiceHistoryCode(code) {
-  return liveButtonSearchServiceHistoryCode(code);
-}
-
-function collectSortedUniqueDates(rows) {
-  return sortDatesNewestFirst([...new Set(rows.map((row) => clean(row.start)).filter(Boolean))]);
-}
-
-function getRawFallbackDates(rawRows, code) {
-  return collectSortedUniqueDates(
-    rawRows.filter((row) => normalizeProcedureCode(row.procedure_code) === code)
-  );
-}
-
-async function scrapeMappedServiceHistory(rawRows) {
-  const uniqueCodes = getTargetProcedureCodes();
-  console.log(`[UCCI] Captured ${rawRows.length} raw history rows`);
-  console.log(`[UCCI] Target service-history codes: ${uniqueCodes.length}`);
-
-  const mappedRows = [];
-  let usedVisibleSearch = false;
-
-  for (let i = 0; i < uniqueCodes.length; i++) {
-    const code = uniqueCodes[i];
-    const searchValue = getServiceHistorySearchValue(code);
-    console.log(`[UCCI] Searching ${code} as ${searchValue} (${i + 1}/${uniqueCodes.length})`);
-
-    try {
-      const rows = await searchServiceHistoryCode(code);
-      let dates = collectSortedUniqueDates(rows);
-      if (!dates.length) {
-        const fallbackDates = getRawFallbackDates(rawRows, code);
-        if (fallbackDates.length) {
-          console.warn(`[UCCI] ${code} AJAX response had no dates; using raw fallback dates`);
-          dates = fallbackDates;
-        }
-      }
-
-      console.log(`[UCCI] ${code} AJAX response returned ${rows.length} rows and ${dates.length} dates`);
-      mappedRows.push({ procedure_code: code, dates });
-    } catch (error) {
-      console.warn(`[UCCI] Live Enter/button search failed for ${code}, retrying with direct AJAX:`, error);
-
-      try {
-        const rows = await directFetchServiceHistoryCode(code);
-        const dates = collectSortedUniqueDates(rows);
-        console.log(`[UCCI] ${code} direct AJAX retry returned ${rows.length} rows and ${dates.length} dates`);
-        mappedRows.push({ procedure_code: code, dates });
-      } catch (retryError) {
-        const dates = getRawFallbackDates(rawRows, code);
-        console.warn(`[UCCI] Both searches failed for ${code}; using raw fallback dates:`, retryError);
-        mappedRows.push({ procedure_code: code, dates });
-      }
-    }
-    usedVisibleSearch = true;
-  }
-
-  if (usedVisibleSearch) await clearServiceHistorySearch();
-  return mappedRows;
-}
-
-async function clearServiceHistorySearch() {
-  const input = document.querySelector(SERVICE_HISTORY_SELECTORS.procInput);
-  const toothInput = document.querySelector(SERVICE_HISTORY_SELECTORS.toothInput);
-  const clearButton = document.querySelector(SERVICE_HISTORY_SELECTORS.clearButton);
-  if (!input || !clearButton) return;
-
-  const previousSignature = getServiceHistorySignature(document);
-
-  try {
-    setNativeInputValue(input, "");
-    if (toothInput) setNativeInputValue(toothInput, "");
-    clearButton.click();
-    await waitForServiceHistoryUpdate(previousSignature, { maxWaitMs: 12000 });
-    console.log("[UCCI] Restored unfiltered service history");
-  } catch (error) {
-    console.warn("[UCCI] Could not restore unfiltered service history:", error);
-  }
-}
-
-// ══════════════════════════════════════════════════════════════════════════
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
 // SECTION 3: BENEFIT CATEGORY TABLES (Preventive Exams, X-rays, etc.)
 //
 // All 26 category tables + the 1 Wellness Benefits table are ALREADY fully
-// rendered in the DOM on page load (confirmed via fresh-page-load test —
+// rendered in the DOM on page load (confirmed via fresh-page-load test �
 // no clicking/accordion-expansion required), all sharing the same
 // (invalid but present) id="benefitDetailAllServiceProceduresList".
 //
 // Each row is read by CSS class prefix (benefitServiceDetailProcedure-colN
 // or the noDisplay placeholder cells used on "Not Covered" merged rows)
-// rather than by cell position/colspan — this naturally normalizes both
+// rather than by cell position/colspan � this naturally normalizes both
 // row shapes to the same 8 logical fields.
-// ══════════════════════════════════════════════════════════════════════════
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
 
 function parseProcedureRow(tr) {
   const cells = [...tr.querySelectorAll('td[class*="benefitServiceDetailProcedure-"]')];
@@ -488,7 +524,7 @@ function scrapeBenefitCategories() {
   //   2. The three "Policy Information" accordion toggles (Deductibles and
   //      Maximums / Coordination and Other Benefits / Wellness Benefits)
   //      that sit just above the real category list and are handled by
-  //      their own dedicated scrape functions — including them here shifted
+  //      their own dedicated scrape functions � including them here shifted
   //      every subsequent category label by 3 positions.
   const NON_CATEGORY_TOGGLES = /^(Deductibles and Maximums|Coordination and Other Benefits|Wellness Benefits)/i;
   const categoryNames = [...document.querySelectorAll("td.benefit-service-details-col-1")]
@@ -516,9 +552,9 @@ function scrapeBenefitCategories() {
   return categories;
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
 // SECTION 4: DEDUCTIBLES AND MAXIMUMS
-// ══════════════════════════════════════════════════════════════════════════
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
 
 async function scrapeDeductiblesAndMaximums() {
   const table = await waitForRows("#benefitPolicyInformationDeductiblesAndMaximums");
@@ -530,10 +566,10 @@ async function scrapeDeductiblesAndMaximums() {
   });
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
 // SECTION 5: COORDINATION AND OTHER BENEFITS
-// (single-column table — plan-level rules/disclaimers)
-// ══════════════════════════════════════════════════════════════════════════
+// (single-column table � plan-level rules/disclaimers)
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
 
 const FINANCIAL_MONEY_RE = /\$[\d,]+(?:\.\d{2})?/;
 const FINANCIAL_PERIOD_RE = /(\d{2}\/\d{2}\/\d{4})\s*-\s*(\d{2}\/\d{2}\/\d{4})/;
@@ -765,9 +801,9 @@ async function scrapeCoordinationAndOtherBenefits() {
   return [...table.querySelectorAll("tbody tr")].map((tr) => clean(tr.textContent));
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
 // DOWNLOAD
-// ══════════════════════════════════════════════════════════════════════════
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
 
 function triggerUcciDownload(auditData) {
   const sanitize = (s) =>
@@ -786,12 +822,12 @@ function triggerUcciDownload(auditData) {
   a.click();
   URL.revokeObjectURL(url);
   document.body.removeChild(a);
-  console.log(`✓ Downloaded: ${filename}`);
+  console.log(`�S Downloaded: ${filename}`);
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
 // MAIN
-// ══════════════════════════════════════════════════════════════════════════
+// �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
 
 async function runUcciAudit() {
   console.log("=== UCCI SCRAPE STARTED ===");
@@ -804,11 +840,34 @@ async function runUcciAudit() {
   console.log("Scraping patient info...");
   auditData.patient_info = scrapePatientInfo();
 
-  console.log("Scraping Service History Snapshot...");
+  console.log(
+    "Scraping complete Service History from the selected-patient response..."
+  );
+
+  const serviceHistoryTable = document.querySelector(SERVICE_HISTORY_TABLE_SELECTOR);
+  if (!serviceHistoryTable) {
+    console.warn(
+      "[UCCI] Complete Service History table was not found; returning empty dates for target codes"
+    );
+  }
+
   const rawServiceHistory = scrapeServiceHistorySnapshot();
 
-  console.log("Scraping mapped Service History by procedure search...");
-  auditData.service_history = await scrapeMappedServiceHistory(rawServiceHistory);
+  console.log(
+    `[UCCI] Captured ${rawServiceHistory.length} complete Service History rows`
+  );
+
+  auditData.service_history =
+    mapServiceHistoryFromSnapshot(rawServiceHistory);
+
+  const matchedHistoryCodes = auditData.service_history.filter(
+    (entry) => entry.dates.length > 0
+  ).length;
+
+  console.log(
+    `[UCCI] Mapped Service History for ${auditData.service_history.length} target codes; ` +
+    `${matchedHistoryCodes} codes have recorded service dates`
+  );
 
   console.log("Scraping benefit category tables (already rendered, no clicks needed)...");
   auditData.benefit_categories = scrapeBenefitCategories();
@@ -829,7 +888,7 @@ async function runUcciAudit() {
     const context = result.audit_context || {};
     context.ucci_data = auditData;
     chrome.storage.local.set({ audit_context: context }, () => {
-      console.log("✓ UCCI data stored");
+      console.log("�S UCCI data stored");
       triggerUcciDownload(auditData);
     });
   });
@@ -851,3 +910,5 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 });
+
+

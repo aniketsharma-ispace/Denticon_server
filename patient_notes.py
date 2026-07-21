@@ -79,15 +79,15 @@ def late_dos_metlife(procedures: list, code: str) -> str:
 def late_dos_cigna(procedures: list, code: str) -> str:
     for p in procedures:
         if p.get("procedure_code", "").upper() == code.upper():
+            raw_dates = p.get("api_details", {}).get("history_dates", [])
+            if raw_dates:
+                return _format_dates(raw_dates, ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"))
+            # fallback for any file where api_details/history_dates is missing —
+            # keep the old single-date behavior rather than losing it entirely
             dos = p.get("history_date", "").strip()
             if not dos or dos in ("N/A", "No history on file", "—", ""):
                 return "NH"
-            for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
-                try:
-                    return datetime.strptime(dos, fmt).strftime("%m/%d/%Y")
-                except ValueError:
-                    continue
-            return dos
+            return _format_dates([dos], ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"))
     return "NH"
 
 
@@ -114,24 +114,20 @@ def late_dos_dd_ins_scraper(benefits_search: list, code: str) -> str:
 
 def late_dos_ddri(procedures: list, code: str) -> str:
     """
-    DDRI (live portal scrape) nests history per-procedure as a list of dicts:
-    {"procedure_code": "D0120", ..., "history": [{"service_date": "07/10/2025", ...}, ...]}
-    The first entry is assumed most recent (matches observed ordering — newest first).
+    DDRI nests history per-procedure as a list of dicts, newest-first:
+    {"procedure_code": "D0120", ..., "history": [{"service_date": "07/10/2025"},
+    ...]}. Same code legitimately has multiple visit dates on file (e.g. an
+    annual exam over several years) — return ALL of them comma-joined via
+    _format_dates, same as late_dos_ddva/late_dos_ucci, not just history[0].
     """
     for p in procedures:
         if p.get("procedure_code", "").upper() == code.upper():
-            hist = p.get("history", [])
-            if not hist:
-                return "NH"
-            raw = (hist[0].get("service_date") or "").strip()
-            if not raw:
-                return "NH"
-            for fmt in ("%m/%d/%Y", "%m/%d/%y"):
-                try:
-                    return datetime.strptime(raw, fmt).strftime("%m/%d/%Y")
-                except ValueError:
-                    continue
-            return raw
+            raw_dates = [
+                (h.get("service_date") or "").strip()
+                for h in p.get("history", [])
+                if (h.get("service_date") or "").strip()
+            ]
+            return _format_dates(raw_dates, ("%m/%d/%Y", "%m/%d/%y"))
     return "NH"
 
 
@@ -252,6 +248,19 @@ TRACKED_QUERY_CODES = {
     "D0210", "D0330",
 }
 
+def _ddri_find_category(entries, category_label):
+    for entry in entries:
+        if entry.get("category", "").strip().lower() == category_label.strip().lower():
+            return entry
+    return None
+
+def _ddri_used(entry):
+    if not entry:
+        return "0.00"
+    used = entry.get("used", "")
+    if not used or used in ("N/A", ""):
+        return "0.00"
+    return fmt_money(used)
 
 def build_patient_notes(denticon_data: dict, insurance_data: dict) -> dict:
     dent = denticon_data.get("denticon_data", denticon_data)
@@ -356,13 +365,33 @@ def build_patient_notes(denticon_data: dict, insurance_data: dict) -> dict:
         ortho_used   = fmt_money(fin.get("ortho_lifetime", {}).get("used", ""))
 
     elif is_cigna:
-        fin        = cigna_data.get("financials", {})
-        annual_max = fin.get("annual_max",     {})
-        deductible = fin.get("deductible_ind", {})
-        ortho      = fin.get("ortho_lifetime", {})
-        ind_max_used = calc_used(annual_max.get("total", ""), annual_max.get("remaining", ""))
-        ind_ded_used = calc_used(deductible.get("total", ""), deductible.get("remaining", ""))
-        ortho_used   = calc_used(ortho.get("total", ""),      ortho.get("remaining", ""))
+        fin          = cigna_data.get("financials", {})
+        max_records  = fin.get("maximum_records", [])
+        ded_records  = fin.get("deductible_records", [])
+        in_network = cigna_data.get("plan_details", {}).get("network", {}).get("name", "")
+
+        def _cigna_pick(records, desc_pattern):
+            for r in records:
+                is_out_of_network = (
+                    r.get("networkName", "") == "OONET"
+                    or r.get("networkType", "") == "OON"
+                )
+                is_dollar_amount = r.get("amount", "").strip().startswith("$")
+                if (not is_out_of_network
+                    and is_dollar_amount
+                    and r.get("covers", "") == "IND"
+                    and re.search(desc_pattern, r.get("desc", ""), re.IGNORECASE)):
+                    return r
+            return None
+
+        max_rec   = _cigna_pick(max_records, r"calendar year maximum")
+        ortho_rec = _cigna_pick(max_records, r"lifetime maximum")
+        ded_rec   = _cigna_pick(ded_records, r"calendar year deductible")
+
+        ind_max_used = fmt_money(max_rec.get("met", ""))   if max_rec   else "0.00"
+        ind_ded_used = fmt_money(ded_rec.get("met", ""))   if ded_rec   else "0.00"
+        ortho_used   = fmt_money(ortho_rec.get("met", "")) if ortho_rec else "0.00"
+
         if not carrier:
             carrier = "CIGNA"
 
@@ -456,10 +485,12 @@ def build_patient_notes(denticon_data: dict, insurance_data: dict) -> dict:
             carrier = "DELTA DENTAL"
 
     elif is_ddri:
-        fin          = ddri_data.get("financials", {})
-        ind_max_used = fmt_money(fin.get("annual_max",     {}).get("used", ""))
-        ind_ded_used = fmt_money(fin.get("deductible_ind", {}).get("used", ""))
-        ortho_used   = fmt_money(fin.get("ortho_lifetime", {}).get("used", ""))
+        maximums    = ddri_data.get("financials", {}).get("maximums", [])
+        deductibles = ddri_data.get("financials", {}).get("deductibles", [])
+
+        ind_max_used = _ddri_used(_ddri_find_category(maximums, "Annual Maximum"))
+        ind_ded_used = _ddri_used(_ddri_find_category(deductibles, "Individual Deductible"))
+        ortho_used   = _ddri_used(_ddri_find_category(maximums, "Maximum Lifetime Cap"))
         if not carrier:
             carrier = "DELTA DENTAL"
 
@@ -684,25 +715,31 @@ def build_patient_notes(denticon_data: dict, insurance_data: dict) -> dict:
         "D1206": ["D1208"],                          # Fluoride: Varnish <-> Gel/topical
         "D0210": ["D0330"],                          # Full mouth series <-> Panoramic
     }
+    if is_ucci:
+        CODE_ALIASES.setdefault("D0120", []).append("D0150")
+        CODE_ALIASES.setdefault("D0150", []).append("D0120")
 
-    # MetLife-specific: the plan's own "Cleanings and Periodontal Maintenance"
-    # provision states whether Prophylaxis (D1110) and Periodontal Maintenance
-    # (D4910) draw from one COMBINED frequency count rather than being tracked
-    # separately, e.g. "This plan combines the frequency limitation for
-    # cleanings and periodontal maintenance visits. The combined limit is 2".
-    # This provision is present on every MetLife plan regardless — only a
-    # combined limit GREATER THAN 0 actually means they're shared; a limit of
-    # 0 (seen just as often) means NOT combined despite the rule existing.
-    # Only merge when the plan explicitly confirms a positive combined limit;
-    # never assume sharing by default. metlife_data is {} for every other
-    # carrier, so .get("provisions", []) is a safe no-op there.
-    for prov in metlife_data.get("provisions", []):
-        if prov.get("rule", "").strip().lower() == "cleanings and periodontal maintenance":
-            m = re.search(r"combined limit is (\d+)", prov.get("value", ""), re.IGNORECASE)
-            if m and int(m.group(1)) > 0:
-                CODE_ALIASES.setdefault("D1110", []).append("D4910")
-                CODE_ALIASES.setdefault("D4910", []).append("D1110")
-            break
+        # D1110/D4910 frequency sharing is plan-specific for UCCI — only merge
+        # when THIS plan's own benefit-details limitation text says so. Carriers
+        # word it from either row ("in combination with routine cleanings" on
+        # D4910, or "in combination with periodontal maintenance" on D1110), so
+        # check both directions rather than assuming one canonical phrasing.
+        def _ucci_limitations(code):
+            for cat in ucci_data.get("benefit_categories", []):
+                for p in cat.get("procedures", []):
+                    if p.get("procedure_code", "").upper() == code:
+                        yield p.get("limitation", "")
+
+        shares_freq = any(
+            re.search(r"in combination with routine (cleaning|prophylaxis)", lim, re.IGNORECASE)
+            for lim in _ucci_limitations("D4910")
+        ) or any(
+            re.search(r"in combination with periodontal maintenance", lim, re.IGNORECASE)
+            for lim in _ucci_limitations("D1110")
+        )
+        if shares_freq:
+            CODE_ALIASES.setdefault("D1110", []).append("D4910")
+            CODE_ALIASES.setdefault("D4910", []).append("D1110")
         
     def _dos_with_aliases(code: str) -> str:
         # Merge dates from the primary code AND every alias code together —

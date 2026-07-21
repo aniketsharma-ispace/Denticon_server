@@ -1,25 +1,284 @@
+if (typeof document === "undefined" || globalThis.location?.protocol === "moz-extension:") {
+    // Service-worker half of this same file. Cigna API calls must originate from
+    // the extension to use host permissions and avoid page CORS restrictions.
+    const CIGNA_ORIGIN = "https://p-chcp.digitaledge.cigna.com";
+    const CIGNA_SESSION_ERROR = "Cigna API session was not captured. Open or reload the Dental Coverage page while signed in, then run the crawl again.";
+    const cignaSessions = new Map();
+    const descriptionCache = new Map();
+
+    chrome.webRequest.onBeforeSendHeaders.addListener(details => {
+        if (details.tabId < 0) return;
+        let url;
+        try { url = new URL(details.url); } catch (_) { return; }
+        const match = url.pathname.match(/^\/patient\/dental\/v2\/benefits\/([^/]+)\/(?:coverage-and-benefits|dental-benefits)$/);
+        if (!match) return;
+        const authorization = (details.requestHeaders || []).find(header => header.name.toLowerCase() === "authorization")?.value;
+        if (!authorization) return;
+        const previous = cignaSessions.get(details.tabId) || {};
+        cignaSessions.set(details.tabId, {
+            authorization,
+            contextId: decodeURIComponent(match[1]),
+            consumerCode: url.searchParams.get("consumerCode") || previous.consumerCode,
+            asof: url.searchParams.get("asof") || previous.asof,
+            capturedAt: Date.now()
+        });
+        chrome.storage.session.set({ [`cigna_session_${details.tabId}`]: cignaSessions.get(details.tabId) });
+    }, { urls: [`${CIGNA_ORIGIN}/*`] },
+    typeof browser === "undefined" ? ["requestHeaders", "extraHeaders"] : ["requestHeaders"]);
+
+    async function requireSession(tabId) {
+        let session = cignaSessions.get(tabId);
+        if (!session) {
+            const key = `cigna_session_${tabId}`;
+            session = (await chrome.storage.session.get(key))[key];
+            if (session) cignaSessions.set(tabId, session);
+        }
+        if (!session?.authorization || !session.contextId || !session.consumerCode || !session.asof) throw new Error(CIGNA_SESSION_ERROR);
+        return session;
+    }
+
+    async function workerCignaApi(tabId, action, payload) {
+        const session = await requireSession(tabId);
+        if (action === "session") return { captured: true };
+        let url;
+        const options = { credentials: "include", headers: { accept: "application/json, text/plain, */*", authorization: session.authorization } };
+        if (action === "coverage") {
+            url = new URL(`${CIGNA_ORIGIN}/patient/dental/v2/benefits/${encodeURIComponent(session.contextId)}/coverage-and-benefits`);
+            url.search = new URLSearchParams({ consumerCode: session.consumerCode, asof: session.asof });
+        } else if (action === "description") {
+            const cacheKey = `${session.asof}:${payload.code}`;
+            if (descriptionCache.has(cacheKey)) return descriptionCache.get(cacheKey);
+            url = new URL(`${CIGNA_ORIGIN}/search/v2/codes/procedures`);
+            url.search = new URLSearchParams({ consumerCode: session.consumerCode, search: payload.code, asof: session.asof, claimSystem: "DNTC" });
+        } else if (action === "benefits") {
+            url = new URL(`${CIGNA_ORIGIN}/patient/dental/v2/benefits/${encodeURIComponent(session.contextId)}/dental-benefits`);
+            url.search = new URLSearchParams({ consumerCode: session.consumerCode, asof: session.asof, coverage: "DENT" });
+            options.method = "POST";
+            options.headers["content-type"] = "application/json";
+            options.body = JSON.stringify({ procedures: (payload.procedures || []).map(item => ({
+                code: item.code, tooth: item.tooth || "", arch: item.arch || "", quadrant: item.quadrant || "", desc: item.desc || ""
+            })) });
+        } else throw new Error("Unsupported Cigna API operation.");
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 25000);
+        let response;
+        try { response = await fetch(url, { ...options, signal: controller.signal }); }
+        finally { clearTimeout(timer); }
+        if (!response.ok) {
+            if (response.status === 401 || response.status === 403) {
+                cignaSessions.delete(tabId);
+                chrome.storage.session.remove(`cigna_session_${tabId}`);
+            }
+            const retryAfter = response.headers.get("retry-after");
+            const error = new Error(response.status === 401 || response.status === 403 ? CIGNA_SESSION_ERROR : "Cigna API request failed.");
+            error.status = response.status;
+            error.retryAfterMs = retryAfter && /^\d+(?:\.\d+)?$/.test(retryAfter) ? Number(retryAfter) * 1000 : 0;
+            error.retryable = response.status === 429 || response.status >= 500;
+            throw error;
+        }
+        const data = await response.json();
+        if (action === "description") {
+            const exact = (data.matches || []).find(item => item.code === payload.code);
+            const result = { description: exact?.longDesc || exact?.shortDesc || "" };
+            descriptionCache.set(`${session.asof}:${payload.code}`, result);
+            return result;
+        }
+        return data;
+    }
+
+    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        if (request?.command === "CIGNA_CLEAR_SESSION") {
+            const tabId = sender.tab?.id;
+            cignaSessions.delete(tabId);
+            descriptionCache.clear();
+            chrome.storage.session.remove(`cigna_session_${tabId}`, () => sendResponse({ ok: true }));
+            return true;
+        }
+        if (request?.command !== "CIGNA_API") return;
+        workerCignaApi(sender.tab?.id, request.action, request.payload || {})
+            .then(data => sendResponse({ ok: true, data }))
+            .catch(error => sendResponse({ ok: false, error: error.message, status: error.status || 0, retryAfterMs: error.retryAfterMs || 0, retryable: Boolean(error.retryable) }));
+        return true;
+    });
+    chrome.tabs.onRemoved.addListener(tabId => {
+        cignaSessions.delete(tabId);
+        chrome.storage.session.remove(`cigna_session_${tabId}`);
+    });
+} else if (!globalThis.chrome?.runtime?.id) {
+    // MAIN-world half of this file. It starts at document_start so it can retain
+    // the authenticated Cigna request context without an extension background.
+    (() => {
+        const BRIDGE_CHANNEL = "insurance-auditor-cigna-v2";
+        if (window.__insuranceAuditorCignaBridgeV2) return;
+        window.__insuranceAuditorCignaBridgeV2 = true;
+        const API_ORIGIN = "https://p-chcp.digitaledge.cigna.com";
+        let session = null;
+
+        const bearerFromValue = value => {
+            const text = String(value || "");
+            const bearer = text.match(/Bearer\s+([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/i)?.[0];
+            if (bearer) return bearer;
+            const jwt = text.match(/(?:access[_-]?token["']?\s*[:=]\s*["']?)?([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/i)?.[1];
+            return jwt ? `Bearer ${jwt}` : "";
+        };
+
+        function recoverSession() {
+            let recovered = session ? { ...session } : {};
+            for (const entry of performance.getEntriesByType("resource")) {
+                let url;
+                try { url = new URL(entry.name); } catch (_) { continue; }
+                const match = url.pathname.match(/^\/patient\/dental\/v2\/benefits\/([^/]+)\/(?:coverage-and-benefits|dental-benefits)$/);
+                if (!match) continue;
+                recovered.contextId = decodeURIComponent(match[1]);
+                recovered.consumerCode = url.searchParams.get("consumerCode") || recovered.consumerCode;
+                recovered.asof = url.searchParams.get("asof") || recovered.asof;
+            }
+            if (!recovered.authorization) {
+                for (const storage of [sessionStorage, localStorage]) {
+                    const keys = Array.from({ length: storage.length }, (_, index) => storage.key(index))
+                        .sort((a, b) => Number(/access|bearer/i.test(b)) - Number(/access|bearer/i.test(a)));
+                    for (const key of keys) {
+                        const authorization = bearerFromValue(storage.getItem(key));
+                        if (authorization) { recovered.authorization = authorization; break; }
+                    }
+                    if (recovered.authorization) break;
+                }
+            }
+            if (recovered.authorization || recovered.contextId) session = { ...recovered, capturedAt: recovered.capturedAt || Date.now() };
+            return session;
+        }
+
+        const capture = (input, init = {}) => {
+            let url, headers;
+            try {
+                const request = input instanceof Request ? input : null;
+                url = new URL(request?.url || String(input), location.href);
+                headers = new Headers(init.headers || request?.headers || {});
+            } catch (_) { return; }
+            const match = url.pathname.match(/^\/patient\/dental\/v2\/benefits\/([^/]+)\/(?:coverage-and-benefits|dental-benefits)$/);
+            if (!match) return;
+            const authorization = headers.get("authorization");
+            if (!authorization) return;
+            session = {
+                authorization, contextId: decodeURIComponent(match[1]),
+                consumerCode: url.searchParams.get("consumerCode") || session?.consumerCode,
+                asof: url.searchParams.get("asof") || session?.asof,
+                capturedAt: Date.now()
+            };
+        };
+
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = function(input, init) {
+            capture(input, init);
+            return nativeFetch(input, init);
+        };
+        const nativeOpen = XMLHttpRequest.prototype.open;
+        const nativeSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+        const nativeSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method, url) {
+            this.__auditorRequest = { method, url, headers: {} };
+            return nativeOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+            if (this.__auditorRequest) this.__auditorRequest.headers[name] = value;
+            return nativeSetHeader.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function() {
+            const request = this.__auditorRequest;
+            if (request) capture(request.url, { headers: request.headers });
+            return nativeSend.apply(this, arguments);
+        };
+
+        function pageRequest(url, options) {
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                nativeOpen.call(xhr, options.method || "GET", String(url), true);
+                xhr.withCredentials = true;
+                xhr.timeout = 25000;
+                for (const [name, value] of Object.entries(options.headers || {})) nativeSetHeader.call(xhr, name, value);
+                xhr.onload = () => resolve({
+                    ok: xhr.status >= 200 && xhr.status < 300,
+                    status: xhr.status,
+                    retryAfter: xhr.getResponseHeader("retry-after"),
+                    json: () => JSON.parse(xhr.responseText)
+                });
+                xhr.onerror = () => reject(new Error("Cigna API network request failed. The portal blocked the request before returning an HTTP response."));
+                xhr.ontimeout = () => reject(new Error("Cigna API request timed out."));
+                xhr.onabort = () => reject(new Error("Cigna API request was aborted."));
+                nativeSend.call(xhr, options.body || null);
+            });
+        }
+
+        async function callApi(action, payload) {
+            recoverSession();
+            if (!session?.authorization || !session.contextId || !session.consumerCode || !session.asof)
+                throw new Error("Cigna API session is not ready. Open the patient's Dental Coverage page, wait for it to finish loading, then run the crawl.");
+            let url;
+            const options = { credentials: "include", headers: { accept: "application/json, text/plain, */*", authorization: session.authorization } };
+            if (action === "session") return { captured: true };
+            if (action === "coverage") {
+                url = new URL(`${API_ORIGIN}/patient/dental/v2/benefits/${encodeURIComponent(session.contextId)}/coverage-and-benefits`);
+                url.search = new URLSearchParams({ consumerCode: session.consumerCode, asof: session.asof });
+            } else if (action === "description") {
+                url = new URL(`${API_ORIGIN}/search/v2/codes/procedures`);
+                url.search = new URLSearchParams({ consumerCode: session.consumerCode, search: payload.code, asof: session.asof, claimSystem: "DNTC" });
+            } else if (action === "benefits") {
+                url = new URL(`${API_ORIGIN}/patient/dental/v2/benefits/${encodeURIComponent(session.contextId)}/dental-benefits`);
+                url.search = new URLSearchParams({ consumerCode: session.consumerCode, asof: session.asof, coverage: "DENT" });
+                options.method = "POST";
+                options.headers["content-type"] = "application/json";
+                options.body = JSON.stringify({ procedures: (payload.procedures || []).map(item => ({
+                    code: item.code, tooth: item.tooth || "", arch: item.arch || "", quadrant: item.quadrant || "", desc: item.desc || ""
+                })) });
+            } else throw new Error("Unsupported Cigna API operation.");
+            const response = await pageRequest(url, options);
+            if (!response.ok) {
+                const error = new Error(response.status === 401 || response.status === 403
+                    ? "Cigna session expired. Reopen the Dental Coverage page and try again."
+                    : "Cigna API request failed.");
+                error.status = response.status;
+                error.retryable = response.status === 429 || response.status >= 500;
+                const retryAfter = response.retryAfter;
+                error.retryAfterMs = retryAfter && /^\d+(?:\.\d+)?$/.test(retryAfter) ? Number(retryAfter) * 1000 : 0;
+                throw error;
+            }
+            const data = response.json();
+            if (action === "description") {
+                const exact = (data.matches || []).find(item => item.code === payload.code);
+                return { description: exact?.longDesc || exact?.shortDesc || "" };
+            }
+            return data;
+        }
+
+        window.addEventListener("message", event => {
+            if (event.source !== window || event.data?.source !== BRIDGE_CHANNEL || event.data?.type !== "request") return;
+            const { id, action, payload } = event.data;
+            callApi(action, payload || {}).then(data => window.postMessage({ source: BRIDGE_CHANNEL, type: "response", id, ok: true, data }, "*"))
+                .catch(error => window.postMessage({ source: BRIDGE_CHANNEL, type: "response", id, ok: false, error: error.message, status: error.status || 0, retryAfterMs: error.retryAfterMs || 0, retryable: Boolean(error.retryable) }, "*"));
+        });
+    })();
+} else {
 const clean = (s) => (s || "").trim().replace(/\s+/g, ' ');
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const getVal = (selector) => document.querySelector(`[data-test-id="${selector}"]`)?.innerText?.trim() || "N/A";
 
 // ── Code lists ─────────────────────────────────────────────────────────────
-const STATIC_CODES   = ["D0120","D0150","D1110","D4910","D4355","D0274","D0210"];
-const SPECIAL_CODES  = ["D1510"];
-const AGE_GATED_LIST = ["D1206","D1208","D1351","D8080"];
-const AGE_GATED_META = {
-    "D1206": { maxAge: 18, label: "Topical Fluoride" },
-    "D1208": { maxAge: 18, label: "Topical Fluoride" },
-    "D1351": { maxAge: 13, label: "Topical Sealant" },
-    "D8080": { maxAge: null, label: "Orthodontics" },
-};
-const QUADRANT_CODES = { "D1510": "LR" };
-const TOOTH_CODES    = { "D1351": "1" };
+const PROCEDURE_CODES = [
+    "D0120", "D0180", "D0140", "D0150", "D0274", "D0210", "D0330",
+    "D0220", "D0364", "D0431", "D1110", "D1120", "D1206", "D1351",
+    "D1510", "D2391", "D2740", "D2950", "D2962", "D6750", "D5110",
+    "D9110", "D9222", "D9230", "D9243", "D9310", "D9944", "D4341",
+    "D4355", "D4346", "D4910", "D4381", "D4260", "D4249", "D3310",
+    "D3330", "D7140", "D7210", "D7240", "D7953", "D6010", "D6056"
+];
 
 // ══════════════════════════════════════════════════════════════════════════
 // PAGE LOCK
 // ══════════════════════════════════════════════════════════════════════════
 
 let _overlay = null;
+let activeCignaRun = null;
+let _lastStatusAt = 0;
 function lockPage() {
     if (_overlay) return;
     _overlay = document.createElement('div');
@@ -76,24 +335,6 @@ async function waitFor(fn, timeout = 8000) {
     while (Date.now() < deadline) { const r = fn(); if (r) return r; await sleep(200); }
     return null;
 }
-async function angularType(input, text) {
-    input.focus();
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-    const setVal = v => setter ? setter.call(input, v) : (input.value = v);
-    setVal('');
-    input.dispatchEvent(new Event('input',  { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    await sleep(150);
-    for (const char of text) {
-        setVal(input.value + char);
-        input.dispatchEvent(new Event('input',   { bubbles: true }));
-        input.dispatchEvent(new KeyboardEvent('keydown',  { key: char, bubbles: true }));
-        input.dispatchEvent(new KeyboardEvent('keypress', { key: char, bubbles: true }));
-        input.dispatchEvent(new KeyboardEvent('keyup',    { key: char, bubbles: true }));
-        await sleep(80);
-    }
-}
-
 // ══════════════════════════════════════════════════════════════════════════
 // PAGE SCRAPE — static data
 // ══════════════════════════════════════════════════════════════════════════
@@ -955,7 +1196,7 @@ async function expandAndScrapeAllRows() {
 // PROCEDURE CODE CRAWL
 // ══════════════════════════════════════════════════════════════════════════
 
-async function crawlProcedureCodes(baseData) {
+async function crawlProcedureCodesLegacy(baseData) {
     const ageLimits      = readAgeLimitsFromPage();
     const patientDOB     = baseData.patient.dob !== 'N/A' ? baseData.patient.dob : null;
     const allowedAgeCodes = filterCodesByAge(ageLimits, patientDOB);
@@ -1003,21 +1244,736 @@ async function crawlProcedureCodes(baseData) {
 // MAIN ENTRY
 // ══════════════════════════════════════════════════════════════════════════
 
-async function runCignaCrawl() {
-    if (!chrome.runtime?.id) return null;
+function cignaMessage(action, payload = {}) {
+    return new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ command: "CIGNA_API", action, payload }, response => {
+            if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+            if (!response?.ok) return reject(Object.assign(new Error(response?.error || "Cigna API request failed."), {
+                status: response?.status || 0, retryAfterMs: response?.retryAfterMs || 0, retryable: Boolean(response?.retryable)
+            }));
+            resolve(response.data);
+        });
+    });
+}
+function setStatusThrottled(msg, force = false) {
+    const now = Date.now();
+    if (!force && now - _lastStatusAt < 200) return;
+    _lastStatusAt = now;
+    setStatus(msg);
+}
 
-    const chevrons = document.querySelectorAll('.collapsible__header[aria-expanded="false"]');
-    if (chevrons.length > 0) {
-        chevrons.forEach(c => c.click());
-        await sleep(2500);
+async function runPool(items, limit, worker) {
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+        while (next < items.length) await worker(items[next++]);
+    }));
+}
+
+function tierNumber(record) {
+    for (const value of [record?.tierIndex, record?.networkTier, record?.tier]) {
+        const number = Number(value);
+        if (Number.isFinite(number) && number > 0) return number;
     }
+    return Number.POSITIVE_INFINITY;
+}
+
+function preferredRecord(records, individual = false) {
+    const valid = (Array.isArray(records) ? records : []).filter(Boolean);
+    return valid.sort((a, b) => {
+        const aTier = tierNumber(a), bTier = tierNumber(b);
+        if ((aTier === 1) !== (bTier === 1)) return aTier === 1 ? -1 : 1;
+        if (individual && (a.covers === "IND") !== (b.covers === "IND")) return a.covers === "IND" ? -1 : 1;
+        return aTier - bTier;
+    })[0];
+}
+
+function normalizeProcedureCode(value) {
+    return String(value || "").trim().toUpperCase();
+}
+
+function latestHistoryDate(history) {
+    if (Array.isArray(history) && history.length === 0) return "No history on file";
+    const keys = ["serviceDate", "dateOfService", "dos", "date", "serviceFromDate", "fromDate"];
+    const dates = (Array.isArray(history) ? history : []).flatMap(item =>
+        typeof item === "string" ? [item] : keys.map(key => item?.[key]))
+        .filter(value => value && !Number.isNaN(Date.parse(value)))
+        .sort((a, b) => Date.parse(b) - Date.parse(a));
+    return dates[0] || "N/A";
+}
+
+function apiValue(value, fallback = "N/A") {
+    return value === undefined || value === null || value === "" ? fallback : value;
+}
+
+function apiBoolean(value) {
+    return value === true || value === "Y" || value === "true";
+}
+
+function selectedNetwork(...records) {
+    const record = records.find(Boolean);
+    return {
+        id: apiValue(record?.networkId),
+        name: apiValue(record?.networkName),
+        tier: apiValue(record?.networkTier || record?.tier || record?.tierIndex),
+        type: apiValue(record?.networkType)
+    };
+}
+
+function parseApiProcedure(item, requested) {
+    const benefits = item.benefits || {};
+    const maximum = preferredRecord(benefits.maximum?.accumulations, true);
+    const coinsurance = preferredRecord(benefits.coinsurance?.accumulations);
+    const deductible = preferredRecord(benefits.deductible?.accumulations, true);
+    const limitation = preferredRecord(item.limitations);
+    const limit = Number(limitation?.limit);
+    const meaningfulFrequency = Number.isFinite(limit) && limit > 0 && limitation?.limitConsumed !== undefined && limitation?.limitConsumed !== null;
+    const covered = apiBoolean(item.covered);
+    const serviceHistory = normalizedHistoryEntries(item);
+    return {
+        procedure_code: requested.code,
+        description: item.desc || requested.desc || "N/A",
+        covered,
+        benefit_status: covered ? "Covered" : "Not a covered service",
+        maximum_remaining: apiValue(maximum?.remaining),
+        maximum_total: apiValue(maximum?.amount),
+        frequency_used: meaningfulFrequency ? `${limitation.limitConsumed} of ${limitation.limit}` : "N/A",
+        frequency_limit: apiValue(limitation?.summary),
+        coinsurance_member_pct: apiValue(coinsurance?.amount),
+        history_date: latestHistoryDate(item.serviceHistory),
+        quadrant: item.quadrant || "N/A",
+        alternate_benefit: apiBoolean(item.alternateBenefit),
+        api_details: {
+            tooth: apiValue(item.tooth),
+            arch: apiValue(item.arch),
+            class_code: apiValue(item.classCode),
+            class_description: apiValue(item.classDesc),
+            procedure_group: uniqueStrings(item.procedureGroup),
+            procedure_group_description: apiValue(item.procedureGroupDesc),
+            notes: uniqueStrings(item.notes),
+            waiting_period: uniqueStrings(item.waitingPeriod),
+            validation_message: item.validationMsg || "N/A",
+            context_required: getContextRequirements(item.validationMsg).length > 0,
+            context_requirement: (() => {
+                const fields = getContextRequirements(item.validationMsg);
+                return fields.length > 1 ? fields : fields[0] || "N/A";
+            })(),
+            selected_network: selectedNetwork(limitation, coinsurance, maximum, deductible),
+            maximum: {
+                description: apiValue(maximum?.desc), total: apiValue(maximum?.amount),
+                used: apiValue(maximum?.met), remaining: apiValue(maximum?.remaining),
+                covers: apiValue(maximum?.covers), period: apiValue(maximum?.planPeriodCode),
+                notes: uniqueStrings(maximum?.notes)
+            },
+            maximum_records: dedupeAccumulationRecords(benefits.maximum?.accumulations),
+            deductible: {
+                description: apiValue(deductible?.desc), total: apiValue(deductible?.amount),
+                used: apiValue(deductible?.met), remaining: apiValue(deductible?.remaining),
+                covers: apiValue(deductible?.covers), notes: uniqueStrings(deductible?.notes)
+            },
+            deductible_records: dedupeAccumulationRecords(benefits.deductible?.accumulations),
+            coinsurance: {
+                description: apiValue(coinsurance?.desc), member_percent: apiValue(coinsurance?.amount),
+                notes: uniqueStrings(coinsurance?.notes)
+            },
+            coinsurance_records: dedupeAccumulationRecords(benefits.coinsurance?.accumulations),
+            limitation: {
+                limit: apiValue(limitation?.limit), consumed: apiValue(limitation?.limitConsumed),
+                frequency: apiValue(limitation?.frequency), frequency_unit: apiValue(limitation?.frequencyUnit),
+                minimum_age: apiValue(limitation?.minAge), maximum_age: apiValue(limitation?.maxAge),
+                summary: apiValue(limitation?.summary), age_summary: apiValue(limitation?.ageSummary),
+                covered: apiBoolean(limitation?.covered),
+                missing_tooth_limit: limitation?.missingtoothlimit || null
+            },
+            limitation_records: dedupeLimitationRecords(item.limitations),
+            history_dates: uniqueStrings(serviceHistory.map(entry => entry.date))
+                .sort((a, b) => Date.parse(b) - Date.parse(a)),
+            service_history: serviceHistory
+        }
+    };
+}
+
+function failedProcedure(requested, errorMessage = "Benefit response was unavailable.") {
+    return {
+        procedure_code: requested.code, description: requested.desc || "N/A", covered: false,
+        benefit_status: "Benefit lookup failed", maximum_remaining: "N/A", maximum_total: "N/A",
+        frequency_used: "N/A", frequency_limit: "N/A", coinsurance_member_pct: "N/A",
+        history_date: "N/A", quadrant: "N/A", alternate_benefit: false,
+        api_details: { tooth: "N/A", arch: "N/A", validation_message: "N/A", lookup_error: String(errorMessage || "Benefit lookup failed.").slice(0, 300) }
+    };
+}
+
+const DESCRIPTION_CONCURRENCY = 8;
+const BENEFIT_REQUEST_CONCURRENCY = 3;
+const PROCEDURES_PER_REQUEST = 10;
+
+function normalizeContextValue(value) {
+    const normalized = String(value ?? "").trim().toUpperCase();
+    return normalized === "N/A" ? "" : normalized;
+}
+
+function getContextRequirements(validationMessage) {
+    const message = String(validationMessage || "");
+    if (!/(INVALID|MISSING|REQUIRED)/i.test(message)) return [];
+    return ["tooth", "arch", "quadrant"].filter(field => new RegExp(field, "i").test(message));
+}
+
+function uniqueStrings(values) {
+    const seen = new Set();
+    return (Array.isArray(values) ? values : []).filter(value => {
+        const normalized = String(value ?? "").trim();
+        const key = normalized.toUpperCase();
+        if (!normalized || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+function normalizeComparableScalar(value) {
+    return value === null || value === undefined ? "" : String(value).trim().toUpperCase();
+}
+
+function normalizeComparableStringArray(values) {
+    return uniqueStrings(values).map(normalizeComparableScalar).sort();
+}
+
+function accumulationIdentityFields(record) {
+    return ["desc", "amount", "met", "remaining", "covers", "networkType", "networkId",
+        "tierIndex", "networkTier", "tier", "planPeriodCode", "productType", "classCode", "classDesc"]
+        .map(field => normalizeComparableScalar(record?.[field]));
+}
+
+function buildAccumulationRecordKey(record) {
+    return [...accumulationIdentityFields(record), normalizeComparableStringArray(record?.coveredServices).join("\u001e")].join("\u001f");
+}
+
+function dedupeRecords(records, keyBuilder, normalizeRecord = record => ({ ...record })) {
+    const retained = new Map();
+    for (const raw of Array.isArray(records) ? records : []) {
+        if (!raw) continue;
+        const record = normalizeRecord(raw);
+        const key = keyBuilder(record);
+        const existing = retained.get(key);
+        if (existing) existing.notes = uniqueStrings([...(existing.notes || []), ...(record.notes || [])]);
+        else retained.set(key, record);
+    }
+    return [...retained.values()];
+}
+
+function normalizeAccumulationRecord(record) {
+    return { ...record, notes: uniqueStrings(record.notes), coveredServices: uniqueStrings(record.coveredServices) };
+}
+
+function dedupeAccumulationRecords(records) {
+    return dedupeRecords(records, buildAccumulationRecordKey, normalizeAccumulationRecord);
+}
+
+function buildCoinsuranceRecordKey(record) {
+    const details = record?.details || record;
+    return [normalizeComparableScalar(record?.class_code ?? details?.classCode),
+        normalizeComparableScalar(record?.category ?? details?.classDesc),
+        normalizeComparableScalar(record?.patient_pays ?? details?.amount),
+        ...accumulationIdentityFields(details), normalizeComparableStringArray(details?.coveredServices).join("\u001e")].join("\u001f");
+}
+
+function dedupeCoinsuranceRecords(records) {
+    return dedupeRecords(records, buildCoinsuranceRecordKey, record => ({
+        ...record,
+        ...(record.details ? { details: normalizeAccumulationRecord(record.details) } : normalizeAccumulationRecord(record))
+    }));
+}
+
+function buildLimitationRecordKey(record) {
+    return ["procedureCode", "networkType", "networkId", "tierIndex", "networkTier", "tier", "summary",
+        "limit", "limitConsumed", "frequency", "frequencyUnit", "ageSummary", "minAge", "maxAge",
+        "waitingPeriod", "productType", "covers"].map(field => normalizeComparableScalar(record?.[field])).join("\u001f");
+}
+
+function dedupeLimitationRecords(records) {
+    return dedupeRecords(records, buildLimitationRecordKey, record => ({ ...record, notes: uniqueStrings(record.notes) }));
+}
+
+function historyRecordKey(entry) {
+    const claim = entry?.claimId ?? entry?.claimNumber ?? entry?.providerId ?? entry?.providerName ?? "";
+    return [entry?.date, entry?.procedureCode ?? entry?.procedure, entry?.tooth, entry?.surface,
+        entry?.quadrant, entry?.arch, claim].map(normalizeComparableScalar).join("\u001f");
+}
+
+function mergeDuplicateResponse(target, source, stats) {
+    const history = [...(target.serviceHistory || []), ...(source.serviceHistory || [])];
+    const seenHistory = new Set();
+    target.serviceHistory = history.filter(entry => {
+        const raw = typeof entry === "string" ? { date: entry } : entry;
+        const key = historyRecordKey(raw);
+        if (seenHistory.has(key)) return false;
+        seenHistory.add(key); return true;
+    });
+    for (const field of ["notes", "waitingPeriod", "procedureGroup"]) target[field] = uniqueStrings([...(target[field] || []), ...(source[field] || [])]);
+    stats.duplicate_responses_merged++;
+    return target;
+}
+
+function parseContainerTagKey(tagKey) {
+    const identity = String(tagKey || "").split("#").pop();
+    const [code = "", tooth = "", arch = "", quadrant = ""] = identity.split("~");
+    return { code: normalizeProcedureCode(code), tooth: normalizeContextValue(tooth), arch: normalizeContextValue(arch), quadrant: normalizeContextValue(quadrant) };
+}
+
+async function resolveContextQueue(requested, initialByCode, run, stats, progress) {
+    const queues = new Map();
+    const resultByKey = new Map();
+    const requiredByCode = new Map();
+    let order = 0;
+    let activeRequestCount = 0;
+    const schedule = task => {
+        const normalized = normalizeContextTask(task), key = contextKey(normalized);
+        if (run.scheduledKeys.has(key) || run.activeKeys.has(key) || run.completedKeys.has(key)) {
+            stats.duplicate_requests_skipped++;
+            return;
+        }
+        run.scheduledKeys.add(key);
+        if (!queues.has(normalized.code)) queues.set(normalized.code, []);
+        queues.get(normalized.code).push({ ...normalized, order: order++ });
+    };
+    for (const request of requested) {
+        const initial = initialByCode.get(request.code);
+        const fields = getRequiredContextFields(initial?.validationMsg);
+        requiredByCode.set(request.code, new Set(fields));
+        if (fields.size) expandContextTask({ ...request, depth: 0 }, fields).forEach(schedule);
+        else if (initial) resultByKey.set(contextKey(request), { task: normalizeContextTask(request), item: initial, classification: apiBoolean(initial.covered) ? "resolved_covered" : "resolved_not_covered", order: order++ });
+    }
+    while ([...queues.values()].some(queue => queue.length)) {
+        if (run.cancelled || activeCignaRun !== run) throw new Error("Cigna crawl superseded by a newer run.");
+        const batches = [];
+        while ([...queues.values()].some(queue => queue.length)) {
+            const batch = [];
+            for (const code of PROCEDURE_CODES) {
+                const queue = queues.get(code);
+                if (queue?.length && batch.length < PROCEDURES_PER_REQUEST) batch.push(queue.shift());
+            }
+            if (!batch.length) break;
+            batches.push(batch);
+        }
+        await runPool(batches, CONTEXT_REQUEST_CONCURRENCY, async batch => {
+            batch.forEach(task => { run.activeKeys.add(contextKey(task)); });
+            activeRequestCount++;
+            stats.maximum_concurrency_observed = Math.max(stats.maximum_concurrency_observed, activeRequestCount);
+            let items = [];
+            try {
+                stats.context_benefit_requests++;
+                items = await fetchContextBatch(batch);
+            } finally {
+                activeRequestCount--;
+                batch.forEach(task => run.activeKeys.delete(contextKey(task)));
+            }
+            const matched = matchBatchResponses(batch, items, stats);
+            for (const task of [...matched.missing]) {
+                stats.missing_response_retries++;
+                const retryItems = await fetchContextBatch([task]);
+                const retryMatch = matchBatchResponses([task], retryItems, stats);
+                if (retryMatch.matches.length) {
+                    matched.matches.push(...retryMatch.matches);
+                    matched.missing.splice(matched.missing.indexOf(task), 1);
+                }
+            }
+            const { matches, missing } = matched;
+            for (const { task, item } of matches) {
+                const key = contextKey(task);
+                run.completedKeys.add(key);
+                const fields = getRequiredContextFields(item.validationMsg);
+                const required = requiredByCode.get(task.code) || new Set();
+                fields.forEach(field => required.add(field));
+                requiredByCode.set(task.code, required);
+                const candidates = expandContextTask(task, fields);
+                const classification = fields.size && candidates.length ? "context_validation" : fields.size ? "api_failure" : apiBoolean(item.covered) ? "resolved_covered" : "resolved_not_covered";
+                resultByKey.set(key, { task, item, classification, order: task.order });
+                candidates.forEach(schedule);
+            }
+            for (const task of missing) {
+                run.completedKeys.add(contextKey(task));
+                resultByKey.set(contextKey(task), { task, item: null, classification: "api_failure", order: task.order });
+            }
+            progress(resultByKey.size, [...queues.values()].reduce((sum, queue) => sum + queue.length, 0), run.activeKeys.size);
+        });
+    }
+    return { resultByKey, requiredByCode };
+}
+
+function normalizedHistoryEntries(record) {
+    const item = record?.item || record || {};
+    const task = record?.task || item;
+    const history = item.serviceHistory;
+    if (!Array.isArray(history)) return [];
+    const seen = new Set();
+    return history.flatMap(entry => {
+        const raw = typeof entry === "string" ? entry : ["serviceDate", "dateOfService", "dos", "date", "serviceFromDate", "fromDate"].map(key => entry?.[key]).find(Boolean);
+        if (!raw || Number.isNaN(Date.parse(raw))) return [];
+        const normalized = {
+            ...(entry && typeof entry === "object" ? entry : {}),
+            date: raw,
+            tooth: entry?.tooth || task.tooth || "N/A",
+            arch: entry?.arch || task.arch || "N/A",
+            quadrant: entry?.quadrant || task.quadrant || "N/A"
+        };
+        const key = historyRecordKey(normalized);
+        if (seen.has(key)) return [];
+        seen.add(key);
+        return [normalized];
+    });
+}
+
+function buildAggregatedProcedure(request, initial, records, requiredFields, stats) {
+    const resolved = records.filter(record => record.classification === "resolved_covered" || record.classification === "resolved_not_covered").sort((a, b) => a.order - b.order);
+    const histories = [], historyKeys = new Set();
+    const historySources = initial ? [{ task: normalizeContextTask(request), item: initial }, ...resolved] : resolved;
+    for (const record of historySources) for (const history of normalizedHistoryEntries(record)) {
+        const key = [history.date, history.tooth, history.arch, history.quadrant].join("|");
+        if (historyKeys.has(key)) { stats.histories_deduplicated++; continue; }
+        historyKeys.add(key); histories.push(history);
+    }
+    const representative = resolved.find(record => normalizedHistoryEntries(record).length) || resolved.find(record => record.classification === "resolved_covered") || resolved[0];
+    if (!representative) {
+        const failed = failedProcedure(request);
+        Object.assign(failed.api_details, {
+            coverage_scope: "unresolved", covered_any: false, covered_all: false,
+            resolved_context_count: 0, covered_context_count: 0, not_covered_context_count: 0,
+            unresolved_context_count: records.length || 1, required_context_fields: [...requiredFields],
+            representative_context: { tooth: "N/A", arch: "N/A", quadrant: "N/A", selection_reason: "N/A" },
+            varies_by_context: false, service_history: [], context_groups: []
+        });
+        failed.benefit_status = "Context validation unresolved";
+        return failed;
+    }
+    const parsed = parseApiProcedure(representative.item, representative.task);
+    const coveredCount = resolved.filter(record => record.classification === "resolved_covered").length;
+    const notCoveredCount = resolved.length - coveredCount;
+    const initialFields = getRequiredContextFields(initial?.validationMsg);
+    const scope = !initialFields.size ? "context_independent" : coveredCount && notCoveredCount ? "partial" : coveredCount ? "all" : resolved.length ? "none" : "unresolved";
+    const uniqueContext = field => [...new Set(resolved.map(record => record.task[field]).filter(Boolean))];
+    const outcomeGroups = new Map();
+    for (const record of resolved) {
+        const detail = parseApiProcedure(record.item, record.task);
+        const outcome = {
+            covered: detail.covered, validation_message: detail.api_details.validation_message,
+            selected_network: detail.api_details.selected_network, maximum: detail.api_details.maximum,
+            deductible: detail.api_details.deductible, coinsurance: detail.api_details.coinsurance,
+            limitation: detail.api_details.limitation, alternate_benefit: detail.alternate_benefit,
+            histories: normalizedHistoryEntries(record), notes: detail.api_details.notes,
+            waiting_period: detail.api_details.waiting_period,
+            procedure_group: detail.api_details.procedure_group
+        };
+        const signature = JSON.stringify(outcome);
+        if (!outcomeGroups.has(signature)) outcomeGroups.set(signature, { outcome, contexts: [] });
+        outcomeGroups.get(signature).contexts.push({ tooth: record.task.tooth || "N/A", arch: record.task.arch || "N/A", quadrant: record.task.quadrant || "N/A" });
+    }
+    parsed.covered = coveredCount > 0;
+    parsed.benefit_status = scope === "partial" ? "Partially covered by context" : scope === "unresolved" ? "Context validation unresolved" : parsed.covered ? "Covered" : "Not a covered service";
+    parsed.history_date = histories.length ? histories.map(item => item.date).sort((a, b) => Date.parse(b) - Date.parse(a))[0] : resolved.every(record => Array.isArray(record.item?.serviceHistory) && !record.item.serviceHistory.length) ? "No history on file" : "N/A";
+    parsed.quadrant = uniqueContext("quadrant").length === 1 ? uniqueContext("quadrant")[0] : "N/A";
+    Object.assign(parsed.api_details, {
+        coverage_scope: scope, covered_any: coveredCount > 0, covered_all: resolved.length > 0 && coveredCount === resolved.length,
+        resolved_context_count: resolved.length, covered_context_count: coveredCount, not_covered_context_count: notCoveredCount,
+        unresolved_context_count: records.filter(record => record.classification === "api_failure").length, required_context_fields: [...requiredFields],
+        representative_context: { tooth: representative.task.tooth || "N/A", arch: representative.task.arch || "N/A", quadrant: representative.task.quadrant || "N/A", selection_reason: normalizedHistoryEntries(representative).length ? "resolved_context_with_history" : representative.classification === "resolved_covered" ? "first_covered_context_by_candidate_order" : "first_resolved_context_by_candidate_order" },
+        tooth: uniqueContext("tooth").length === 1 ? uniqueContext("tooth")[0] : "N/A",
+        arch: uniqueContext("arch").length === 1 ? uniqueContext("arch")[0] : "N/A",
+        varies_by_context: outcomeGroups.size > 1, service_history: histories,
+        context_groups: [...outcomeGroups.values()], initial_validation: initial?.validationMsg || "N/A"
+    });
+    delete parsed.api_details.context_results;
+    if (INCLUDE_RAW_CONTEXT_RESULTS) parsed.api_details.context_results = records;
+    if (!parsed.covered && (parsed.maximum_total !== "N/A" || parsed.coinsurance_member_pct !== "N/A")) parsed.api_details.raw_benefit_values_present_for_noncovered_service = true;
+    return parsed;
+}
+
+function displayApiDate(value, presentFor9999 = false) {
+    if (!value) return "N/A";
+    if (presentFor9999 && String(value).startsWith("9999-")) return "Present";
+    const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return match ? `${match[2]}/${match[3]}/${match[1]}` : value;
+}
+
+function titleCaseApi(value) {
+    return value ? String(value).toLowerCase().replace(/\b\w/g, character => character.toUpperCase()) : "N/A";
+}
+
+function coverageServiceRecords(coverage, benefitName) {
+    return (coverage.planBenefits?.services || []).flatMap(service =>
+        (service.benefits?.[benefitName]?.accumulations || []).map(record => ({ ...record, classCode: service.classCode, classDesc: service.classCodeDesc })));
+}
+
+function formatApiAddress(address) {
+    if (!address || typeof address !== "object") return "N/A";
+    const street = uniqueStrings(address.lines || []).join(", ");
+    const locality = [address.city, address.state].filter(Boolean).join(", ");
+    return [street, [locality, address.zip].filter(Boolean).join(" "), address.country].filter(Boolean).join("\n") || "N/A";
+}
+
+function completeAccumulationRecords(coverage, benefitName) {
+    return dedupeAccumulationRecords(coverageServiceRecords(coverage, benefitName));
+}
+
+function applyCoverageApi(baseData, coverage) {
+    const patient = coverage.patientDetails || {};
+    const subscriber = coverage.subscriberDetails || {};
+    const details = coverage.coverageDetails || {};
+    const network = details.networkDetails || {};
+    const plan = details.plan || {};
+    baseData.summary = {
+        patient_id: apiValue(patient.id),
+        group_number: apiValue(details.accountNumber),
+        group_name: apiValue(details.accountName),
+        plan_type: apiValue(details.plan?.type),
+        coverage_dates: { from: displayApiDate(details.effectiveFrom), to: displayApiDate(details.effectiveTill, true) },
+        as_of_date: displayApiDate(coverage.asofDate)
+    };
+    baseData.patient = {
+        name: apiValue(patient.fullName), dob: displayApiDate(patient.dob),
+        gender: titleCaseApi(patient.gender), relationship: titleCaseApi(patient.relationship),
+        address: formatApiAddress(patient.addresses?.[0])
+    };
+    baseData.plan_details = {
+        subscriber: apiValue(subscriber.fullName),
+        subscriber_dob: displayApiDate(subscriber.dob),
+        plan_type: apiValue(plan.type),
+        plan_renews: titleCaseApi(plan.planYears?.renewalType?.replace(/_/g, " ")),
+        initial_coverage_date: displayApiDate(details.initialCoverageDate),
+        current_coverage: {
+            from: displayApiDate(details.effectiveFrom),
+            to: displayApiDate(details.effectiveTill, true)
+        },
+        other_insurance: details.otherInsurance ? "Yes" : "No",
+        account_number: apiValue(details.accountNumber),
+        account_name: apiValue(details.accountName),
+        network: {
+            id: apiValue(network.superNetworkId || network.networkId),
+            name: apiValue(network.networkName),
+            type: apiValue(network.networkType),
+            tier: apiValue(network.tier)
+        },
+        electronic_claims: apiValue(
+            (coverage.serviceContact || []).find(item => item?.web)?.web ||
+            document.querySelector('a[href*="EDIvendors" i]')?.href
+        )
+    };
+    baseData.financials = {
+        maximum_records: completeAccumulationRecords(coverage, "maximum"),
+        deductible_records: completeAccumulationRecords(coverage, "deductible")
+    };
+    baseData.coinsurance = dedupeCoinsuranceRecords((coverage.planBenefits?.services || []).flatMap(service => {
+        const records = service.benefits?.coinsurance?.accumulations;
+        if (!records?.length) return [];
+        return records.map(record => ({
+            network: apiValue(record?.networkName || network.networkName),
+            network_id: apiValue(record?.networkId),
+            category: service.classCodeDesc || service.classCode,
+            class_code: apiValue(service.classCode),
+            patient_pays: apiValue(record?.amount),
+            details: { ...record, notes: uniqueStrings(record.notes), coveredServices: uniqueStrings(record.coveredServices) }
+        }));
+    }));
+    baseData.frequencies = dedupeRecords((coverage.frequencyAgeLimitation?.procedural || []).map(item => {
+        const limitation = preferredRecord(item.limitations);
+        return {
+            network: apiValue(limitation?.networkName || network.networkName),
+            network_id: apiValue(limitation?.networkId),
+            procedure_code: apiValue(item.procedureCode),
+            procedure: apiValue(item.procedureDesc),
+            age_limitation: apiValue(limitation?.ageSummary),
+            limit: apiValue(limitation?.summary),
+            limitation_records: dedupeLimitationRecords(item.limitations),
+            waiting_period: item.waitingPeriod || item.WaitingPeriod || null
+        };
+    }), record => [record.procedure_code, buildLimitationRecordKey(record.limitation_records?.[0] || {}),
+        normalizeComparableScalar(record.limit), normalizeComparableScalar(record.age_limitation),
+        normalizeComparableScalar(record.waiting_period)].join("\u001f"));
+    const ageRecords = coverage.frequencyAgeLimitation?.ageLimitations || [];
+    const age = preferredRecord(ageRecords);
+    const meaningfulAgeRecord = value => value && typeof value === "object" && Object.values(value).some(item => item !== null && item !== undefined && item !== "");
+    baseData.age_limits = dedupeRecords(ageRecords.flatMap(record => [
+        meaningfulAgeRecord(record?.student) ? { network: apiValue(record.student.networkName), network_id: apiValue(record.student.networkId), type: "Student Age Limitation **", age: apiValue(record.student.limit), ends: apiValue(record.coverageEnds?.limit), details: { ...record.student } } : null,
+        meaningfulAgeRecord(record?.dependent) ? { network: apiValue(record.dependent.networkName), network_id: apiValue(record.dependent.networkId), type: "Dependent Age Limitation **", age: apiValue(record.dependent.limit), ends: apiValue(record.coverageEnds?.limit), details: { ...record.dependent } } : null,
+        meaningfulAgeRecord(record?.ortho) ? { network: apiValue(record.ortho.networkName), network_id: apiValue(record.ortho.networkId), type: "Ortho Age Limitation **", age: apiValue(record.ortho.limit), ends: apiValue(record.orthoCoverageEnds?.limit), details: { ...record.ortho } } : null
+    ]).filter(Boolean), record => [record.type, record.age, record.ends, buildLimitationRecordKey(record.details)].map(normalizeComparableScalar).join("\u001f"));
+    baseData.notes = {
+        ...baseData.notes,
+        missing_tooth: age?.missingtoothLimit?.missingToothLimitIndicator === "N" ? "Does not apply" : apiValue(age?.missingtoothLimit?.missingToothLimitEndDate),
+        ortho_note: "Orthodontic age limitations may differ from other age limitations on the plan; contact Customer Support for Orthodontic eligibility requirements.",
+        plan_notes: uniqueStrings(coverage.planBenefits?.notes),
+        waiting_period: uniqueStrings(coverage.waitingPeriod)
+    };
+}
+
+function matchBenefitResponse(batch, data, found, failures, stats) {
+    const requested = new Map(batch.map(item => [item.code, item]));
+    const items = Array.isArray(data?.dentalBenefits) ? data.dentalBenefits : [];
+    const metadata = Array.isArray(data?.containerMetadata) ? data.containerMetadata : [];
+    items.forEach((item, index) => {
+        const metadataCode = parseContainerTagKey(metadata[index]?.tagKey).code;
+        const returnedCode = normalizeProcedureCode(item?.procedure);
+        const code = metadataCode && requested.has(metadataCode) ? metadataCode : returnedCode;
+        if (!requested.has(code) || (returnedCode && returnedCode !== code)) {
+            if (metadataCode && requested.has(metadataCode)) failures[metadataCode] = `Response code mismatch: expected ${metadataCode}, received ${returnedCode || "none"}.`;
+            return;
+        }
+        if (found.has(code)) mergeDuplicateResponse(found.get(code), item, stats);
+        else found.set(code, item);
+    });
+    return batch.filter(item => !found.has(item.code));
+}
+
+function normalizedIdentity(value) {
+    return String(value || "").replace(/[^a-z0-9]/gi, "").toUpperCase();
+}
+
+function assertPatientConsistency(domData, coverage) {
+    const apiPatient = coverage?.patientDetails || {};
+    const domMember = normalizedIdentity(domData?.summary?.patient_id);
+    const apiMember = normalizedIdentity(apiPatient.id);
+    const domDob = normalizedIdentity(domData?.patient?.dob);
+    const apiDob = normalizedIdentity(displayApiDate(apiPatient.dob));
+    const domName = normalizedIdentity(domData?.patient?.name);
+    const apiName = normalizedIdentity(apiPatient.fullName);
+    if ((domMember && apiMember && domMember !== apiMember) ||
+        (domDob && apiDob && domDob !== apiDob) ||
+        (!domMember && !domDob && domName && apiName && domName !== apiName)) {
+        throw new Error("The captured Cigna API session belongs to a different patient. Reload the selected patient's Dental Coverage page and run again.");
+    }
+}
+
+async function fetchBenefitBatch(batch, found, failures, stats, attempt = 0) {
+    try {
+        stats.benefit_http_requests++;
+        const data = await cignaMessage("benefits", { procedures: batch });
+        const omitted = matchBenefitResponse(batch, data, found, failures, stats);
+        if (omitted.length) {
+            stats.missing_response_retries++;
+            if (omitted.length < batch.length) return fetchBenefitBatch(omitted, found, failures, stats);
+            throw Object.assign(new Error("Cigna response omitted requested procedures."), { status: 422 });
+        }
+    } catch (error) {
+        if (error.status === 401 || error.status === 403) throw error;
+        if (error.status === 429 && attempt < 3) {
+            stats.retry_http_requests++;
+            await sleep((error.retryAfterMs || 1000 * (2 ** attempt)) + Math.floor(Math.random() * 250));
+            return fetchBenefitBatch(batch, found, failures, stats, attempt + 1);
+        }
+        if ((!error.status || error.status >= 500) && attempt < 2) {
+            stats.retry_http_requests++;
+            await sleep(500 * (2 ** attempt) + Math.floor(Math.random() * 200));
+            return fetchBenefitBatch(batch, found, failures, stats, attempt + 1);
+        }
+        const splittable = [400, 413, 422].includes(error.status);
+        if (splittable && batch.length > 1) {
+            stats.split_http_requests += 2;
+            const middle = Math.ceil(batch.length / 2);
+            await fetchBenefitBatch(batch.slice(0, middle), found, failures, stats);
+            await fetchBenefitBatch(batch.slice(middle), found, failures, stats);
+        } else for (const item of batch) failures[item.code] = String(error.message || "Benefit lookup failed.").slice(0, 300);
+    }
+}
+
+function validateProcedureResultIntegrity(results) {
+    if (!Array.isArray(results)) throw new Error("Procedure results were not generated.");
+    if (results.length !== PROCEDURE_CODES.length) throw new Error(`Expected ${PROCEDURE_CODES.length} procedure results, received ${results.length}.`);
+    const codes = results.map(item => item.procedure_code);
+    if (new Set(codes).size !== PROCEDURE_CODES.length) throw new Error("Duplicate procedure codes detected.");
+    for (let index = 0; index < PROCEDURE_CODES.length; index++) {
+        if (codes[index] !== PROCEDURE_CODES[index]) throw new Error(`Procedure order mismatch at index ${index}: expected ${PROCEDURE_CODES[index]}, received ${codes[index]}.`);
+    }
+}
+
+function validateCignaNormalization(data) {
+    const checks = [
+        ["maximum_records", data?.financials?.maximum_records, buildAccumulationRecordKey],
+        ["deductible_records", data?.financials?.deductible_records, buildAccumulationRecordKey],
+        ["coinsurance", data?.coinsurance, buildCoinsuranceRecordKey],
+        ["age_limits", data?.age_limits, record => [record.type, record.age, record.ends, buildLimitationRecordKey(record.details)].map(normalizeComparableScalar).join("\u001f")],
+        ["frequencies", data?.frequencies, record => [record.procedure_code, buildLimitationRecordKey(record.limitation_records?.[0] || {}), record.limit, record.age_limitation, record.waiting_period].map(normalizeComparableScalar).join("\u001f")],
+        ["procedures", data?.procedures?.results, record => normalizeProcedureCode(record?.procedure_code)]
+    ];
+    const summary = {};
+    for (const [name, records, keyBuilder] of checks) {
+        const list = Array.isArray(records) ? records : [];
+        const unique = new Set(list.map(keyBuilder)).size;
+        summary[name] = { count: list.length, unique, duplicates: list.length - unique };
+    }
+    console.info("Cigna normalization:", summary);
+    return summary;
+}
+
+async function crawlProcedureCodes(baseData, run) {
+    const patientDOB = baseData.patient.dob !== "N/A" ? baseData.patient.dob : null;
+    baseData.procedures.age_gate = {
+        patient_dob: patientDOB || "not found",
+        allowed_age_codes: [], age_restricted_codes: [], excluded_codes: [],
+        age_gate_mode: "api_authoritative"
+    };
+    await cignaMessage("session");
+    const descriptions = {};
+    const startedAt = Date.now();
+    const stats = {
+        coverage_http_requests: 1, description_http_requests: 0, benefit_http_requests: 0,
+        retry_http_requests: 0, split_http_requests: 0, missing_response_retries: 0,
+        duplicate_requests_skipped: 0, duplicate_responses_merged: 0,
+        positional_fallback_matches: 0, maximum_concurrency_observed: 0, duration_ms: 0
+    };
+    setStatusThrottled("Resolving procedure descriptions", true);
+    const cached = await new Promise(resolve => chrome.storage.local.get(PROCEDURE_CODES.map(code => `cigna_description_${code}`), resolve));
+    let resolved = 0;
+    await runPool(PROCEDURE_CODES, DESCRIPTION_CONCURRENCY, async code => {
+        const saved = cached[`cigna_description_${code}`];
+        if (saved?.code === code && saved.description) descriptions[code] = saved.description;
+        else try { stats.description_http_requests++; descriptions[code] = (await cignaMessage("description", { code })).description || ""; }
+        catch (_) { descriptions[code] = ""; }
+        setStatusThrottled(`Resolving procedure descriptions: ${++resolved}/${PROCEDURE_CODES.length}`);
+    });
+    if (run.cancelled || activeCignaRun !== run) throw new Error("Cigna crawl superseded by a newer run.");
+    const requested = PROCEDURE_CODES.map(code => ({ code, desc: descriptions[code], tooth: "", arch: "", quadrant: "" }));
+    const found = new Map(), failures = {}, batches = [];
+    for (let i = 0; i < requested.length; i += PROCEDURES_PER_REQUEST) batches.push(requested.slice(i, i + PROCEDURES_PER_REQUEST));
+    let completedBatches = 0, activeRequests = 0;
+    await runPool(batches, BENEFIT_REQUEST_CONCURRENCY, async batch => {
+        activeRequests++; stats.maximum_concurrency_observed = Math.max(stats.maximum_concurrency_observed, activeRequests);
+        setStatusThrottled(`Fetching procedure benefits: batch ${completedBatches + 1}/${batches.length}`);
+        try { await fetchBenefitBatch(batch, found, failures, stats); } finally { activeRequests--; completedBatches++; }
+    });
+    if (run.cancelled || activeCignaRun !== run) throw new Error("Cigna crawl superseded by a newer run.");
+    setStatusThrottled(`Finalizing ${PROCEDURE_CODES.length} procedure results`, true);
+    const validationSummary = { tooth_required: [], arch_required: [], quadrant_required: [], multi_field_required: [] };
+    const results = requested.map(req => {
+        const item = found.get(req.code);
+        if (!item) return failedProcedure(req, failures[req.code]);
+        const returnedCode = normalizeProcedureCode(item.procedure);
+        if (returnedCode && returnedCode !== req.code) return failedProcedure(req, `Response code mismatch: received ${returnedCode}.`);
+        const fields = getContextRequirements(item.validationMsg);
+        if (fields.length > 1) validationSummary.multi_field_required.push(req.code);
+        else if (fields[0]) validationSummary[`${fields[0]}_required`].push(req.code);
+        return parseApiProcedure(item, req);
+    });
+    validateProcedureResultIntegrity(results);
+    baseData.procedures.codes_searched = [...PROCEDURE_CODES];
+    baseData.procedures.results = results;
+    baseData.procedures.count = results.length;
+    stats.duration_ms = Date.now() - startedAt;
+    baseData.procedures.api_meta = { request_stats: stats, validation_summary: validationSummary, failures };
+    setStatusThrottled(`Procedure API complete: ${results.length}/${PROCEDURE_CODES.length}`, true);
+}
+
+async function runCignaCrawl(run) {
+    if (!chrome.runtime?.id) return null;
 
     setStatus('Scraping page data…');
     const fullData = scrapeCignaFull();
     if (!fullData) return null;
     console.log('Cigna: Page data scraped ✓');
 
-    await crawlProcedureCodes(fullData);
+    setStatus('Loading coverage and financial details from Cigna API...');
+    const coverage = await cignaMessage("coverage");
+    assertPatientConsistency(fullData, coverage);
+    applyCoverageApi(fullData, coverage);
+    if (run.cancelled || activeCignaRun !== run) throw new Error("Cigna crawl superseded by a newer run.");
+    await crawlProcedureCodes(fullData, run);
+    validateCignaNormalization(fullData);
     return fullData;
 }
 
@@ -1027,13 +1983,15 @@ async function runCignaCrawl() {
 
 function runCignaLoop() {
     if (!chrome.runtime?.id) return;
+    if (activeCignaRun) return;
     const url = window.location.href;
     if (!url.includes('/den/coverage') && !url.includes('dental') && !url.includes('coverage')) return;
     const data = scrapeCignaFull();
     if (!data) return;
     chrome.storage.local.get("audit_context", res => {
         const ctx = res.audit_context || {};
-        ctx.cigna_data = data;
+        // Passive page identity is intentionally separate from the authoritative API crawl.
+        ctx.cigna_page_context = data;
         chrome.storage.local.set({ audit_context: ctx });
     });
 }
@@ -1045,6 +2003,7 @@ setTimeout(runCignaLoop, 4000);
 
 function autoDownloadJSON(data) {
     try {
+        validateProcedureResultIntegrity(data?.procedures?.results);
         const json  = JSON.stringify(data, null, 2);
         const blob  = new Blob([json], { type: 'application/json' });
         const url   = URL.createObjectURL(blob);
@@ -1063,25 +2022,57 @@ function autoDownloadJSON(data) {
     }
 }
 
+async function clearPreviousCignaStorage() {
+    const stored = await chrome.storage.local.get(null);
+    const context = stored.audit_context || {};
+    if (Object.prototype.hasOwnProperty.call(context, "cigna_data")) {
+        delete context.cigna_data;
+        if (Object.keys(context).length) await chrome.storage.local.set({ audit_context: context });
+        else await chrome.storage.local.remove("audit_context");
+    }
+    const cacheKeys = Object.keys(stored).filter(key => key.startsWith("cigna_description_"));
+    if (cacheKeys.length) await chrome.storage.local.remove(cacheKeys);
+}
+
+async function clearCignaAfterDownload() {
+    await clearPreviousCignaStorage();
+    await new Promise(resolve => {
+        chrome.runtime.sendMessage({ command: "CIGNA_CLEAR_SESSION" }, () => resolve());
+    });
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.command === "START_CRAWL") {
         console.log("Cigna: START_CRAWL received");
+        if (activeCignaRun) activeCignaRun.cancelled = true;
+        const run = {
+            id: crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            cancelled: false, startedAt: Date.now()
+        };
+        activeCignaRun = run;
         lockPage();
 
-        runCignaCrawl().then(fullData => {
-            unlockPage();
+        clearPreviousCignaStorage().then(() => runCignaCrawl(run)).then(fullData => {
+            if (activeCignaRun !== run || run.cancelled) {
+                sendResponse({ status: "[!] Previous Cigna crawl was superseded." });
+                return;
+            }
             if (!fullData) {
                 sendResponse({ status: "[!] No data — navigate to the Dental Coverage page first." });
                 return;
             }
 
+            validateProcedureResultIntegrity(fullData.procedures.results);
+            fullData.data_quality = "full_api";
             autoDownloadJSON(fullData);
 
             chrome.storage.local.get("audit_context", res => {
                 const ctx = res.audit_context || {};
+                validateProcedureResultIntegrity(fullData.procedures.results);
                 ctx.cigna_data = fullData;
-                chrome.storage.local.set({ audit_context: ctx }, () => {
+                chrome.storage.local.set({ audit_context: ctx }, async () => {
                     const excl = fullData.procedures.age_gate.excluded_codes || [];
+                    await clearCignaAfterDownload();
                     sendResponse({
                         status: `[+] Done — ${fullData.procedures.count} codes scraped. ` +
                                 `JSON downloaded automatically. ` +
@@ -1091,11 +2082,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 });
             });
         }).catch(err => {
-            unlockPage();
             console.error("Cigna crawl error:", err);
             sendResponse({ status: "[!] Crawl error: " + err.message });
+        }).finally(() => {
+            if (activeCignaRun === run) {
+                activeCignaRun = null;
+                unlockPage();
+            }
         });
 
         return true;
     }
 });
+}

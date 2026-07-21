@@ -7,12 +7,15 @@
         "activeTab",
         "tabs",
         "downloads",
-        "scripting"
+        "scripting",
+        "webRequest"
     ],
     "host_permissions": [
         "*://*.denticon.com/*",
         "*://*.planetdds.com/*",
         "https://dentalprovider.metlife.com/*",
+        "https://cignaforhcp.cigna.com/*",
+        "https://p-chcp.digitaledge.cigna.com/*",
         "*://www.guardiananytime.com/*",
         "https://www.deltadentalins.com/*",
         "https://deltadentalva.com/*",
@@ -30,7 +33,12 @@
     "action": {
         "default_popup": "popup.html"
     },
-       
+    "background": {
+        "scripts": [
+            "content_cigna.js"
+        ],
+        "service_worker": "content_cigna.js"
+    }, 
     "content_scripts": [
         {
             "matches": ["*://*.denticon.com/*","*://*.planetdds.com/*"],
@@ -40,11 +48,13 @@
         {
             "matches": ["https://dentalprovider.metlife.com/*"],
             "js": ["content_metlife.js"],
-            "all_frames": true
+            "all_frames": true,
+            "run_at": "document_start"
         },
         {
             "matches": ["https://cignaforhcp.cigna.com/*"],
             "js": ["content_cigna.js"],
+            "run_at": "document_start",
             "all_frames": true
         },
         {
