@@ -224,6 +224,118 @@ def _extract_ucci_portal_fields(raw: dict) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────
+# PHASE 1D: PYTHON-NATIVE EXTRACTION FROM DELTA DENTAL RI PORTAL JSON
+# ──────────────────────────────────────────────────────────────────
+def _extract_ddri_portal_fields(raw: dict) -> dict:
+    """
+    FORMAT D — Delta Dental Rhode Island portal scraper output.
+    Identified by the top-level `ddri_data: true` flag.
+
+    Structure (differs from FORMAT A: financials are nested lists, and
+    procedures carry `coverage_percentage` instead of `benefit_level`):
+      {
+        "plan_details": {"group_number": "4250 - 0403",
+                         "employer_group": "BRIGHTSTAR - RI - ACTIVE-PLUS",
+                         "coverage_type": "Family"},
+        "financials": {
+          "deductibles":  [{"category": "Individual Deductible", "total": "$50.00"},
+                           {"category": "Family Deductible",     "total": "$150.00"}],
+          "annual_limits":[{"category": "Annual Maximum",        "total": "$2,000.00"}],
+          "orthodontic":  [{"category": "Elective Orthodontic Lifetime Maximum",
+                            "total": "Not Covered" | "$2,000.00"}]
+        },
+        "benefit_coverage": {"procedures": [
+          {"procedure_code": "D0120", "coverage_percentage": "100 %",
+           "age_limit": "N/A"}]}
+      }
+    """
+    out = {}
+
+    pd = raw.get("plan_details", {}) or {}
+    out["group_number"] = pd.get("group_number")
+    out["group_name"]   = pd.get("employer_group")
+
+    fin = raw.get("financials", {}) or {}
+
+    def _find_total(section: str, *keywords: str):
+        for item in fin.get(section, []) or []:
+            cat = str(item.get("category", "")).lower()
+            if any(kw in cat for kw in keywords):
+                return item.get("total")
+        return None
+
+    def _money(s):
+        """'$2,000.00'→2000.0; 'Not Covered'→0.0; 'Unlimited'/'N/A'/None→None
+        (never fabricated — an absent or non-numeric value stays None)."""
+        if s is None:
+            return None
+        t = str(s).strip().lower()
+        if not t or t in ("unlimited", "n/a", "na"):
+            return None
+        if "not covered" in t:
+            return 0.0
+        m = re.search(r"([\d,]+\.?\d*)", str(s))
+        return float(m.group(1).replace(",", "")) if m else None
+
+    out["individual_deductible"] = _money(_find_total("deductibles", "individual"))
+    out["family_deductible"]     = _money(_find_total("deductibles", "family"))
+    out["individual_annual_max"] = _money(
+        _find_total("annual_limits", "annual max", "annual maximum", "maximum"))
+    out["ortho_lifetime_max"]    = _money(_find_total("orthodontic", "ortho"))
+
+    # ── PROCEDURES index → coverage percentages / age limits ──
+    proc_index: dict[str, dict] = {}
+    for p in (raw.get("benefit_coverage", {}) or {}).get("procedures", []) or []:
+        code = str(p.get("procedure_code", "")).upper().strip()
+        if code and code not in proc_index:
+            proc_index[code] = p
+
+    def _pct(*codes: str):
+        for c in codes:
+            p = proc_index.get(c)
+            if p is not None:
+                v = _num(p.get("coverage_percentage"))
+                if v is not None:
+                    return v
+        return None
+
+    def _age(*codes: str):
+        for c in codes:
+            p = proc_index.get(c)
+            if p is None:
+                continue
+            m = re.search(r"(\d+)\s*$", str(p.get("age_limit", "")).strip())
+            if m:
+                upper = int(m.group(1))
+                return None if upper >= 99 else float(upper)
+        return None
+
+    out["preventative_D0120_pct"] = _pct("D0120", "D0150")
+    out["basic_D2331_D2140_pct"]  = _pct("D2391", "D2331", "D2140")
+    out["major_D2740_pct"]        = _pct("D2740")
+    out["fluoride_D1206_pct"]     = _pct("D1206", "D1208")
+    out["fluoride_D1206_age"]     = _age("D1206", "D1208")
+    out["sealants_D1351_pct"]     = _pct("D1351")
+    out["sealants_D1351_age"]     = _age("D1351")
+    out["space_maint_1510_pct"]   = _pct("D1510")
+    out["space_maint_1510_age"]   = _age("D1510")
+    out["ortho_D8080_pct"]        = _pct("D8080")
+    out["ortho_D8080_age"]        = _age("D8080")
+
+    # Auxiliary differentiators (separate duplicate Denticon records).
+    out["veneer_D2962_pct"]   = _pct("D2962")
+    out["curodont_D2991_pct"] = _pct("D2991")
+    out["surg_ext_D7210_pct"] = _pct("D7210")
+
+    rel = str(raw.get("patient", {}).get("relationship", "")).strip().lower()
+    out["has_dependents"] = (
+        rel not in ("", "self", "subscriber", "policyholder") if rel else None
+    )
+
+    return out
+
+
+# ──────────────────────────────────────────────────────────────────
 # PHASE 1A: PYTHON-NATIVE EXTRACTION FROM PORTAL DATA
 # ──────────────────────────────────────────────────────────────────
 def extract_portal_fields(portal_raw: dict) -> dict:
@@ -268,6 +380,11 @@ def extract_portal_fields(portal_raw: dict) -> dict:
     if isinstance(portal, dict) and portal.get("patient_info") and (
             portal.get("benefit_categories") or portal.get("deductibles_and_maximums")):
         return _extract_ucci_portal_fields(portal)
+
+    # ── Detect FORMAT D: Delta Dental RI scraper output ──
+    # Identified by the explicit `ddri_data` flag it carries.
+    if isinstance(portal, dict) and (portal.get("ddri_data") or portal_raw.get("ddri_data")):
+        return _extract_ddri_portal_fields(portal)
 
     # ── Detect FORMAT A: benefit_coverage.procedures ──
     # benefit_coverage may live inside the unwrapped portal (DentaQuest) or at
@@ -606,6 +723,21 @@ def extract_denticon_plan_fields(plan: dict) -> dict:
     out["individual_annual_max"] = _nnum(r"MAXIMUM\s*\$\s*:\s*([^\s_]+)")    or _num(max_row)
     out["ortho_lifetime_max"]    = _nnum(r"LIFETIME MAX\s*:\s*([^\s_]+)")     or _num(ortho_row)
 
+    # ── Structured benefits dict fallback ──
+    # Some scraper outputs (e.g. Delta Dental RI) carry the plan-specific
+    # financials in a structured `benefits` block instead of the notes text.
+    # Use it ONLY to fill fields the notes/coverage table left empty, so no
+    # format that already resolves these values is affected.
+    _ben = plan.get("benefits", {}) or {}
+    if out["individual_deductible"] is None:
+        out["individual_deductible"] = _num(_ben.get("individual_deductible"))
+    if out["family_deductible"] is None:
+        out["family_deductible"] = _num(_ben.get("family_deductible"))
+    if out["individual_annual_max"] is None:
+        out["individual_annual_max"] = _num(_ben.get("individual_maximum"))
+    if out["ortho_lifetime_max"] is None:
+        out["ortho_lifetime_max"] = _num(_ben.get("individual_ortho_maximum"))
+
 
     # ─────────────────────────────────────────────
     # 3. DEPENDENT DETECTION — from coverage table
@@ -683,7 +815,10 @@ def extract_denticon_plan_fields(plan: dict) -> dict:
     out["space_maint_1510_pct"] = _num(d1510_row.get("coverage_pct")) if d1510_row else None
     if out["space_maint_1510_pct"] is None:
         cov_space = _cov(["space maint", "space maintainer"])
-        out["space_maint_1510_pct"] = _num(cov_space) or _nnum(r"SPACE\s+MAINT[^\n]*(\d+)%")
+        # Notes list several "LABEL %:NNN%" entries on one physical line, so the
+        # match MUST be non-greedy and anchored on the "%:" delimiter — a greedy
+        # "...(\d+)%" would skip past this field and capture a later value.
+        out["space_maint_1510_pct"] = _num(cov_space) or _nnum(r"SPACE\s+MAINT[^\n]*?%\s*:\s*(\d+)\s*%")
     out["space_maint_1510_age"] = _code_age("D1510")
     if out["space_maint_1510_age"] is None:
         sm_notes_m = re.search(

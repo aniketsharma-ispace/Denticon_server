@@ -265,6 +265,31 @@ REAL_CASES = [
      "ucci/gavriel_r_jorns_ucci.json",
      "ucci/Denticon_DeepAudit_Jorns, Gavriel_1784015309916.json",
      "22272", True),
+    # Delta Dental RI (FORMAT D). Single-plan sanity case.
+    ("Chou Vang (Delta RI, single plan)",
+     "DD RI/chou_vang_ddri_audit.json",
+     "DD RI/Denticon Chou Vang DD RI.json",
+     "8449", True),
+    # Greg & Lily share the SAME two duplicate records (9893 $2,000 max /
+    # 8282 $1,500 max) under group 7800-0750. The portal's $2,000 annual max
+    # rejects 8282, so 9893 wins uniquely — this only works once FORMAT D
+    # financials are parsed from the nested-list structure.
+    ("Greg Parascandolo (Delta RI, annual-max disambiguates duplicates)",
+     "DD RI/greg_parascandolo_ddri_audit.json",
+     "DD RI/Denticon Greg DD RI.json",
+     "9893", True),
+    ("Lily Beaudry (Delta RI, annual-max disambiguates duplicates)",
+     "DD RI/lily_beaudry_ddri_audit.json",
+     "DD RI/Denticon Lily DD RI.json",
+     "9893", True),
+    # James Caldwell: 69454 & 74239 tie on every field EXCEPT the family
+    # deductible ($100 vs $150), which lives only in the structured benefits
+    # dict. Reading it there rejects 74239 (portal fam ded = $100) so 69454
+    # wins uniquely.
+    ("James Caldwell (Delta RI, family-deductible disambiguates duplicates)",
+     "DD RI/james_caldwell_ddri_audit.json",
+     "DD RI/Denticon James Caldwell DD RI.json",
+     "69454", True),
 ]
 
 
@@ -366,11 +391,116 @@ async def case_wi_none_not_fabricated():
            f"portal_major={major} 291434_conf={target and target['confidence_score']} top={top}")
 
 
+def case_ddri_extraction():
+    """Delta Dental RI (FORMAT D): financials live in nested lists and each
+    procedure carries `coverage_percentage` (not `benefit_level`). Verify the
+    extractor reads them, maps 'Not Covered' ortho to 0, and never fabricates."""
+    ddri = {
+        "ddri_data": True,
+        "plan_details": {"group_number": "7800 - 0750",
+                         "employer_group": "UNION UNAP COMPREHENSIVE"},
+        "financials": {
+            "maximums":     [{"category": "Maximum Lifetime Cap", "total": "Unlimited"}],
+            "deductibles":  [{"category": "Individual Deductible", "total": "$0.00"},
+                             {"category": "Family Deductible",     "total": "$0.00"}],
+            "annual_limits":[{"category": "Annual Maximum",        "total": "$2,000.00"}],
+            "orthodontic":  [{"category": "Elective Orthodontic Lifetime Maximum",
+                              "total": "$1,500.00"}],
+        },
+        "benefit_coverage": {"procedures": [
+            {"procedure_code": "D0120", "coverage_percentage": "100 %"},
+            {"procedure_code": "D2391", "coverage_percentage": "100 %"},
+            {"procedure_code": "D2740", "coverage_percentage": "100 %"},
+        ]},
+        "patient": {"relationship": "Child"},
+    }
+    p = extract_portal_fields(ddri)
+    ok = (p["group_number"] == "7800 - 0750"
+          and p["individual_deductible"] == 0.0
+          and p["family_deductible"] == 0.0
+          and p["individual_annual_max"] == 2000.0
+          and p["ortho_lifetime_max"] == 1500.0
+          and p["preventative_D0120_pct"] == 100.0
+          and p["basic_D2331_D2140_pct"] == 100.0
+          and p["major_D2740_pct"] == 100.0)
+    report("ddri: FORMAT D financials + percentages extracted",
+           PASS if ok else FAIL,
+           f"annmax={p['individual_annual_max']} famded={p['family_deductible']} "
+           f"ortho={p['ortho_lifetime_max']} basic={p['basic_D2331_D2140_pct']}")
+
+    # 'Not Covered' ortho -> 0.0 (explicit no-coverage, not None/fabricated)
+    ddri2 = json.loads(json.dumps(ddri))
+    ddri2["financials"]["orthodontic"] = [
+        {"category": "Elective Orthodontic Lifetime Maximum", "total": "Not Covered"}]
+    p2 = extract_portal_fields(ddri2)
+    report("ddri: ortho 'Not Covered' -> 0",
+           PASS if p2["ortho_lifetime_max"] == 0.0 else FAIL,
+           f"ortho={p2['ortho_lifetime_max']}")
+
+
+def case_denticon_benefits_and_spacemaint():
+    """Denticon side: DD RI plans keep plan-specific financials in a structured
+    `benefits` dict (the family deductible lives ONLY there) and list coverage
+    on one physical notes line. Two fixes covered:
+      1. family_deductible falls back to benefits['family_deductible'].
+      2. 'SPACE MAINT ... %:100%' is parsed non-greedily — a greedy '(\\d+)%'
+         used to skip this field and capture a later 0%."""
+    plan = {"ins_plan_id": "74239", "plan_details": {},
+            "benefits": {
+                "notes": ("Plan Notes Last Update: 05/18/2026 "
+                          "SPACE MAINT D1510-D01525 %:100% FREQ: 1x :1XLifetime "
+                          "AGE LIMIT : BASIC %:80% MAJOR %:0%"),
+                "individual_deductible":     "$50.00",
+                "family_deductible":         "$150.00",
+                "individual_maximum":        "$2,000.00",
+                "individual_ortho_maximum":  "$2,000.00"},
+            "coverage": []}
+    d = extract_denticon_plan_fields(plan)
+    ok = (d["family_deductible"] == 150.0
+          and d["individual_deductible"] == 50.0
+          and d["individual_annual_max"] == 2000.0
+          and d["ortho_lifetime_max"] == 2000.0
+          and d["space_maint_1510_pct"] == 100.0)
+    report("ddri: benefits-dict family ded + non-greedy space-maint %",
+           PASS if ok else FAIL,
+           f"famded={d['family_deductible']} indded={d['individual_deductible']} "
+           f"annmax={d['individual_annual_max']} spacemaint={d['space_maint_1510_pct']}")
+
+
+async def case_ddri_carina_tie():
+    """Carina Snow (DD RI): 4 plans share group 4250-0403. 9756/8224 ($1,500
+    annual max) are rejected against the portal's $2,000, leaving 9727 & 9757,
+    which are byte-identical duplicates → a genuine tie, both in the confident
+    top group (undecidable from the JSON alone)."""
+    base = os.path.join(COMPARISON_DIR, "DD RI")
+    ppath = os.path.join(base, "carina_snow_ddri_audit.json")
+    dpath = os.path.join(base, "Denticon Carina Snow DD RI.json")
+    if not (os.path.exists(ppath) and os.path.exists(dpath)):
+        report("ddri: Carina duplicate-pair tie (9727/9757)", SKIP, "files not present")
+        return
+    with open(ppath, encoding="utf-8") as f:
+        portal = json.load(f)
+    with open(dpath, encoding="utf-8") as f:
+        denticon = json.load(f)
+    r = await match_insurance_plan(portal, denticon)
+    ranked = {str(p["plan_id"]): p for p in r.get("all_plans_ranked", [])}
+    ok = (bool(r.get("tie"))
+          and ranked.get("9727", {}).get("match_found")
+          and ranked.get("9757", {}).get("match_found")
+          and not ranked.get("9756", {}).get("match_found")
+          and not ranked.get("8224", {}).get("match_found"))
+    report("ddri: Carina duplicate-pair tie (9727/9757)", PASS if ok else FAIL,
+           f"tie={r.get('tie')} picked={r.get('matching_id')}")
+
+
 async def main():
     await case_six_field_decisions()
     await case_metlife_duplicates()
     case_extraction_rules()
     case_no_fabricated_portal_values()
+    case_ddri_extraction()
+    case_denticon_benefits_and_spacemaint()
+    await case_ddri_carina_tie()
     await case_real_data()
     await case_wi_none_not_fabricated()
 
