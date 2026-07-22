@@ -293,6 +293,49 @@ async def case_real_data():
                f"conf={r.get('confidence_score')} tie={r.get('tie', False)}")
 
 
+def case_no_fabricated_portal_values():
+    """File-independent guard against the fabrication bug class: a PDF parser
+    must NEVER invent a coverage % or dollar amount for data that isn't in the
+    text. Feed each Delta parser a minimal export that lacks the major/ortho
+    and financials sections; those fields must come out missing, never a made-up
+    default (which silently creates false mismatches during comparison)."""
+    from pdf_extractor import _parse_delta_dental_wi, _parse_delta_dental_toolkit
+
+    # WI: coverage line present for Preventive/Basic, "None" for Major, and NO
+    # Orthodontics line at all. Major must be 0% (explicit None), ortho missing.
+    wi_text = (
+        "Group Name: TEST EMPLOYER\nGroup Number: 12345\n"
+        "Preventive(0120) 100% Basic Restor(2140) 80% Major Restor(2750) None\n"
+    )
+    wi = _parse_delta_dental_wi(wi_text)
+    wp = extract_portal_fields(wi)
+    ok_wi = (wp["major_D2740_pct"] == 0.0          # explicit "None" -> 0
+             and wp["ortho_D8080_pct"] is None       # absent -> missing, not 50
+             and wp["basic_D2331_D2140_pct"] == 80.0)
+    report("no-fabrication: WI absent ortho stays missing (not 50%)",
+           PASS if ok_wi else FAIL,
+           f"major={wp['major_D2740_pct']} ortho={wp['ortho_D8080_pct']} basic={wp['basic_D2331_D2140_pct']}")
+
+    # Toolkit: only a few coverage rows, NO maximums/deductibles blocks and NO
+    # major/ortho categories. Those must be missing, not fabricated.
+    tk_text = (
+        "Patient Name: TEST PATIENT\nRelationship: Subscriber\n"
+        "Group/Sub Group: 7200-0001\n"
+        "Procedure Category\n%Covered\nDiagnostic\n100\nPreventive\n100\nSealants\n80\n"
+    )
+    tk = _parse_delta_dental_toolkit(tk_text)
+    tp = extract_portal_fields(tk)
+    ok_tk = (tp["group_number"] == "7200-0001"       # combined footer parsed
+             and tp["major_D2740_pct"] is None          # absent -> missing, not 50
+             and tp["ortho_D8080_pct"] is None           # absent -> missing, not 50
+             and tp["individual_annual_max"] is None     # absent -> missing, not $0
+             and tp["sealants_D1351_pct"] == 80.0)
+    report("no-fabrication: toolkit absent major/ortho/max stay missing",
+           PASS if ok_tk else FAIL,
+           f"grp={tp['group_number']} major={tp['major_D2740_pct']} ortho={tp['ortho_D8080_pct']} "
+           f"annmax={tp['individual_annual_max']} sealants={tp['sealants_D1351_pct']}")
+
+
 async def case_wi_none_not_fabricated():
     """Delta WI PDF: 'Major Restor(2750) None' must extract as 0% (not covered),
     NOT the fabricated 50% default. On Stohr/Brynn this false 50% used to bury
@@ -327,6 +370,7 @@ async def main():
     await case_six_field_decisions()
     await case_metlife_duplicates()
     case_extraction_rules()
+    case_no_fabricated_portal_values()
     await case_real_data()
     await case_wi_none_not_fabricated()
 

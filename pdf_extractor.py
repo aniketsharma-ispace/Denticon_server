@@ -2066,24 +2066,26 @@ def _parse_delta_dental_wi(text: str) -> dict:
     financials_by_patient = _parse_dd_wi_financials_all_patients(text)
     history_by_patient    = _parse_dd_wi_history_all_patients(text)
 
-    def _wi_pct(service_re: str, default: str) -> str:
+    def _wi_pct(service_re: str, default=None):
         # A coverage line reads "Service(code)  50%" OR "Service(code)  None".
-        # "None" means the service is explicitly NOT covered → 0% (a real value,
-        # not missing data). Only fall back to `default` when the line is absent
-        # entirely — never invent a percentage over an explicit "None".
+        # "None" means the service is explicitly NOT covered → 0% (a real value).
+        # When the line is absent entirely we return `default` (None → the field
+        # is skipped downstream). NEVER invent a percentage — a fabricated
+        # default silently corrupts matching (see Stohr/Brynn: a made-up 50%
+        # major buried the correct plan). Missing data must stay missing.
         m = re.search(rf"{service_re}\s*\(\d+\)\s+(\d+%|None)", text, re.IGNORECASE)
         if not m:
             return default
         return "0%" if m.group(1).lower() == "none" else m.group(1)
 
-    prev_pct  = _wi_pct(r"Preventive", "100%")
-    basic_pct = _wi_pct(r"Basic Restor", "80%")
-    major_pct = _wi_pct(r"Major Restor", "50%")
+    prev_pct  = _wi_pct(r"Preventive")
+    basic_pct = _wi_pct(r"Basic Restor")
+    major_pct = _wi_pct(r"Major Restor")
     perio_pct = _wi_pct(r"Perio Maint", basic_pct)
-    # Orthodontics % is stated on the coverage line ("Orthodontics(8010) 50%").
-    # Default to 0% when the plan has no ortho row (so ortho-less plans behave
-    # as before), but read the real percentage when it is present.
-    ortho_pct = _wi_pct(r"Orthodontics", "0%")
+    # Orthodontics % is read from the coverage line ("Orthodontics(8010) 50%",
+    # or "None" → 0% when explicitly not covered). Absent line → None (skipped),
+    # never a fabricated default.
+    ortho_pct = _wi_pct(r"Orthodontics")
 
     result = {
         "summary": {
@@ -2197,6 +2199,13 @@ def _parse_delta_dental_toolkit(text: str) -> dict:
     if m:
         sub_group_number = m.group(1).strip()
 
+    # Some toolkit exports print the identifier combined on the footer as
+    # "Group/Sub Group: 7200-0001" instead of separate labelled fields.
+    if not group_number:
+        m = re.search(r"Group\s*/\s*Sub Group:\s*([\w\-]+)", text)
+        if m:
+            group_number = m.group(1).strip()
+
     group_name = _toolkit_multiline_field(
         text, "Group Name", "Sub Group Number|Sub Group Name"
     )
@@ -2229,16 +2238,28 @@ def _parse_delta_dental_toolkit(text: str) -> dict:
         if m:
             coverages[cat] = m.group(1)
 
-    def _pct(cat: str, default: str) -> str:
+    def _pct(cat: str, default=None):
+        # "Not Covered" → 0% (a real value); category absent → default (None →
+        # skipped downstream). NEVER fabricate a percentage for a missing
+        # category — a made-up default silently corrupts matching.
         val = coverages.get(cat)
         if val is None:
             return default
         return "0%" if val == "Not Covered" else f"{val}%"
 
-    annual_max     = _toolkit_max_block(text, "Maximum", "General")     or {"total": "$ 0.00", "used": "$ 0.00", "remaining": "$ 0.00"}
-    ortho_lifetime = _toolkit_max_block(text, "Maximum", "Orthodontic") or {"total": "$ 0.00", "used": "$ 0.00", "remaining": "$ 0.00"}
-    implant_max    = _toolkit_max_block(text, "Maximum", "Implants")    or {"total": "$ 0.00", "used": "$ 0.00", "remaining": "$ 0.00"}
-    ind_ded        = _toolkit_max_block(text, "Deductible", "General")  or {"total": "$ 0.00", "used": "$ 0.00", "remaining": "$ 0.00"}
+    # Only include a financial field when its Amount/Used/Remaining block was
+    # actually found. A fabricated $0.00 for a value that isn't in the PDF
+    # (e.g. an incomplete export missing the maximums/deductibles page) reads
+    # as a real "0" downstream and produces false mismatches. Missing = omit.
+    financials = {}
+    for key, block in (
+        ("annual_max",            _toolkit_max_block(text, "Maximum", "General")),
+        ("individual_deductible", _toolkit_max_block(text, "Deductible", "General")),
+        ("ortho_lifetime",        _toolkit_max_block(text, "Maximum", "Orthodontic")),
+        ("implant_lifetime",      _toolkit_max_block(text, "Maximum", "Implants")),
+    ):
+        if block:
+            financials[key] = block
 
     result = {
         "summary": {
@@ -2248,32 +2269,26 @@ def _parse_delta_dental_toolkit(text: str) -> dict:
             "sub_group_number": sub_group_number,
             "patient_name":     patient_name,
         },
-        "financials": {
-            "annual_max":            annual_max,
-            "individual_deductible": ind_ded,
-            "family_deductible":     {"total": "$ 0.00"},
-            "ortho_lifetime":        ortho_lifetime,
-            "implant_lifetime":      implant_max,
-        },
+        "financials": financials,
         "patient": {"relationship": relationship},
         "benefit_coverage": {
             "procedures": [
-                {"procedure_code": "D0120", "benefit_level": _pct("Diagnostic", "100%")},
-                {"procedure_code": "D0150", "benefit_level": _pct("Diagnostic", "100%")},
-                {"procedure_code": "D1110", "benefit_level": _pct("Preventive", "100%")},
-                {"procedure_code": "D1120", "benefit_level": _pct("Preventive", "100%")},
-                {"procedure_code": "D1206", "benefit_level": _pct("Preventive", "100%")},
-                {"procedure_code": "D0274", "benefit_level": _pct("Bitewing Radiographs", "100%")},
-                {"procedure_code": "D0210", "benefit_level": _pct("All Other Radiographs", "100%")},
-                {"procedure_code": "D1351", "benefit_level": _pct("Sealants", "0%")},
-                {"procedure_code": "D2140", "benefit_level": _pct("Minor Restorative", "80%")},
-                {"procedure_code": "D2331", "benefit_level": _pct("Minor Restorative", "80%")},
-                {"procedure_code": "D2740", "benefit_level": _pct("Major Restorative", "50%")},
-                {"procedure_code": "D4910", "benefit_level": _pct("Periodontics", "100%")},
-                {"procedure_code": "D4355", "benefit_level": _pct("Periodontics", "100%")},
-                {"procedure_code": "D6010", "benefit_level": _pct("Implants", "100%")},
-                {"procedure_code": "D5110", "benefit_level": _pct("Prosthodontics", "50%")},
-                {"procedure_code": "D8080", "benefit_level": _pct("Orthodontic Services", "50%")},
+                {"procedure_code": "D0120", "benefit_level": _pct("Diagnostic")},
+                {"procedure_code": "D0150", "benefit_level": _pct("Diagnostic")},
+                {"procedure_code": "D1110", "benefit_level": _pct("Preventive")},
+                {"procedure_code": "D1120", "benefit_level": _pct("Preventive")},
+                {"procedure_code": "D1206", "benefit_level": _pct("Preventive")},
+                {"procedure_code": "D0274", "benefit_level": _pct("Bitewing Radiographs")},
+                {"procedure_code": "D0210", "benefit_level": _pct("All Other Radiographs")},
+                {"procedure_code": "D1351", "benefit_level": _pct("Sealants")},
+                {"procedure_code": "D2140", "benefit_level": _pct("Minor Restorative")},
+                {"procedure_code": "D2331", "benefit_level": _pct("Minor Restorative")},
+                {"procedure_code": "D2740", "benefit_level": _pct("Major Restorative")},
+                {"procedure_code": "D4910", "benefit_level": _pct("Periodontics")},
+                {"procedure_code": "D4355", "benefit_level": _pct("Periodontics")},
+                {"procedure_code": "D6010", "benefit_level": _pct("Implants")},
+                {"procedure_code": "D5110", "benefit_level": _pct("Prosthodontics")},
+                {"procedure_code": "D8080", "benefit_level": _pct("Orthodontic Services")},
             ]
         },
         "history": history,
@@ -2284,8 +2299,8 @@ def _parse_delta_dental_toolkit(text: str) -> dict:
 
     log.info(
         f"[Toolkit] patient='{patient_name}', relationship='{relationship}', "
-        f"group='{group_number}', annual_max={annual_max['total']} "
-        f"(used={annual_max['used']}), history_codes={list(history.keys())}"
+        f"group='{group_number}', annual_max={financials.get('annual_max', {}).get('total', 'n/a')}, "
+        f"history_codes={list(history.keys())}"
     )
     return result
 
