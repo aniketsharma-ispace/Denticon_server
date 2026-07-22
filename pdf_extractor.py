@@ -2067,8 +2067,14 @@ def _parse_delta_dental_wi(text: str) -> dict:
     history_by_patient    = _parse_dd_wi_history_all_patients(text)
 
     def _wi_pct(service_re: str, default: str) -> str:
-        m = re.search(rf"{service_re}\s*\(\d+\)\s+(\d+)%", text, re.IGNORECASE)
-        return f"{m.group(1)}%" if m else default
+        # A coverage line reads "Service(code)  50%" OR "Service(code)  None".
+        # "None" means the service is explicitly NOT covered → 0% (a real value,
+        # not missing data). Only fall back to `default` when the line is absent
+        # entirely — never invent a percentage over an explicit "None".
+        m = re.search(rf"{service_re}\s*\(\d+\)\s+(\d+%|None)", text, re.IGNORECASE)
+        if not m:
+            return default
+        return "0%" if m.group(1).lower() == "none" else m.group(1)
 
     prev_pct  = _wi_pct(r"Preventive", "100%")
     basic_pct = _wi_pct(r"Basic Restor", "80%")

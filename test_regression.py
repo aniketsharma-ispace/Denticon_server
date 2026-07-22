@@ -293,11 +293,42 @@ async def case_real_data():
                f"conf={r.get('confidence_score')} tie={r.get('tie', False)}")
 
 
+async def case_wi_none_not_fabricated():
+    """Delta WI PDF: 'Major Restor(2750) None' must extract as 0% (not covered),
+    NOT the fabricated 50% default. On Stohr/Brynn this false 50% used to bury
+    the correct plan family (291434 among identical siblings) below unrelated
+    plans; with the fix 291434 lands in the top-scoring, match_found group.
+    NOTE: the 5 siblings 283982/289637/290120/291434/295756 are byte-identical
+    in coverage, so the exact winner is a genuine tie — we assert 291434 is IN
+    the confident top group, not that it is THE pick."""
+    from pdf_extractor import parse_insurance_pdf
+    ppath = os.path.join(COMPARISON_DIR, "Julie.pdf")
+    dpath = os.path.join(COMPARISON_DIR, "Denticon_DeepAudit_Stohr, Brynn_1784621804769.json")
+    if not (os.path.exists(ppath) and os.path.exists(dpath)):
+        report("wi: 'None' major not fabricated as 50% (Stohr)", SKIP, "files not present")
+        return
+    with open(ppath, "rb") as f:
+        portal = await parse_insurance_pdf(f.read())
+    major = extract_portal_fields(portal).get("major_D2740_pct")
+    with open(dpath, encoding="utf-8") as f:
+        denticon = json.load(f)
+    r = await match_insurance_plan(portal, denticon)
+    top = max((p["confidence_score"] for p in r.get("all_plans_ranked", [])), default=0)
+    target = next((p for p in r.get("all_plans_ranked", [])
+                   if str(p["plan_id"]) == "291434"), None)
+    ok = (major == 0.0 and target is not None
+          and target["confidence_score"] == top and target["match_found"])
+    report("wi: 'None' major=0 (not fabricated 50) + 291434 in top group",
+           PASS if ok else FAIL,
+           f"portal_major={major} 291434_conf={target and target['confidence_score']} top={top}")
+
+
 async def main():
     await case_six_field_decisions()
     await case_metlife_duplicates()
     case_extraction_rules()
     await case_real_data()
+    await case_wi_none_not_fabricated()
 
     print()
     fails = [n for n, s, _ in _results if s == FAIL]
