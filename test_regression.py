@@ -222,6 +222,15 @@ REAL_CASES = [
      "andreau.pdf",
      "Denticon_DeepAudit_Andreu, Cesar_1784115143350.json",
      "83207", True),
+    # Delta Dental MO PDF: 3 sibling EMERSON records share group 21330100, each
+    # with an "ID#: NNNNN\n<employer>" Employer detail. The portal group number
+    # carries an "MO" prefix (MO21330100) that must still match the digits, and
+    # 56926 — the only sibling with no conflicting benefit fields — must win
+    # confidently over 53062/72932, which differ on ortho %/deductible/max.
+    ("Farris, Drew (Delta MO PDF, ID#-prefixed siblings + MO-prefixed group)",
+     "Member Benefits_999500000001616_DREW FARRIS_Full-1.pdf",
+     "Denticon_DeepAudit_FARRIS, DREW Drew_1784616645849.json",
+     "56926", True),
     # MetLife: correct plan (32209) has a sparse Denticon record. Its Employer
     # detail is "ID#: 27420\nLEANDER INDEPENDENT SCHOOL DIS" — the group name
     # must be read as the employer, not the "ID#:" line. With group name matched
