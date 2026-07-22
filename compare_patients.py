@@ -546,6 +546,11 @@ def extract_denticon_plan_fields(plan: dict) -> dict:
     raw_name = emp_m.group(1).strip() if emp_m else (
         details.get("Employer Name") or details.get("Employer") or ""
     )
+    # The Denticon "Employer" detail is often prefixed with the internal
+    # employer record id on its own line ("ID#: 27420\nLEANDER INDEPENDENT
+    # SCHOOL DIS"). Drop a leading "ID#: ..." line so the real employer name
+    # is used instead of the record id.
+    raw_name = re.sub(r"^\s*ID#:\s*\S+\s*\n+", "", raw_name, flags=re.IGNORECASE)
     raw_name = re.split(r"GROUP\s*#|WHAT\s+FEE|NETWORK|\n|_", raw_name, maxsplit=1)[0].strip()
     out["group_name"] = raw_name or None
 
@@ -1066,6 +1071,25 @@ async def compare_plans(plan_id: str, portal_sim: dict, denticon_sim: dict) -> d
                 "reason": (f"Six-field validation passed "
                            f"({summary['passed']}/{summary['checked']} identity fields), "
                            f"score {score}%.")}
+
+    # ── Strong-identifier fast path ──
+    # The group number/name are the strongest plan identifiers. When one of
+    # them matches and NOTHING anywhere contradicts (no six-field failures and
+    # no coverage/age/aux mismatches at all), the plan is the same one — a
+    # sparse Denticon record (missing deductibles/maximums) shouldn't force
+    # manual review or a flaky AI call. Missing data ≠ conflicting data.
+    # Requiring zero contradictions keeps this safe: a same-employer plan that
+    # actually differs (e.g. a different annual max) still has a mismatch and
+    # is correctly excluded here.
+    _grp_num_ok  = result_s["validation"].get("group_number", {}).get("status") == "match"
+    _grp_name_ok = result_s["validation"].get("group_name", {}).get("status") == "match"
+    if not mismatches and (_grp_num_ok or _grp_name_ok):
+        anchor = "Group number" if _grp_num_ok else "Group name"
+        return {**base, "match_found": True,
+                "reason": (f"{anchor} matched with no conflicting fields "
+                           f"({summary['passed']}/{summary['checked']} identity fields "
+                           f"present, score {score}%).")}
+
     if score < 50:
         return {**base, "match_found": False,
                 "reason": (f"Score {score}% — too many coverage fields differ "

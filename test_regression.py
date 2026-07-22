@@ -222,6 +222,15 @@ REAL_CASES = [
      "andreau.pdf",
      "Denticon_DeepAudit_Andreu, Cesar_1784115143350.json",
      "83207", True),
+    # MetLife: correct plan (32209) has a sparse Denticon record. Its Employer
+    # detail is "ID#: 27420\nLEANDER INDEPENDENT SCHOOL DIS" — the group name
+    # must be read as the employer, not the "ID#:" line. With group name matched
+    # and no conflicting fields, it must win (confident) over the same-employer
+    # plan 29611, which is correctly rejected on an annual-max mismatch.
+    ("Johnson, Alexander (MetLife, ID#-prefixed employer + sparse record)",
+     "alexander_johnson_metlife_audit (1).json",
+     "Denticon_DeepAudit_Johnson, Alexander_1784659164331.json",
+     "32209", True),
     # Delta Dental WI PDF: orthodontics % must be read from the coverage line
     # ("Orthodontics(8010) 50%") instead of the old hardcoded 0%, otherwise the
     # portal falsely reports ortho_D8080_pct=0 and mismatches the Denticon 50%.
