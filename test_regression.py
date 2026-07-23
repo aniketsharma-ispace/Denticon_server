@@ -290,6 +290,28 @@ REAL_CASES = [
      "DD RI/james_caldwell_ddri_audit.json",
      "DD RI/Denticon James Caldwell DD RI.json",
      "69454", True),
+    # UCCI TRICARE (Oaks): the Denticon record's notes "GROUP #" (080003202)
+    # differs from the portal, but its plan_details "Group No." (080001502)
+    # matches — group matching must accept the alt identifier. Patient is OON,
+    # so the OON record 298175 must beat its in-network duplicate 295797.
+    ("Oaks, Michael (UCCI TRICARE, group-alt + OON network tie-break)",
+     "ucci_validation_23_7/michael_e_oaks_ucci.json",
+     "ucci_validation_23_7/Denticon_DeepAudit_OAKS, MICHAEL_1784802887287.json",
+     "298175", True),
+    # UCCI FEDVIP (Nalbandian): patient is out-of-network and BOTH Denticon
+    # plans are OON — they must NOT be skipped, and 298154 must win.
+    ("Nalbandian, John (UCCI FEDVIP, out-of-network patient not skipped)",
+     "ucci_validation_23_7/john_nalbandian_ucci.json",
+     "ucci_validation_23_7/Denticon_DeepAudit_Nalbandian, John_1784802740949.json",
+     "298154", True),
+    ("Meinster, Mark (UCCI, 2-plan confident match)",
+     "ucci_validation_23_7/mark_meinster_ucci.json",
+     "ucci_validation_23_7/Denticon_DeepAudit_MEINSTER, MARK D Mark_1784802661216.json",
+     "295280", True),
+    ("Luketa, Valentina (UCCI, 2-plan confident match)",
+     "ucci_validation_23_7/valentina_luketa_ucci.json",
+     "ucci_validation_23_7/Denticon_DeepAudit_LUKETA, VALENTINA_1784802964059.json",
+     "295280", True),
     # Aetna ClaimConnect (FORMAT E): single plan whose group# + all six identity
     # fields match the portal; before FORMAT E was parsed the portal came back
     # all-null and the lone correct plan scored 0% ("not best plan").
@@ -583,6 +605,53 @@ async def case_ddri_carina_tie():
            f"tie={r.get('tie')} picked={r.get('matching_id')}")
 
 
+async def case_group_alt_identifier():
+    """A Denticon record can carry two group identifiers: notes "GROUP #" and
+    plan_details "Group No.". The portal matching EITHER must count as a match
+    (UCCI TRICARE: notes 080003202 differs, but Group No. 080001502 matches)."""
+    plan = {"ins_plan_id": "298175",
+            "plan_details": {"Group No.": "080001502"},
+            "benefits": {"notes": ("EMPLOYER :TRICARE DENTAL PROGRAM "
+                                    "GROUP # :080003202 MAXIMUM $ :1500 "
+                                    "DEDUCTIBLE $ :0"),
+                         "full_text": ""},
+            "coverage": []}
+    d = extract_denticon_plan_fields(plan)
+    portal = {"group_number": "080001502", "group_name": "TRICARE DENTAL PROGRAM"}
+    r = await compare_plans("298175", portal, d)
+    ok = (d.get("group_number_alt") == "080001502"
+          and r["field_validation"]["group_number"]["status"] == "match")
+    report("ucci: group matches plan_details 'Group No.' via alt id (notes group differs)",
+           PASS if ok else FAIL,
+           f"alt={d.get('group_number_alt')} status={r['field_validation']['group_number']['status']}")
+
+
+async def case_oon_patient_network_tiebreak():
+    """When the PATIENT is out-of-network (UCCI 'NO NETWORK'), out-of-network
+    Denticon plans must NOT be skipped, and among network-consistent duplicates
+    the OON record must win (UCCI Oaks: OON 298175 over in-network 295797)."""
+    def _plan(pid, net):   # net: "In" or "out"
+        return {"ins_plan_id": pid,
+                "plan_details": {"Group No.": "555001"},
+                "benefits": {"notes": (f"In / Out of Network: {net} EMPLOYER :ACME "
+                                       f"GROUP # :555001 MAXIMUM $ :1500 DEDUCTIBLE $ :0"),
+                             "full_text": ""},
+                "coverage": []}
+    portal = {"patient_info": {"group_id": "ACME / 555001",
+                               "your_network": "NO NETWORK", "relationship": "SELF"},
+              "deductibles_and_maximums": [
+                  {"benefit": "Individual Maximum", "coverage": "$1,500"},
+                  {"benefit": "Individual Deductible", "coverage": "None"}],
+              "benefit_categories": []}
+    wrapper = {"denticon_data": {"primary_insurance": {"carrier_name": ""},
+               "plans": [_plan("INPLAN", "In"), _plan("OONPLAN", "out")]}}
+    r = await match_insurance_plan(portal, wrapper)
+    ok = r.get("matching_id") == "OONPLAN" and bool(r.get("match_found"))
+    report("ucci: OON patient -> OON plans kept, network-aligned record wins",
+           PASS if ok else FAIL,
+           f"picked={r.get('matching_id')} match={r.get('match_found')} tie={r.get('tie')}")
+
+
 async def case_age_zero_no_cap():
     """A Denticon age cap of 0 means 'no age limit' (the unset default), NOT a
     literal cap of 0 — so a real portal age (Delta MO fluoride 13 / sealant 18)
@@ -685,6 +754,8 @@ async def main():
     case_denticon_benefits_and_spacemaint()
     case_aetna_extraction()
     case_unlimited_maximum()
+    await case_group_alt_identifier()
+    await case_oon_patient_network_tiebreak()
     await case_age_zero_no_cap()
     await case_llm_fallback()
     await case_ddri_carina_tie()

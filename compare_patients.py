@@ -132,6 +132,9 @@ def _extract_ucci_portal_fields(raw: dict) -> dict:
     # Patient is out-of-network: the portal displays OON percentages, while
     # Denticon plan records store in-network values → percentages not comparable.
     portal_oon = "no network" in str(pi.get("your_network", "")).lower()
+    # Propagate so the matcher does NOT skip out-of-network Denticon plans when
+    # the PATIENT is out-of-network — the correct plan IS an OON record then.
+    out["portal_out_of_network"] = portal_oon
 
     # ── FINANCIALS from deductibles_and_maximums ──
     out["individual_deductible"] = None
@@ -810,6 +813,14 @@ def extract_denticon_plan_fields(plan: dict) -> dict:
     out["group_number"] = grp_m.group(1).strip() if grp_m else (
         details.get("Group #") or details.get("Group No.")
     )
+    # A plan record can carry TWO group identifiers: the notes "GROUP #" (often
+    # an internal / employer group, e.g. 080003202) and the plan_details
+    # "Group No." (the carrier group shown on the portal, e.g. 080001502). Keep
+    # the plan_details one as an alternate so group matching can accept EITHER —
+    # otherwise a record whose notes group differs from the portal is falsely
+    # rejected even though its "Group No." matches (UCCI TRICARE case).
+    _grp_alt = details.get("Group No.") or details.get("Group #")
+    out["group_number_alt"] = str(_grp_alt).strip() if _grp_alt else None
     raw_name = emp_m.group(1).strip() if emp_m else (
         details.get("Employer Name") or details.get("Employer") or ""
     )
@@ -1248,17 +1259,23 @@ def _python_score(portal: dict, denticon: dict) -> dict:
         return "mismatch", 0.0
 
     # ── 1. SIX-FIELD VALIDATION ─────────────────────────────
-    # Group Number
-    pnum, dnum = portal.get("group_number"), denticon.get("group_number")
+    # Group Number — a Denticon record may carry two group identifiers
+    # (notes "GROUP #" and plan_details "Group No."); the portal matching
+    # EITHER of them counts as a match.
+    pnum = portal.get("group_number")
+    dnum = denticon.get("group_number")
+    dnum_alt = denticon.get("group_number_alt")
+    _d_display = dnum if _digits(dnum) else (dnum_alt if _digits(dnum_alt) else dnum)
     if not _digits(pnum):
         st, cr = "not_checked", 0.0
-    elif not _digits(dnum):
+    elif not (_digits(dnum) or _digits(dnum_alt)):
         st, cr = "denticon_missing", _MISSING_CREDIT
-    elif _group_numbers_match(pnum, dnum):
+    elif _group_numbers_match(pnum, dnum) or _group_numbers_match(pnum, dnum_alt):
         st, cr = "match", 1.0
+        _d_display = dnum if _group_numbers_match(pnum, dnum) else dnum_alt
     else:
         st, cr = "mismatch", 0.0
-    _record("group_number", pnum, dnum, st, _SIX_FIELD_WEIGHTS["group_number"], cr, "six_field")
+    _record("group_number", pnum, _d_display, st, _SIX_FIELD_WEIGHTS["group_number"], cr, "six_field")
 
     # Group Name — fuzzy: formatting/abbreviation differences shouldn't
     # disqualify a plan, but a clearly different employer should.
@@ -1684,6 +1701,18 @@ async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict
         str(p.get("ins_plan_id", "?")): _plan_record_meta(p, patient_carrier)
         for p in plans
     }
+    # Per-plan out-of-network flag, used as a tie-break against the patient's
+    # own network status (see _rank_key).
+    plan_oon = {
+        str(p.get("ins_plan_id", "?")): _is_out_of_network_plan(p)
+        for p in plans
+    }
+
+    # When the PATIENT is out-of-network (portal shows "NO NETWORK"), the
+    # correct Denticon record is itself an out-of-network plan — so the OON
+    # skip below must NOT fire, or every plan is dropped and nothing matches
+    # (UCCI Nalbandian case: both plans OON, portal OON, correct = 298154).
+    portal_is_oon = bool(portal_sim.get("portal_out_of_network"))
 
     # ── Step 3: Evaluate ALL Plans concurrently, collect results ──
     async def process_plan(p):
@@ -1691,9 +1720,11 @@ async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict
         log.info(f"\n--- Evaluating Plan ID: {plan_id} ---")
 
         # ── Early exit: skip Out-of-Network / Out-of-Benefit plans ──
-        # Portal data is always in-network; comparing it against an out-of-network
-        # Denticon plan will never produce a valid match.
-        if _is_out_of_network_plan(p):
+        # Portal data is normally in-network; comparing it against an OON
+        # Denticon plan won't match. But when the PATIENT is out-of-network,
+        # the correct record IS an OON plan — so only skip when the portal is
+        # in-network.
+        if not portal_is_oon and _is_out_of_network_plan(p):
             log.info(
                 f"Plan {plan_id}: flagged as Out-of-Network or Out-of-Benefit — skipping."
             )
@@ -1745,16 +1776,24 @@ async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict
     # the newest Created / Modified dates. ──
     def _rank_key(x):
         conf, crit, r = x
+        pid = str(r.get("matching_id"))
         carrier_ok, fee_ok, created, modified = plan_meta.get(
-            str(r.get("matching_id")), (False, True, (0, 0, 0), (0, 0, 0))
+            pid, (False, True, (0, 0, 0), (0, 0, 0))
         )
+        # Network alignment: the record whose network matches the PATIENT's
+        # network is the right one. When the patient is out-of-network, the OON
+        # Denticon record must beat the in-network duplicate (UCCI Oaks: OON
+        # 298175 over in-network 295797); when in-network, OON records were
+        # already skipped, so this is neutral.
+        net_aligned = (plan_oon.get(pid, False) == portal_is_oon)
         # Plans that PASSED six-field validation always outrank rejected ones,
         # even when a rejected plan happens to score higher overall.
-        # Duplicate-record tie-breaks, in order: the carrier record the
-        # patient is attached to, fee-schedule/network consistency, then the
-        # most recently MAINTAINED record (modified date before created date —
+        # Duplicate-record tie-breaks, in order: network alignment, the carrier
+        # record the patient is attached to, fee-schedule/network consistency,
+        # then the most recently MAINTAINED record (modified before created —
         # offices keep editing the record they actually use).
         return (0 if r.get("match_found") else 1, crit, -conf,
+                0 if net_aligned else 1,
                 0 if carrier_ok else 1,
                 0 if fee_ok else 1,
                 tuple(-v for v in modified), tuple(-v for v in created))
