@@ -297,6 +297,14 @@ REAL_CASES = [
      "gloria_reese_aetna_benefits.json",
      "Denticon_DeepAudit_Reese, Gloria_1784797215504.json",
      "30874", True),
+    # Aetna Medicare variant: 3 records (29561/29645/29850) share group#,
+    # deductible and annual max, so they tie — the correct one is undecidable
+    # from these fields. This asserts the engine now COMPARES the financials
+    # (group + ded + max, not just group) and flags a tie rather than scoring 0%.
+    ("Clifford, Donna (Aetna Medicare, ties on shared identity fields)",
+     "donna_clifford_aetna_benefits (1).json",
+     "Denticon_DeepAudit_Clifford, Donna_1784797323576.json",
+     "29561", False),
 ]
 
 
@@ -514,6 +522,31 @@ def case_aetna_extraction():
            PASS if ok else FAIL,
            f"annmax={p['individual_annual_max']} ortho={p['ortho_lifetime_max']} "
            f"basic={p['basic_D2331_D2140_pct']} fluoride={p['fluoride_D1206_pct']}")
+
+    # Variant (Aetna Medicare export): maximum is labelled "Annual Maximum"
+    # (not "DENTAL"), the deductible row shifts the Individual/Family tag into
+    # `type` with the amount duplicated into `coverage`, and percentages carry
+    # a trailing copay dollar amount ("0% / 100% $0.00"). All must still parse.
+    variant = {
+        "source": "ClaimConnect - Extended Plan Benefits",
+        "payer": {"group#": "000003-TX", "group_name": "MA Individual - Texas",
+                  "coverage": "Individual"},
+        "maximums": [{"type": "Annual Maximum", "coverage": "Individual", "amount": "$1,000.00"}],
+        "deductibles": [{"type": "Individual", "coverage": "$0.00", "amount": "$0.00"}],
+        "service_level_benefits": [
+            {"procedure_code": "D0120", "percentage_copay": "0% / 100% $0.00"},
+            {"procedure_code": "D2740", "percentage_copay": "70% / 30% $0.00"}],
+    }
+    v = extract_portal_fields(variant)
+    okv = (v["group_number"] == "000003-TX"
+           and v["individual_deductible"] == 0.0
+           and v["individual_annual_max"] == 1000.0   # 'Annual Maximum' label recognised
+           and v["preventative_D0120_pct"] == 100.0   # trailing '$0.00' ignored
+           and v["major_D2740_pct"] == 30.0)
+    report("aetna: variant (Annual Maximum label, shifted deductible, trailing $)",
+           PASS if okv else FAIL,
+           f"annmax={v['individual_annual_max']} indded={v['individual_deductible']} "
+           f"prev={v['preventative_D0120_pct']} major={v['major_D2740_pct']}")
 
 
 async def case_ddri_carina_tie():

@@ -380,22 +380,28 @@ def _extract_aetna_portal_fields(raw: dict) -> dict:
         m = re.search(r"([\d,]+\.?\d*)", str(s))
         return float(m.group(1).replace(",", "")) if m else None
 
-    def _find_amount(items, type_kw=None, coverage=None):
+    # Row labels vary between exports: sometimes the Individual/Family (or
+    # DENTAL/Annual/Ortho) tag sits in `type`, sometimes in `coverage` (one
+    # variant even shifts the amount into `coverage`). Match against BOTH.
+    def _label(item) -> str:
+        return (str(item.get("type", "")) + " " + str(item.get("coverage", ""))).lower()
+
+    def _pick_amount(items, want: tuple, exclude: tuple = ()) -> float | None:
         for it in items or []:
-            if type_kw is not None and type_kw not in str(it.get("type", "")).lower():
-                continue
-            if coverage is not None and str(it.get("coverage", "")).strip().lower() != coverage:
-                continue
-            return _money(it.get("amount"))
+            lab = _label(it)
+            if any(w in lab for w in want) and not any(x in lab for x in exclude):
+                v = _money(it.get("amount"))
+                if v is not None:
+                    return v
         return None
 
-    maxs = raw.get("maximums", [])
+    maxs = raw.get("maximums") or raw.get("maximums_out_of_network") or []
     deds = raw.get("deductibles", [])
-    out["individual_deductible"] = _find_amount(deds, coverage="individual")
-    out["family_deductible"]     = _find_amount(deds, coverage="family")
-    # Annual max = the DENTAL (non-ortho) maximum; ortho lifetime max is separate.
-    out["individual_annual_max"] = _find_amount(maxs, type_kw="dental", coverage="individual")
-    out["ortho_lifetime_max"]    = _find_amount(maxs, type_kw="ortho")
+    out["individual_deductible"] = _pick_amount(deds, ("individual",), exclude=("family",))
+    out["family_deductible"]     = _pick_amount(deds, ("family",))
+    out["ortho_lifetime_max"]    = _pick_amount(maxs, ("ortho",))
+    # Annual/dental maximum (labelled "DENTAL", "Annual Maximum", ...), never the ortho one.
+    out["individual_annual_max"] = _pick_amount(maxs, ("annual", "dental"), exclude=("ortho",))
 
     # ── service-level benefits index (per CDT code) ──
     proc_index: dict[str, dict] = {}
@@ -409,16 +415,17 @@ def _extract_aetna_portal_fields(raw: dict) -> dict:
             p = proc_index.get(c)
             if p is None:
                 continue
-            # "Not Covered" / blank → skip (missing), do NOT fabricate a 0.
-            if "not covered" in str(p.get("message", "")).lower():
-                continue
             raw_pct = str(p.get("percentage_copay", "")).strip()
-            if not raw_pct:
+            # "Not Covered" / blank → skip (missing), do NOT fabricate a 0.
+            if "not covered" in str(p.get("message", "")).lower() \
+               or "not covered" in raw_pct.lower():
                 continue
-            parts = [seg for seg in raw_pct.split("/") if seg.strip()]
-            v = _num(parts[-1]) if parts else None   # plan-coverage % is the last value
-            if v is not None:
-                return v
+            # Value can be "planCoverage%", "copay% / coverage%", or carry a
+            # trailing copay dollar amount ("0% / 100% $0.00"). Take the LAST
+            # percentage token as the plan-coverage %; ignore any $ amount.
+            nums = re.findall(r"(\d+)\s*%", raw_pct)
+            if nums:
+                return float(nums[-1])
         return None
 
     def _age(*codes: str):
