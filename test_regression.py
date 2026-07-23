@@ -575,6 +575,60 @@ async def case_ddri_carina_tie():
            f"tie={r.get('tie')} picked={r.get('matching_id')}")
 
 
+async def case_llm_fallback():
+    """Universal LLM extraction fallback (unknown formats only). Must be:
+      1. triggered only when the deterministic parse found NO benefit data,
+      2. anti-fabrication-gated — keep a value only if it appears in the source,
+      3. gap-filling — never overwrite a value the deterministic parser found.
+    Uses a mocked Ollama so it is deterministic and needs no running model."""
+    import compare_patients as cp
+
+    fields = cp._LLM_PORTAL_STRING_FIELDS + cp._LLM_PORTAL_NUM_FIELDS
+    empty = {k: None for k in fields}
+    ok_trig = (cp._portal_looks_unrecognized(empty)
+               and not cp._portal_looks_unrecognized(dict(empty, individual_annual_max=1000.0))
+               and not cp._portal_looks_unrecognized(dict(empty, major_D2740_pct=50.0)))
+    report("llm-fallback: fires only for unrecognised (no-benefit-data) portals",
+           PASS if ok_trig else FAIL, "")
+
+    hay = '{"grp":"7200-0001","max":"$2,000.00","crown":"50% / 50%"}'
+    ok_gate = (cp._value_in_text(2000.0, hay) and cp._value_in_text("7200-0001", hay)
+               and cp._value_in_text(50.0, hay)
+               and not cp._value_in_text(3500.0, hay)      # invented $ → rejected
+               and not cp._value_in_text("9999-0001", hay))
+    report("llm-fallback: anti-fabrication gate (value must be in source)",
+           PASS if ok_gate else FAIL, "")
+
+    raw = {"weirdformat": True, "grp": "7200-0001",
+           "money": {"annual": "$2,000.00", "ded": "$50.00"}, "cov": {"crown": "50%"}}
+
+    async def fake_llm(prompt, temperature=0.0):
+        return {"group_number": "7200-0001",
+                "individual_annual_max": 2000, "individual_deductible": 50,
+                "major_D2740_pct": 50,
+                "ortho_lifetime_max": 9999}   # NOT in source → must be dropped
+
+    orig = cp.ask_ollama
+    cp.ask_ollama = fake_llm
+    cp._LLM_EXTRACT_CACHE.clear()
+    try:
+        det = {k: None for k in fields}
+        det["group_name"] = "PRE-SET EMPLOYER"   # deterministic value must survive
+        merged = await cp._llm_extract_portal_fields(raw, det)
+    finally:
+        cp.ask_ollama = orig
+    ok_fill = (merged["individual_annual_max"] == 2000.0
+               and merged["individual_deductible"] == 50.0
+               and merged["major_D2740_pct"] == 50.0
+               and merged["group_number"] == "7200-0001"
+               and merged["ortho_lifetime_max"] is None            # fabricated 9999 dropped
+               and merged["group_name"] == "PRE-SET EMPLOYER")     # gap-fill only, no overwrite
+    report("llm-fallback: gap-fills real values, drops fabrication, never overwrites",
+           PASS if ok_fill else FAIL,
+           f"annmax={merged['individual_annual_max']} ortho={merged['ortho_lifetime_max']} "
+           f"grpname={merged['group_name']!r}")
+
+
 async def main():
     await case_six_field_decisions()
     await case_metlife_duplicates()
@@ -583,6 +637,7 @@ async def main():
     case_ddri_extraction()
     case_denticon_benefits_and_spacemaint()
     case_aetna_extraction()
+    await case_llm_fallback()
     await case_ddri_carina_tie()
     await case_real_data()
     await case_wi_none_not_fabricated()

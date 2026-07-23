@@ -1508,6 +1508,120 @@ def _normalize_carrier(name) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────
+# UNIVERSAL LLM EXTRACTION FALLBACK (unknown portal formats only)
+# ──────────────────────────────────────────────────────────────────
+# Deterministic parsers (FORMAT A-E + PDF) stay the trusted primary. When a
+# NEW/unrecognised portal payload yields no benefit data at all, the local LLM
+# is asked to map it onto our schema. It is strictly gap-filling and
+# anti-fabrication-gated: every value it returns must appear literally in the
+# source text, or it is discarded — so it can normalise an unknown layout but
+# can never invent a number. Type-B ambiguity (ties / missing data) is NOT sent
+# here; that stays an honest manual-review tie.
+
+_LLM_PORTAL_STRING_FIELDS = ("group_number", "group_name")
+_LLM_PORTAL_NUM_FIELDS = (
+    "individual_deductible", "family_deductible", "individual_annual_max",
+    "ortho_lifetime_max", "preventative_D0120_pct", "basic_D2331_D2140_pct",
+    "major_D2740_pct", "fluoride_D1206_pct", "sealants_D1351_pct",
+    "space_maint_1510_pct", "ortho_D8080_pct",
+)
+
+# Process-level cache keyed by payload hash → deterministic results for a given
+# input never vary between calls in the same run.
+_LLM_EXTRACT_CACHE: dict[str, dict] = {}
+
+
+def _portal_looks_unrecognized(sim: dict) -> bool:
+    """True when the deterministic parse found NO benefit data (no financials
+    and no coverage percentages) — the signature of an unparsed portal format.
+    A recognised format almost always yields at least one such value, so this
+    keeps the LLM fallback off the paths that already work."""
+    fin = ("individual_deductible", "family_deductible",
+           "individual_annual_max", "ortho_lifetime_max")
+    pct = ("preventative_D0120_pct", "basic_D2331_D2140_pct", "major_D2740_pct",
+           "fluoride_D1206_pct", "sealants_D1351_pct", "space_maint_1510_pct",
+           "ortho_D8080_pct")
+    return (all(sim.get(k) is None for k in fin)
+            and all(sim.get(k) is None for k in pct))
+
+
+def _value_in_text(value, haystack: str) -> bool:
+    """Anti-fabrication gate: a value is accepted only if it literally appears
+    in the source text. Numbers must match by digits (ignoring thousands
+    separators); strings match as substring or by their digit sequence."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if not v:
+            return False
+        if v in haystack.lower():
+            return True
+        vd = re.sub(r"\D", "", v)
+        return bool(vd) and vd in re.sub(r"\D", "", haystack)
+    try:
+        n = int(round(float(value)))
+    except (ValueError, TypeError):
+        return False
+    return str(n) in haystack.replace(",", "")
+
+
+async def _llm_extract_portal_fields(portal_raw: dict, deterministic: dict) -> dict:
+    """Ask the local LLM to map an UNRECOGNISED portal payload onto our schema.
+    Only fills fields the deterministic parser left None, and only keeps values
+    that pass the anti-fabrication gate. Returns the deterministic dict unchanged
+    if Ollama is unavailable or returns nothing usable."""
+    try:
+        source = json.dumps(portal_raw, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return deterministic
+    if len(source.strip()) < 40:
+        return deterministic
+
+    cache_key = str(hash(source))
+    if cache_key in _LLM_EXTRACT_CACHE:
+        return dict(_LLM_EXTRACT_CACHE[cache_key])
+
+    prompt = f"""You are a dental-insurance data extractor. From the portal payload below, extract ONLY the fields listed and return strict JSON.
+
+RULES (critical):
+- Use null for ANY field not explicitly present. NEVER guess, infer, average, or calculate.
+- Every number you output MUST appear verbatim in the source text.
+- Dollar fields: return the number only (e.g. 2000, not "$2,000.00"). Percent fields: 0-100.
+- For coverage that shows "copay% / coverage%", return the PLAN COVERAGE (benefit paid), not the patient copay.
+
+FIELDS:
+- group_number, group_name
+- individual_deductible, family_deductible, individual_annual_max, ortho_lifetime_max  (dollar amounts)
+- preventative_D0120_pct (exam/diagnostic), basic_D2331_D2140_pct (fillings), major_D2740_pct (crowns),
+  fluoride_D1206_pct, sealants_D1351_pct, space_maint_1510_pct, ortho_D8080_pct  (percentages)
+
+PORTAL PAYLOAD:
+{source[:12000]}
+
+Respond ONLY with a JSON object containing exactly those field names."""
+
+    result = await ask_ollama(prompt, temperature=0.0)
+    if not isinstance(result, dict) or not result:
+        return deterministic
+
+    merged = dict(deterministic)
+    for f in _LLM_PORTAL_STRING_FIELDS:
+        if merged.get(f) is None and result.get(f):
+            val = str(result[f]).strip()
+            if val and _value_in_text(val, source):
+                merged[f] = val
+    for f in _LLM_PORTAL_NUM_FIELDS:
+        if merged.get(f) is None and result.get(f) is not None:
+            v = _num(result[f])
+            if v is not None and _value_in_text(v, source):
+                merged[f] = v
+
+    _LLM_EXTRACT_CACHE[cache_key] = dict(merged)
+    return merged
+
+
+# ──────────────────────────────────────────────────────────────────
 # PUBLIC ENTRY POINT
 # ──────────────────────────────────────────────────────────────────
 async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict:
@@ -1522,6 +1636,12 @@ async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict
     # ── Step 1: Extract Portal Fields ──
     log.info("\n═══ STEP 1: Extracting portal fields ═══")
     portal_sim = extract_portal_fields(portal_raw)
+    # Unknown format? Deterministic parse found no benefit data → try the
+    # anti-fabrication-gated LLM fallback to normalise it onto our schema.
+    if _portal_looks_unrecognized(portal_sim):
+        log.info("Portal format not recognised by deterministic parsers — "
+                 "attempting LLM extraction fallback.")
+        portal_sim = await _llm_extract_portal_fields(portal_raw, portal_sim)
     log.info(f"Portal structured data:\n{json.dumps(portal_sim, indent=2)}\n")
 
     # ── Step 2: Get Denticon Plans ──
