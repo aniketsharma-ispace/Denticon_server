@@ -336,6 +336,128 @@ def _extract_ddri_portal_fields(raw: dict) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────
+# PHASE 1E: PYTHON-NATIVE EXTRACTION FROM AETNA CLAIMCONNECT PORTAL JSON
+# ──────────────────────────────────────────────────────────────────
+def _extract_aetna_portal_fields(raw: dict) -> dict:
+    """
+    FORMAT E — Aetna "ClaimConnect - Extended Plan Benefits" scraper output.
+    Identified by its `payer` block + `service_level_benefits` list.
+
+    Structure:
+      {
+        "source": "ClaimConnect - Extended Plan Benefits",
+        "payer": {"group#": "0251...", "group_name": "ADP...",
+                  "coverage": "Employee and Spouse"},
+        "maximums":   [{"type": "DENTAL", "coverage": "Individual", "amount": "$3,500.00"},
+                       {"type": "Orthodontics", "coverage": "Individual", "amount": "$1,750.00"}],
+        "deductibles":[{"type": "Dental", "coverage": "Individual", "amount": "$50.00"},
+                       {"type": "Dental", "coverage": "Family", "amount": "$150.00"}],
+        "co_insurance":[{"type": "Basic", "percentage": "15% / 85%"}],
+        "service_level_benefits":[
+            {"procedure_code": "D2740", "percentage_copay": "50% / 50%",
+             "age_limit": "Maximum Age: 99", "message": ""}]
+      }
+
+    Percentages are "patientCopay% / planCoverage%" — the SECOND value is the
+    in-network plan coverage that Denticon records. "Not Covered" / empty
+    entries stay None (never fabricated to 0 — they are usually patient-age
+    exclusions, not plan-level zeros).
+    """
+    out = {}
+
+    payer = raw.get("payer", {}) or {}
+    out["group_number"] = payer.get("group#") or payer.get("group_number")
+    out["group_name"]   = payer.get("group_name")
+
+    def _money(s):
+        if s is None:
+            return None
+        t = str(s).strip().lower()
+        if not t or t in ("unlimited", "n/a", "na"):
+            return None
+        if "not covered" in t:
+            return 0.0
+        m = re.search(r"([\d,]+\.?\d*)", str(s))
+        return float(m.group(1).replace(",", "")) if m else None
+
+    def _find_amount(items, type_kw=None, coverage=None):
+        for it in items or []:
+            if type_kw is not None and type_kw not in str(it.get("type", "")).lower():
+                continue
+            if coverage is not None and str(it.get("coverage", "")).strip().lower() != coverage:
+                continue
+            return _money(it.get("amount"))
+        return None
+
+    maxs = raw.get("maximums", [])
+    deds = raw.get("deductibles", [])
+    out["individual_deductible"] = _find_amount(deds, coverage="individual")
+    out["family_deductible"]     = _find_amount(deds, coverage="family")
+    # Annual max = the DENTAL (non-ortho) maximum; ortho lifetime max is separate.
+    out["individual_annual_max"] = _find_amount(maxs, type_kw="dental", coverage="individual")
+    out["ortho_lifetime_max"]    = _find_amount(maxs, type_kw="ortho")
+
+    # ── service-level benefits index (per CDT code) ──
+    proc_index: dict[str, dict] = {}
+    for p in raw.get("service_level_benefits", []) or []:
+        code = str(p.get("procedure_code", "")).upper().strip()
+        if code and code not in proc_index:
+            proc_index[code] = p
+
+    def _pct(*codes: str):
+        for c in codes:
+            p = proc_index.get(c)
+            if p is None:
+                continue
+            # "Not Covered" / blank → skip (missing), do NOT fabricate a 0.
+            if "not covered" in str(p.get("message", "")).lower():
+                continue
+            raw_pct = str(p.get("percentage_copay", "")).strip()
+            if not raw_pct:
+                continue
+            parts = [seg for seg in raw_pct.split("/") if seg.strip()]
+            v = _num(parts[-1]) if parts else None   # plan-coverage % is the last value
+            if v is not None:
+                return v
+        return None
+
+    def _age(*codes: str):
+        for c in codes:
+            p = proc_index.get(c)
+            if p is None:
+                continue
+            m = re.search(r"(\d+)\s*$", str(p.get("age_limit", "")).strip())
+            if m:
+                upper = int(m.group(1))
+                return None if upper >= 99 else float(upper)
+        return None
+
+    out["preventative_D0120_pct"] = _pct("D0120", "D0150")
+    out["basic_D2331_D2140_pct"]  = _pct("D2391", "D2331", "D2140", "D2392")
+    out["major_D2740_pct"]        = _pct("D2740", "D2750")
+    out["fluoride_D1206_pct"]     = _pct("D1206", "D1208")
+    out["fluoride_D1206_age"]     = _age("D1206", "D1208")
+    out["sealants_D1351_pct"]     = _pct("D1351")
+    out["sealants_D1351_age"]     = _age("D1351")
+    out["space_maint_1510_pct"]   = _pct("D1510")
+    out["space_maint_1510_age"]   = _age("D1510")
+    out["ortho_D8080_pct"]        = _pct("D8080", "D8070", "D8090")
+    out["ortho_D8080_age"]        = _age("D8080", "D8070", "D8090")
+
+    out["veneer_D2962_pct"]   = _pct("D2962")
+    out["curodont_D2991_pct"] = _pct("D2991")
+    out["surg_ext_D7210_pct"] = _pct("D7210")
+
+    cov = str(payer.get("coverage", "")).strip().lower()
+    if cov:
+        out["has_dependents"] = not (cov in ("employee", "individual", "employee only"))
+    else:
+        out["has_dependents"] = None
+
+    return out
+
+
+# ──────────────────────────────────────────────────────────────────
 # PHASE 1A: PYTHON-NATIVE EXTRACTION FROM PORTAL DATA
 # ──────────────────────────────────────────────────────────────────
 def extract_portal_fields(portal_raw: dict) -> dict:
@@ -385,6 +507,11 @@ def extract_portal_fields(portal_raw: dict) -> dict:
     # Identified by the explicit `ddri_data` flag it carries.
     if isinstance(portal, dict) and (portal.get("ddri_data") or portal_raw.get("ddri_data")):
         return _extract_ddri_portal_fields(portal)
+
+    # ── Detect FORMAT E: Aetna ClaimConnect scraper output ──
+    # Identified by its `payer` block plus a `service_level_benefits` list.
+    if isinstance(portal, dict) and portal.get("payer") and portal.get("service_level_benefits") is not None:
+        return _extract_aetna_portal_fields(portal)
 
     # ── Detect FORMAT A: benefit_coverage.procedures ──
     # benefit_coverage may live inside the unwrapped portal (DentaQuest) or at

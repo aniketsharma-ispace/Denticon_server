@@ -15,3 +15,6 @@ reportlab             # generates the New Plan breakdown PDF (new_plan.py)
 # ── Excel / appointment cleansing ───────────────────────────────────
 pandas                # reads/cleanses appointment reports (appointment_processor.py)
 openpyxl              # Excel .xlsx read/write engine used by pandas
+
+# ── Outlook emailing (Windows only) ─────────────────────────────────
+pywin32               # Outlook COM automation for Day Start report emails (email_sender.py)

@@ -290,6 +290,13 @@ REAL_CASES = [
      "DD RI/james_caldwell_ddri_audit.json",
      "DD RI/Denticon James Caldwell DD RI.json",
      "69454", True),
+    # Aetna ClaimConnect (FORMAT E): single plan whose group# + all six identity
+    # fields match the portal; before FORMAT E was parsed the portal came back
+    # all-null and the lone correct plan scored 0% ("not best plan").
+    ("Reese, Gloria (Aetna ClaimConnect, single plan)",
+     "gloria_reese_aetna_benefits.json",
+     "Denticon_DeepAudit_Reese, Gloria_1784797215504.json",
+     "30874", True),
 ]
 
 
@@ -467,6 +474,48 @@ def case_denticon_benefits_and_spacemaint():
            f"annmax={d['individual_annual_max']} spacemaint={d['space_maint_1510_pct']}")
 
 
+def case_aetna_extraction():
+    """Aetna ClaimConnect (FORMAT E): financials live in `maximums`/`deductibles`
+    lists, group in `payer`, and each service benefit's percentage is
+    'patientCopay% / planCoverage%' — the SECOND value is what Denticon records.
+    'Not Covered' entries must stay None (patient-age exclusions), not fabricate 0."""
+    aetna = {
+        "source": "ClaimConnect - Extended Plan Benefits",
+        "payer": {"group#": "025138901500008",
+                  "group_name": "ADP TOTALSOURCE SERVICES, INC.",
+                  "coverage": "Employee and Spouse"},
+        "maximums": [
+            {"type": "DENTAL", "coverage": "Individual", "amount": "$3,500.00"},
+            {"type": "Orthodontics", "coverage": "Individual", "amount": "$1,750.00"}],
+        "deductibles": [
+            {"type": "Dental", "coverage": "Family", "amount": "$150.00"},
+            {"type": "Dental", "coverage": "Individual", "amount": "$50.00"}],
+        "service_level_benefits": [
+            {"procedure_code": "D0120", "percentage_copay": "0% / 100%", "age_limit": "Maximum Age: 99"},
+            {"procedure_code": "D2391", "percentage_copay": "15% / 85%", "age_limit": "Maximum Age: 99"},
+            {"procedure_code": "D2740", "percentage_copay": "50% / 50%", "age_limit": "Maximum Age: 99"},
+            {"procedure_code": "D8080", "percentage_copay": "50% / 50%", "age_limit": "Maximum Age: 99"},
+            {"procedure_code": "D1206", "percentage_copay": "", "message": "Not Covered"},
+            {"procedure_code": "D1351", "percentage_copay": "", "message": "Not Covered"}],
+    }
+    p = extract_portal_fields(aetna)
+    ok = (p["group_number"] == "025138901500008"
+          and p["individual_deductible"] == 50.0
+          and p["family_deductible"] == 150.0
+          and p["individual_annual_max"] == 3500.0     # DENTAL max, not the ortho $1,750
+          and p["ortho_lifetime_max"] == 1750.0
+          and p["preventative_D0120_pct"] == 100.0     # 2nd value = plan coverage
+          and p["basic_D2331_D2140_pct"] == 85.0
+          and p["major_D2740_pct"] == 50.0
+          and p["ortho_D8080_pct"] == 50.0
+          and p["fluoride_D1206_pct"] is None          # 'Not Covered' -> missing, not 0
+          and p["sealants_D1351_pct"] is None)
+    report("aetna: FORMAT E financials + 2nd-value coverage %, no fabrication",
+           PASS if ok else FAIL,
+           f"annmax={p['individual_annual_max']} ortho={p['ortho_lifetime_max']} "
+           f"basic={p['basic_D2331_D2140_pct']} fluoride={p['fluoride_D1206_pct']}")
+
+
 async def case_ddri_carina_tie():
     """Carina Snow (DD RI): 4 plans share group 4250-0403. 9756/8224 ($1,500
     annual max) are rejected against the portal's $2,000, leaving 9727 & 9757,
@@ -500,6 +549,7 @@ async def main():
     case_no_fabricated_portal_values()
     case_ddri_extraction()
     case_denticon_benefits_and_spacemaint()
+    case_aetna_extraction()
     await case_ddri_carina_tie()
     await case_real_data()
     await case_wi_none_not_fabricated()
