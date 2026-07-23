@@ -91,6 +91,13 @@ def _dollar(text) -> float | None:
     return float(m.group(1).replace(",", "")) if m else None
 
 
+# Denticon's convention for an "unlimited" maximum is $99,999.00. A portal that
+# reports a maximum as "Unlimited" must map to the SAME sentinel so the two
+# match — otherwise "Unlimited" becomes None, the field is skipped, and plans
+# that genuinely differ on the maximum stop being distinguishable.
+_UNLIMITED_MAX = 99999.0
+
+
 # ──────────────────────────────────────────────────────────────────
 # PHASE 1A-C: PYTHON-NATIVE EXTRACTION FROM UCCI PORTAL JSON
 # ──────────────────────────────────────────────────────────────────
@@ -265,13 +272,15 @@ def _extract_ddri_portal_fields(raw: dict) -> dict:
         return None
 
     def _money(s):
-        """'$2,000.00'→2000.0; 'Not Covered'→0.0; 'Unlimited'/'N/A'/None→None
-        (never fabricated — an absent or non-numeric value stays None)."""
+        """'$2,000.00'→2000.0; 'Not Covered'→0.0; 'Unlimited'→99999 (Denticon's
+        unlimited convention); 'N/A'/None→None (never fabricated)."""
         if s is None:
             return None
         t = str(s).strip().lower()
-        if not t or t in ("unlimited", "n/a", "na"):
+        if not t or t in ("n/a", "na"):
             return None
+        if "unlimited" in t:
+            return _UNLIMITED_MAX
         if "not covered" in t:
             return 0.0
         m = re.search(r"([\d,]+\.?\d*)", str(s))
@@ -373,8 +382,10 @@ def _extract_aetna_portal_fields(raw: dict) -> dict:
         if s is None:
             return None
         t = str(s).strip().lower()
-        if not t or t in ("unlimited", "n/a", "na"):
+        if not t or t in ("n/a", "na"):
             return None
+        if "unlimited" in t:
+            return _UNLIMITED_MAX      # Denticon's unlimited convention ($99,999)
         if "not covered" in t:
             return 0.0
         m = re.search(r"([\d,]+\.?\d*)", str(s))
@@ -552,6 +563,11 @@ def extract_portal_fields(portal_raw: dict) -> dict:
             raw = obj.get("total") or obj.get("remaining") or ""
         else:
             raw = str(obj)
+        # "Unlimited" maximum → Denticon's unlimited convention ($99,999) so it
+        # matches, rather than being dropped as missing (e.g. Delta MO reports
+        # "Rem Unlimited" for the annual max).
+        if "unlimited" in str(raw).lower():
+            return _UNLIMITED_MAX
         # Extract the first dollar amount from the string
         m = re.search(r'\$?\s*([\d,]+\.?\d*)', str(raw))
         return float(m.group(1).replace(',', '')) if m else None
@@ -1277,6 +1293,11 @@ def _python_score(portal: dict, denticon: dict) -> dict:
     # ── 3. AGE LIMITS ───────────────────────────────────────
     for field, weight in _AGE_LIMIT_WEIGHTS.items():
         pval, dval = portal.get(field), denticon.get(field)
+        # An age cap of 0 means "no age limit" (Denticon's unset default), not a
+        # literal cap of 0 — normalise both sides so a real portal age (e.g. 13)
+        # isn't falsely mismatched against a Denticon "0".
+        pval = None if pval == 0 else pval
+        dval = None if dval == 0 else dval
         st, cr = _status(pval, dval)
         _record(field, pval, dval, st, weight, cr, "age_limit")
 

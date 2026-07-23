@@ -297,6 +297,14 @@ REAL_CASES = [
      "gloria_reese_aetna_benefits.json",
      "Denticon_DeepAudit_Reese, Gloria_1784797215504.json",
      "30874", True),
+    # Delta MO PDF: fluoride (0-13) and sealant (0-18) ages are now extracted
+    # from the benefit table, and a Denticon age cap of 0 is treated as "no cap"
+    # so the real portal ages don't create false mismatches. 56926 (the only
+    # sibling with no conflicting six-field values) must still win.
+    ("Farris, Drew (Delta MO PDF, fluoride/sealant ages + sibling disambiguation)",
+     "DD MO/Member Benefits_999500000001616_DREW FARRIS_Full-1.pdf",
+     "DD MO/Denticon_DeepAudit_FARRIS, DREW Drew_1784616645849.json",
+     "56926", True),
     # Aetna Medicare variant: 3 records (29561/29645/29850) share group#,
     # deductible and annual max, so they tie — the correct one is undecidable
     # from these fields. This asserts the engine now COMPARES the financials
@@ -575,6 +583,45 @@ async def case_ddri_carina_tie():
            f"tie={r.get('tie')} picked={r.get('matching_id')}")
 
 
+async def case_age_zero_no_cap():
+    """A Denticon age cap of 0 means 'no age limit' (the unset default), NOT a
+    literal cap of 0 — so a real portal age (Delta MO fluoride 13 / sealant 18)
+    must not be falsely mismatched against a Denticon '0' age_max."""
+    portal = dict(SYNTH_PORTAL, fluoride_D1206_age=13.0, sealants_D1351_age=18.0)
+    dent   = dict(SYNTH_PORTAL, fluoride_D1206_age=0.0,  sealants_D1351_age=0.0)
+    r = await compare_plans("Z", portal, dent)
+    agemis = [m for m in r["mismatches"] if "age" in m.lower()]
+    report("age: Denticon age 0 = 'no cap' (no false mismatch vs real portal age)",
+           PASS if not agemis else FAIL, f"age_mismatches={agemis}")
+
+
+def case_unlimited_maximum():
+    """An 'Unlimited' maximum must map to Denticon's $99,999 convention so it
+    MATCHES an unlimited Denticon record — not to null, which drops the field
+    and stops distinguishing plans. Covers FORMAT A (Delta MO shape: annual_max
+    total 'Unlimited'), FORMAT D (Delta RI), and FORMAT E (Aetna)."""
+    a = extract_portal_fields({
+        "summary": {"group_number": "1", "group_name": "X"},
+        "financials": {"annual_max": {"total": "Unlimited"},
+                       "ortho_lifetime": {"total": "$1,500.00"}},
+        "patient": {}, "benefit_coverage": {"procedures": []}})
+    d = extract_portal_fields({
+        "ddri_data": True,
+        "plan_details": {"group_number": "1", "employer_group": "X"},
+        "financials": {"annual_limits": [{"category": "Annual Maximum", "total": "Unlimited"}]},
+        "benefit_coverage": {"procedures": []}})
+    e = extract_portal_fields({
+        "payer": {"group#": "1", "group_name": "X"},
+        "maximums": [{"type": "Annual Maximum", "coverage": "Individual", "amount": "Unlimited"}],
+        "service_level_benefits": []})
+    ok = (a["individual_annual_max"] == 99999.0
+          and d["individual_annual_max"] == 99999.0
+          and e["individual_annual_max"] == 99999.0)
+    report("unlimited: 'Unlimited' max -> 99999 (not null) across formats A/D/E",
+           PASS if ok else FAIL,
+           f"A={a['individual_annual_max']} D={d['individual_annual_max']} E={e['individual_annual_max']}")
+
+
 async def case_llm_fallback():
     """Universal LLM extraction fallback (unknown formats only). Must be:
       1. triggered only when the deterministic parse found NO benefit data,
@@ -637,6 +684,8 @@ async def main():
     case_ddri_extraction()
     case_denticon_benefits_and_spacemaint()
     case_aetna_extraction()
+    case_unlimited_maximum()
+    await case_age_zero_no_cap()
     await case_llm_fallback()
     await case_ddri_carina_tie()
     await case_real_data()

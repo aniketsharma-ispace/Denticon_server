@@ -1880,6 +1880,23 @@ def _parse_delta_dental_mo(text: str) -> dict:
     if m:
         major_pct = f"{m.group(1)}%"
 
+    # ── Per-code ages / coverage from the benefit table ────────────
+    # The table renders vertically as: "<age 'L to U'> <CODE> <desc> <PPO%> NA
+    # <Premier%> NA <Out%> ..." — the age range sits immediately before the
+    # code and the first % after it is the in-network (PPO) coverage. Absent
+    # ages/percentages stay None (never fabricated).
+    _mo_flat = re.sub(r"\s+", " ", text)
+
+    def _mo_code(code: str):
+        m = re.search(rf"(\d+)\s+to\s+(\d+)\s+{code}\b[^%]*?(\d+)\s*%", _mo_flat)
+        if m:
+            return f"{m.group(1)}-{m.group(2)}", f"{m.group(3)}%"
+        m = re.search(rf"\b{code}\b[^%]*?(\d+)\s*%", _mo_flat)
+        return (None, f"{m.group(1)}%") if m else (None, None)
+
+    _d1206_age, _d1206_pct = _mo_code("D1206")   # fluoride
+    _d1351_age, _d1351_pct = _mo_code("D1351")   # sealant (was omitted entirely)
+
     # ── History ───────────────────────────────────────────────────
     history = _parse_dd_mo_history(text)
 
@@ -1917,8 +1934,9 @@ def _parse_delta_dental_mo(text: str) -> dict:
                 {"procedure_code": "D0120", "benefit_level": prev_pct},
                 {"procedure_code": "D0150", "benefit_level": prev_pct},
                 {"procedure_code": "D1110", "benefit_level": prev_pct},
-                {"procedure_code": "D1206", "benefit_level": prev_pct},
+                {"procedure_code": "D1206", "benefit_level": prev_pct, "age_limit": _d1206_age},
                 {"procedure_code": "D1208", "benefit_level": prev_pct},
+                {"procedure_code": "D1351", "benefit_level": _d1351_pct or prev_pct, "age_limit": _d1351_age},
                 {"procedure_code": "D0210", "benefit_level": prev_pct},
                 {"procedure_code": "D0274", "benefit_level": prev_pct},
                 {"procedure_code": "D2140", "benefit_level": basic_pct},
