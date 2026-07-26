@@ -715,6 +715,24 @@ def build_patient_notes(denticon_data: dict, insurance_data: dict) -> dict:
         "D1206": ["D1208"],                          # Fluoride: Varnish <-> Gel/topical
         "D0210": ["D0330"],                          # Full mouth series <-> Panoramic
     }
+    # MetLife-specific: the plan's own "Cleanings and Periodontal Maintenance"
+    # provision states whether Prophylaxis (D1110) and Periodontal Maintenance
+    # (D4910) draw from one COMBINED frequency count rather than being tracked
+    # separately, e.g. "This plan combines the frequency limitation for
+    # cleanings and periodontal maintenance visits. The combined limit is 2".
+    # This provision is present on every MetLife plan regardless — only a
+    # combined limit GREATER THAN 0 actually means they're shared; a limit of
+    # 0 (seen just as often) means NOT combined despite the rule existing.
+    # Only merge when the plan explicitly confirms a positive combined limit;
+    # never assume sharing by default. metlife_data is {} for every other
+    # carrier, so .get("provisions", []) is a safe no-op there.
+    for prov in metlife_data.get("provisions", []):
+        if prov.get("rule", "").strip().lower() == "cleanings and periodontal maintenance":
+            m = re.search(r"combined limit is (\d+)", prov.get("value", ""), re.IGNORECASE)
+            if m and int(m.group(1)) > 0:
+                CODE_ALIASES.setdefault("D1110", []).append("D4910")
+                CODE_ALIASES.setdefault("D4910", []).append("D1110")
+            break
     if is_ucci:
         CODE_ALIASES.setdefault("D0120", []).append("D0150")
         CODE_ALIASES.setdefault("D0150", []).append("D0120")
