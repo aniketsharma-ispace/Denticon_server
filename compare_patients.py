@@ -945,12 +945,23 @@ def extract_denticon_plan_fields(plan: dict) -> dict:
         # If it's under preventive, inherit preventive pct
         out["fluoride_D1206_pct"] = out["preventative_D0120_pct"]
 
-    # Age: notes first (most explicit), then code-row embedded age
+    # Age limits: the coverage category row's structured `age_max` is the most
+    # reliable source. Notes interleave frequency limits ("1X5Years") that a
+    # regex can mistake for an age, so age_max is preferred. 0 = "no cap" → None.
+    def _cov_age(keywords: list[str]) -> float | None:
+        v = _num(_cov(keywords, "age_max"))
+        return None if not v else v
+
+    # Age: coverage row age_max first, then explicit notes "AGE LIMIT", then code row.
     fl_age_m = re.search(
         r"(?:AGE\s+LIMIT\s+FOR\s+FLOURIDE|FLUORIDE\s+AGE\s+LIMIT)\s*:?\s*(\d+)",
         notes, re.IGNORECASE
     )
-    out["fluoride_D1206_age"] = _num(fl_age_m.group(1)) if fl_age_m else _code_age("D1206")
+    out["fluoride_D1206_age"] = (
+        _cov_age(["preventive fluoride"])
+        or (_num(fl_age_m.group(1)) if fl_age_m else None)
+        or _code_age("D1206")
+    )
 
     # ── Sealants D1351 ──
     # Coverage table: "Preventive Sealant"
@@ -959,15 +970,17 @@ def extract_denticon_plan_fields(plan: dict) -> dict:
     if out["sealants_D1351_pct"] is None:
         out["sealants_D1351_pct"] = _nnum(r"SEALANTS\s+D1351[^\n]*?(\d+)%") or out["preventative_D0120_pct"]
 
-    # Age: look for explicit age limit patterns in notes
+    # Age: coverage row age_max first. A notes "AGE LIMIT :N" is the fallback —
+    # NOT the "1X N Years" frequency (that is a recall interval, not an age).
     seal_age_m = re.search(
-        r"SEALANTS[^\n]*?(?:1[xX](\d+)\s*[Yy]ears|[Aa]ge\s*[Ll]imit\s*:?\s*(\d+))",
+        r"SEALANTS[^\n]*?[Aa]ge\s*[Ll]imit\s*:?\s*(\d+)",
         notes, re.IGNORECASE
     )
-    if seal_age_m:
-        out["sealants_D1351_age"] = _num(seal_age_m.group(1) or seal_age_m.group(2))
-    else:
-        out["sealants_D1351_age"] = _code_age("D1351")
+    out["sealants_D1351_age"] = (
+        _cov_age(["preventive sealant"])
+        or (_num(seal_age_m.group(1)) if seal_age_m else None)
+        or _code_age("D1351")
+    )
 
     # ── Space Maintainer D1510 ──
     # Coverage table: exact code row "D1510" is very reliable here; fall
@@ -980,14 +993,16 @@ def extract_denticon_plan_fields(plan: dict) -> dict:
         # match MUST be non-greedy and anchored on the "%:" delimiter — a greedy
         # "...(\d+)%" would skip past this field and capture a later value.
         out["space_maint_1510_pct"] = _num(cov_space) or _nnum(r"SPACE\s+MAINT[^\n]*?%\s*:\s*(\d+)\s*%")
-    out["space_maint_1510_age"] = _code_age("D1510")
+    out["space_maint_1510_age"] = _cov_age(["space maint", "space maintainer"]) or _code_age("D1510")
     if out["space_maint_1510_age"] is None:
+        # Match ONLY an explicit "AGE LIMIT :N" — the "1X N Years" frequency on
+        # the same line is a recall interval, not an age.
         sm_notes_m = re.search(
-            r"SPACE\s+MAINT[^\n]*?(?:1[xX](\d+)\s*[Yy]ears|AGE\s+LIMIT\s*:?\s*(\d+))",
+            r"SPACE\s+MAINT[^\n]*?AGE\s+LIMIT\s*:?\s*(\d+)",
             notes, re.IGNORECASE
         )
         if sm_notes_m:
-            out["space_maint_1510_age"] = _num(sm_notes_m.group(1) or sm_notes_m.group(2))
+            out["space_maint_1510_age"] = _num(sm_notes_m.group(1))
 
     # ── Auxiliary differentiator codes ──
     # These separate duplicate records of the same plan: stale records lack
@@ -1013,7 +1028,10 @@ def extract_denticon_plan_fields(plan: dict) -> dict:
         r"(?:Ortho\s+Age\s+Limit|ORTHO[^\n]*AGE\s+LIMIT)\s*:?\s*(?:UNDER\s+)?(\d+|NAL|NC)",
         notes, re.IGNORECASE
     )
-    if ortho_age_m:
+    _ortho_cov_age = _cov_age(["orthodontics child", "orthodontics"])
+    if _ortho_cov_age:
+        out["ortho_D8080_age"] = _ortho_cov_age
+    elif ortho_age_m:
         raw_age = ortho_age_m.group(1).upper()
         out["ortho_D8080_age"] = None if raw_age in ("NAL", "NC") else _num(raw_age)
     else:
@@ -1792,11 +1810,25 @@ async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict
         # record the patient is attached to, fee-schedule/network consistency,
         # then the most recently MAINTAINED record (modified before created —
         # offices keep editing the record they actually use).
+        # Last-resort tie-break: record completeness. Among duplicate records
+        # that are otherwise identical on every signal above, the actively-
+        # maintained one has real supplementary values entered (Curodont/veneer/
+        # surgical-ext percentages and real age limits) while stale copies leave
+        # them blank/0. Prefer the populated record — the plan the office
+        # actually uses (DentaQuest Hall/Williams, where all other signals tie).
+        fv = r.get("field_validation", {}) or {}
+        populated = sum(
+            1 for f in ("curodont_D2991_pct", "veneer_D2962_pct", "surg_ext_D7210_pct",
+                        "fluoride_D1206_age", "sealants_D1351_age",
+                        "space_maint_1510_age", "ortho_D8080_age")
+            if fv.get(f, {}).get("denticon") not in (None, 0, 0.0)
+        )
         return (0 if r.get("match_found") else 1, crit, -conf,
                 0 if net_aligned else 1,
                 0 if carrier_ok else 1,
                 0 if fee_ok else 1,
-                tuple(-v for v in modified), tuple(-v for v in created))
+                tuple(-v for v in modified), tuple(-v for v in created),
+                -populated)
 
     all_results.sort(key=_rank_key)
 

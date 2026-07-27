@@ -295,22 +295,22 @@ REAL_CASES = [
     # matches — group matching must accept the alt identifier. Patient is OON,
     # so the OON record 298175 must beat its in-network duplicate 295797.
     ("Oaks, Michael (UCCI TRICARE, group-alt + OON network tie-break)",
-     "ucci_validation_23_7/michael_e_oaks_ucci.json",
-     "ucci_validation_23_7/Denticon_DeepAudit_OAKS, MICHAEL_1784802887287.json",
+     "ucci/michael_e_oaks_ucci.json",
+     "ucci/Denticon_DeepAudit_OAKS, MICHAEL_1784802887287.json",
      "298175", True),
     # UCCI FEDVIP (Nalbandian): patient is out-of-network and BOTH Denticon
     # plans are OON — they must NOT be skipped, and 298154 must win.
     ("Nalbandian, John (UCCI FEDVIP, out-of-network patient not skipped)",
-     "ucci_validation_23_7/john_nalbandian_ucci.json",
-     "ucci_validation_23_7/Denticon_DeepAudit_Nalbandian, John_1784802740949.json",
+     "ucci/john_nalbandian_ucci.json",
+     "ucci/Denticon_DeepAudit_Nalbandian, John_1784802740949.json",
      "298154", True),
     ("Meinster, Mark (UCCI, 2-plan confident match)",
-     "ucci_validation_23_7/mark_meinster_ucci.json",
-     "ucci_validation_23_7/Denticon_DeepAudit_MEINSTER, MARK D Mark_1784802661216.json",
+     "ucci/mark_meinster_ucci.json",
+     "ucci/Denticon_DeepAudit_MEINSTER, MARK D Mark_1784802661216.json",
      "295280", True),
     ("Luketa, Valentina (UCCI, 2-plan confident match)",
-     "ucci_validation_23_7/valentina_luketa_ucci.json",
-     "ucci_validation_23_7/Denticon_DeepAudit_LUKETA, VALENTINA_1784802964059.json",
+     "ucci/valentina_luketa_ucci.json",
+     "ucci/Denticon_DeepAudit_LUKETA, VALENTINA_1784802964059.json",
      "295280", True),
     # Aetna ClaimConnect (FORMAT E): single plan whose group# + all six identity
     # fields match the portal; before FORMAT E was parsed the portal came back
@@ -335,6 +335,29 @@ REAL_CASES = [
      "donna_clifford_aetna_benefits (1).json",
      "Denticon_DeepAudit_Clifford, Donna_1784797323576.json",
      "29561", False),
+    # UCCI: the correct plan's real age limits (Sealant 16, Space 15, Ortho 19)
+    # come from the coverage-row age_max — NOT the "1X5Years" frequency the notes
+    # regex used to grab. With ages read correctly, 22272 (Curodont 80 matches
+    # the portal) wins over the stale 16818 (Curodont 0).
+    ("Sellars, Emma (UCCI, coverage-row ages + Curodont pick 22272)",
+     "ucci/emma_sellars_ucci.json",
+     "ucci/Denticon_DeepAudit_Sellars, Emma Emma_1784801036271.json",
+     "22272", True),
+    ("Jorns, Gavriel (UCCI, coverage-row ages + Curodont pick 22272)",
+     "ucci/gavriel_r_jorns_ucci.json",
+     "ucci/Denticon_DeepAudit_Jorns, Gavriel_1784801434361.json",
+     "22272", True),
+    # DentaQuest: PDF lists only an Individual deductible. Not fabricating a
+    # family deductible removes the false six-field critical fail, and the
+    # completeness tie-break then picks the actively-maintained record.
+    ("Hall, Jasmine (DentaQuest, family-ded not fabricated + completeness)",
+     "dentaquest/dentaquest/DJasmine.pdf",
+     "dentaquest/dentaquest/Denticon_DeepAudit_Hall, Jasmine_1784800753351.json",
+     "72605", True),
+    ("Williams, David (DentaQuest, completeness tie-break on duplicates)",
+     "dentaquest/dentaquest/DDavid.pdf",
+     "dentaquest/dentaquest/Denticon_DeepAudit_Williams, David_1784800521276.json",
+     "69556", True),
 ]
 
 
@@ -605,6 +628,53 @@ async def case_ddri_carina_tie():
            f"tie={r.get('tie')} picked={r.get('matching_id')}")
 
 
+def case_denticon_age_from_coverage():
+    """Denticon age limits must come from the structured coverage-row `age_max`,
+    NOT a "1X N Years" frequency in the notes (which a regex used to mistake for
+    an age). Sealant age_max=16 must win over the notes' "1X5Years" → 16, not 5."""
+    plan = {"ins_plan_id": "22272", "plan_details": {},
+            "benefits": {"notes": ("SEALANTS D1351 %:1XLifetime SPACE MAINT "
+                                    "D1510-D01525 %:100% FREQ: 1x :1X5Years "
+                                    "AGE LIMIT :15"),
+                         "full_text": ""},
+            "coverage": [
+                {"category": "Preventive Sealant", "coverage_pct": "100",
+                 "age_min": "0", "age_max": "16"},
+                {"category": "Orthodontics", "coverage_pct": "50",
+                 "age_min": "0", "age_max": "19"}]}
+    d = extract_denticon_plan_fields(plan)
+    ok = (d["sealants_D1351_age"] == 16.0        # from coverage age_max, not "1X5Years"
+          and d["space_maint_1510_age"] == 15.0  # notes "AGE LIMIT :15", not the freq 5
+          and d["ortho_D8080_age"] == 19.0)
+    report("denticon: ages from coverage age_max, not the frequency '1X5Years'",
+           PASS if ok else FAIL,
+           f"sealant={d['sealants_D1351_age']} space={d['space_maint_1510_age']} ortho={d['ortho_D8080_age']}")
+
+
+async def case_completeness_tiebreak():
+    """Two duplicate records identical on every scored/tie-break signal except
+    that one has the Curodont differentiator populated (the actively-maintained
+    record) — the populated one must win the last-resort completeness tie-break."""
+    def _plan(pid, curodont):
+        return {"ins_plan_id": pid,
+                "plan_details": {"Group No.": "555001"},
+                "benefits": {"notes": ("EMPLOYER :ACME GROUP # :555001 "
+                                       "MAXIMUM $ :1500 DEDUCTIBLE $ :50 "
+                                       f"CURODONT D2991 %:{curodont}"),
+                             "full_text": ""},
+                "coverage": [{"category": "Restorative Curodont",
+                              "coverage_pct": curodont}]}
+    portal = {"group_number": "555001", "group_name": "ACME",
+              "individual_deductible": 50.0, "individual_annual_max": 1500.0}
+    wrapper = {"denticon_data": {"primary_insurance": {"carrier_name": ""},
+               "plans": [_plan("STALE", "0"), _plan("MAINTAINED", "80")]}}
+    r = await match_insurance_plan(portal, wrapper)
+    ok = r.get("matching_id") == "MAINTAINED"
+    report("tiebreak: populated (maintained) duplicate beats stale one",
+           PASS if ok else FAIL,
+           f"picked={r.get('matching_id')} tie={r.get('tie')}")
+
+
 async def case_group_alt_identifier():
     """A Denticon record can carry two group identifiers: notes "GROUP #" and
     plan_details "Group No.". The portal matching EITHER must count as a match
@@ -754,6 +824,8 @@ async def main():
     case_denticon_benefits_and_spacemaint()
     case_aetna_extraction()
     case_unlimited_maximum()
+    case_denticon_age_from_coverage()
+    await case_completeness_tiebreak()
     await case_group_alt_identifier()
     await case_oon_patient_network_tiebreak()
     await case_age_zero_no_cap()

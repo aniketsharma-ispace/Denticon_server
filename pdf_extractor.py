@@ -2066,14 +2066,22 @@ def _parse_delta_dental_wi(text: str) -> dict:
     financials_by_patient = _parse_dd_wi_financials_all_patients(text)
     history_by_patient    = _parse_dd_wi_history_all_patients(text)
 
-    def _wi_pct(service_re: str, default: str) -> str:
+    def _wi_pct(service_re: str, default=None):
+        # "(code) NN%" → "NN%"; "(code) None" → "0%" (explicit no-coverage);
+        # absent → default (None — NEVER fabricate a percentage, which would
+        # create false coverage mismatches during plan comparison).
         m = re.search(rf"{service_re}\s*\(\d+\)\s+(\d+)%", text, re.IGNORECASE)
-        return f"{m.group(1)}%" if m else default
+        if m:
+            return f"{m.group(1)}%"
+        if re.search(rf"{service_re}\s*\(\d+\)\s+None\b", text, re.IGNORECASE):
+            return "0%"
+        return default
 
-    prev_pct  = _wi_pct(r"Preventive", "100%")
-    basic_pct = _wi_pct(r"Basic Restor", "80%")
-    major_pct = _wi_pct(r"Major Restor", "50%")
+    prev_pct  = _wi_pct(r"Preventive")
+    basic_pct = _wi_pct(r"Basic Restor")
+    major_pct = _wi_pct(r"Major Restor")
     perio_pct = _wi_pct(r"Perio Maint", basic_pct)
+    ortho_pct = _wi_pct(r"Orthodontics")   # real ortho %, absent → None (not 0)
 
     result = {
         "summary": {
@@ -2097,7 +2105,7 @@ def _parse_delta_dental_wi(text: str) -> dict:
                 {"procedure_code": "D2740", "benefit_level": major_pct},
                 {"procedure_code": "D4910", "benefit_level": perio_pct},
                 {"procedure_code": "D4355", "benefit_level": perio_pct},
-                {"procedure_code": "D8080", "benefit_level": "0%"},
+                {"procedure_code": "D8080", "benefit_level": ortho_pct},
             ]
         },
         "history": {},
@@ -2181,6 +2189,11 @@ def _parse_delta_dental_toolkit(text: str) -> dict:
     m = re.search(r"Group Number:\s*([\w\-]+)", text)
     if m:
         group_number = m.group(1).strip()
+    else:
+        # Combined footer form: "Group/Sub Group: 7200-0001".
+        m = re.search(r"Group\s*/\s*Sub Group:\s*([\w\-]+)", text, re.IGNORECASE)
+        if m:
+            group_number = m.group(1).strip()
 
     sub_group_number = ""
     m = re.search(r"Sub Group Number:\s*([\w\-]+)", text)
@@ -2219,16 +2232,21 @@ def _parse_delta_dental_toolkit(text: str) -> dict:
         if m:
             coverages[cat] = m.group(1)
 
-    def _pct(cat: str, default: str) -> str:
+    def _pct(cat: str, default=None):
+        # "Not Covered" → "0%" (explicit); category absent → default (None —
+        # never fabricate a percentage, which creates false coverage mismatches).
         val = coverages.get(cat)
         if val is None:
             return default
         return "0%" if val == "Not Covered" else f"{val}%"
 
-    annual_max     = _toolkit_max_block(text, "Maximum", "General")     or {"total": "$ 0.00", "used": "$ 0.00", "remaining": "$ 0.00"}
-    ortho_lifetime = _toolkit_max_block(text, "Maximum", "Orthodontic") or {"total": "$ 0.00", "used": "$ 0.00", "remaining": "$ 0.00"}
-    implant_max    = _toolkit_max_block(text, "Maximum", "Implants")    or {"total": "$ 0.00", "used": "$ 0.00", "remaining": "$ 0.00"}
-    ind_ded        = _toolkit_max_block(text, "Deductible", "General")  or {"total": "$ 0.00", "used": "$ 0.00", "remaining": "$ 0.00"}
+    # Absent maximum/deductible blocks stay None (not fabricated "$ 0.00", which
+    # would falsely mismatch a real Denticon value and reject the correct plan).
+    _absent = {"total": None, "used": None, "remaining": None}
+    annual_max     = _toolkit_max_block(text, "Maximum", "General")     or _absent
+    ortho_lifetime = _toolkit_max_block(text, "Maximum", "Orthodontic") or _absent
+    implant_max    = _toolkit_max_block(text, "Maximum", "Implants")    or _absent
+    ind_ded        = _toolkit_max_block(text, "Deductible", "General")  or _absent
 
     result = {
         "summary": {
@@ -2241,29 +2259,29 @@ def _parse_delta_dental_toolkit(text: str) -> dict:
         "financials": {
             "annual_max":            annual_max,
             "individual_deductible": ind_ded,
-            "family_deductible":     {"total": "$ 0.00"},
+            "family_deductible":     {"total": None},
             "ortho_lifetime":        ortho_lifetime,
             "implant_lifetime":      implant_max,
         },
         "patient": {"relationship": relationship},
         "benefit_coverage": {
             "procedures": [
-                {"procedure_code": "D0120", "benefit_level": _pct("Diagnostic", "100%")},
-                {"procedure_code": "D0150", "benefit_level": _pct("Diagnostic", "100%")},
-                {"procedure_code": "D1110", "benefit_level": _pct("Preventive", "100%")},
-                {"procedure_code": "D1120", "benefit_level": _pct("Preventive", "100%")},
-                {"procedure_code": "D1206", "benefit_level": _pct("Preventive", "100%")},
-                {"procedure_code": "D0274", "benefit_level": _pct("Bitewing Radiographs", "100%")},
-                {"procedure_code": "D0210", "benefit_level": _pct("All Other Radiographs", "100%")},
-                {"procedure_code": "D1351", "benefit_level": _pct("Sealants", "0%")},
-                {"procedure_code": "D2140", "benefit_level": _pct("Minor Restorative", "80%")},
-                {"procedure_code": "D2331", "benefit_level": _pct("Minor Restorative", "80%")},
-                {"procedure_code": "D2740", "benefit_level": _pct("Major Restorative", "50%")},
-                {"procedure_code": "D4910", "benefit_level": _pct("Periodontics", "100%")},
-                {"procedure_code": "D4355", "benefit_level": _pct("Periodontics", "100%")},
-                {"procedure_code": "D6010", "benefit_level": _pct("Implants", "100%")},
-                {"procedure_code": "D5110", "benefit_level": _pct("Prosthodontics", "50%")},
-                {"procedure_code": "D8080", "benefit_level": _pct("Orthodontic Services", "50%")},
+                {"procedure_code": "D0120", "benefit_level": _pct("Diagnostic")},
+                {"procedure_code": "D0150", "benefit_level": _pct("Diagnostic")},
+                {"procedure_code": "D1110", "benefit_level": _pct("Preventive")},
+                {"procedure_code": "D1120", "benefit_level": _pct("Preventive")},
+                {"procedure_code": "D1206", "benefit_level": _pct("Preventive")},
+                {"procedure_code": "D0274", "benefit_level": _pct("Bitewing Radiographs")},
+                {"procedure_code": "D0210", "benefit_level": _pct("All Other Radiographs")},
+                {"procedure_code": "D1351", "benefit_level": _pct("Sealants")},
+                {"procedure_code": "D2140", "benefit_level": _pct("Minor Restorative")},
+                {"procedure_code": "D2331", "benefit_level": _pct("Minor Restorative")},
+                {"procedure_code": "D2740", "benefit_level": _pct("Major Restorative")},
+                {"procedure_code": "D4910", "benefit_level": _pct("Periodontics")},
+                {"procedure_code": "D4355", "benefit_level": _pct("Periodontics")},
+                {"procedure_code": "D6010", "benefit_level": _pct("Implants")},
+                {"procedure_code": "D5110", "benefit_level": _pct("Prosthodontics")},
+                {"procedure_code": "D8080", "benefit_level": _pct("Orthodontic Services")},
             ]
         },
         "history": history,
@@ -2925,7 +2943,12 @@ def _parse_dentaquest(text: str) -> dict:
             "used":  f"$ {ind_ded_used}" if ind_ded_used is not None else "$ 0.00",
         },
         "family_deductible": {
-            "total": f"$ {fam_ded_total_confirmed}" if fam_ded_total_confirmed else (fam_ded_total or "$ 0.00"),
+            # Absent family deductible → leave None (do NOT fabricate "$ 0.00":
+            # a fabricated 0 falsely mismatches a real Denticon family
+            # deductible and criticallly rejects the correct plan — DentaQuest
+            # PDFs list only an Individual deductible).
+            "total": (f"$ {fam_ded_total_confirmed}" if fam_ded_total_confirmed
+                      else fam_ded_total),
             "used":  f"$ {fam_ded_used}" if fam_ded_used is not None else "$ 0.00",
         },
         "ortho_lifetime": {
