@@ -358,6 +358,18 @@ REAL_CASES = [
      "dentaquest/dentaquest/DDavid.pdf",
      "dentaquest/dentaquest/Denticon_DeepAudit_Williams, David_1784800521276.json",
      "69556", True),
+    # Carbajal: the correct plan (22824) is the actively-maintained record
+    # (Curodont 80). It used to lose because its own "UCCI" fee schedule was
+    # mis-flagged as a foreign network vs the patient's "United Concordia"
+    # carrier; with UCCI≡Concordia it's no longer demoted, and completeness wins.
+    ("Carbajal, Jacqueline (UCCI, UCCI=Concordia fee-schedule + completeness)",
+     "ucci/jacqueline_carbajal_ucci(1).json",
+     "ucci/Denticon_DeepAudit_Carbajal, Jacqueline_1784800648000.json",
+     "22824", True),
+    ("Stewart, Jena (UCCI, UCCI=Concordia fee-schedule + completeness)",
+     "ucci/jena_m_stewart_ucci(1).json",
+     "ucci/Denticon_DeepAudit_Stewart, Jena_1784800479450.json",
+     "22272", True),
 ]
 
 
@@ -696,6 +708,22 @@ async def case_completeness_tiebreak():
            f"picked={r.get('matching_id')} tie={r.get('tie')}")
 
 
+def case_fee_ok_ucci_is_concordia():
+    """The fee-schedule 'foreign network' check must treat UCCI as United
+    Concordia (same carrier). A record declaring its own 'UCCI PPO' fee schedule
+    must NOT be demoted for a patient whose carrier reads 'United Concordia' —
+    while a genuinely foreign network (ZELIS vs Guardian) is still flagged."""
+    import compare_patients as cp
+    own = {"benefits": {"notes": "WHAT FEE SCHEDULE :UCCI PPO\nPlan Type: PPO"}}
+    foreign = {"benefits": {"notes": "WHAT FEE SCHEDULE :ZELIS PPO\nPlan Type: PPO"}}
+    ok = (cp._fee_schedule_ok(own, "UNITED CONCORDIA PPO") is True       # same carrier
+          and cp._fee_schedule_ok(foreign, "(IN) GUARDIAN") is False)    # real foreign net
+    report("fee-ok: UCCI treated as United Concordia (own network not demoted)",
+           PASS if ok else FAIL,
+           f"ucci_own={cp._fee_schedule_ok(own, 'UNITED CONCORDIA PPO')} "
+           f"zelis_foreign={cp._fee_schedule_ok(foreign, '(IN) GUARDIAN')}")
+
+
 async def case_group_alt_identifier():
     """A Denticon record can carry two group identifiers: notes "GROUP #" and
     plan_details "Group No.". The portal matching EITHER must count as a match
@@ -847,6 +875,7 @@ async def main():
     case_unlimited_maximum()
     case_denticon_zero_pct_not_fabricated()
     case_denticon_age_from_coverage()
+    case_fee_ok_ucci_is_concordia()
     await case_completeness_tiebreak()
     await case_group_alt_identifier()
     await case_oon_patient_network_tiebreak()
