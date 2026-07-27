@@ -91,6 +91,15 @@ def _dollar(text) -> float | None:
     return float(m.group(1).replace(",", "")) if m else None
 
 
+def _coalesce(*vals):
+    """First value that is not None. Unlike `a or b`, a legitimate 0 / 0.0 is
+    kept (0% coverage is a real value, not a reason to fall back to a default)."""
+    for v in vals:
+        if v is not None:
+            return v
+    return None
+
+
 # Denticon's convention for an "unlimited" maximum is $99,999.00. A portal that
 # reports a maximum as "Unlimited" must map to the SAME sentinel so the two
 # match — otherwise "Unlimited" becomes None, the field is skipped, and plans
@@ -921,28 +930,33 @@ def extract_denticon_plan_fields(plan: dict) -> dict:
     out["preventative_D0120_pct"] = _num(d0120_row.get("coverage_pct")) if d0120_row else None
     if out["preventative_D0120_pct"] is None:
         cov_prev = _cov(["diagnostic (d0120)", "diagnostic exam periodic", "preventive prophy"])
-        out["preventative_D0120_pct"] = _num(cov_prev) or (
-            _nnum(r"PREVENTATIVE\s*%\s*:\s*(\d+)") or _nnum(r"PREVENTIVE\s*%\s*:\s*(\d+)")
+        # _coalesce (not `or`): a real 0% must not fall through to a fabricated default.
+        out["preventative_D0120_pct"] = _coalesce(
+            _num(cov_prev),
+            _nnum(r"PREVENTATIVE\s*%\s*:\s*(\d+)"), _nnum(r"PREVENTIVE\s*%\s*:\s*(\d+)")
         )
 
     # ── Basic / Restorative D2331, D2140 ──
     # In coverage table these show as "Restorative Fillings"
     cov_basic = _cov(["restorative fillings", "restorative"])
-    out["basic_D2331_D2140_pct"] = _num(cov_basic) or (
-        _nnum(r"BASIC\s*%\s*:\s*(\d+)") or _nnum(r"FILLS\s*:\s*(\d+)%")
+    out["basic_D2331_D2140_pct"] = _coalesce(
+        _num(cov_basic),
+        _nnum(r"BASIC\s*%\s*:\s*(\d+)"), _nnum(r"FILLS\s*:\s*(\d+)%")
     )
 
     # ── Major / Prosthodontics D2740 ──
     # Coverage table: "Restorative Crowns"
     cov_major = _cov(["restorative crowns"])
-    out["major_D2740_pct"] = _num(cov_major) or _nnum(r"MAJOR\s*%\s*:\s*(\d+)")
+    out["major_D2740_pct"] = _coalesce(_num(cov_major), _nnum(r"MAJOR\s*%\s*:\s*(\d+)"))
 
     # ── Fluoride D1206 ──
     # Coverage table: "Preventive Fluoride"
     cov_fl = _cov(["preventive fluoride", "fluoride"])
-    out["fluoride_D1206_pct"] = _num(cov_fl) or _nnum(r"FLOURIDE\s+D1206\s*%\s*:\s*(\d+)")
+    out["fluoride_D1206_pct"] = _coalesce(
+        _num(cov_fl), _nnum(r"FLOURIDE\s+D1206\s*%\s*:\s*(\d+)")
+    )
     if out["fluoride_D1206_pct"] is None:
-        # If it's under preventive, inherit preventive pct
+        # Only when truly absent, inherit the preventive pct.
         out["fluoride_D1206_pct"] = out["preventative_D0120_pct"]
 
     # Age limits: the coverage category row's structured `age_max` is the most
@@ -968,7 +982,9 @@ def extract_denticon_plan_fields(plan: dict) -> dict:
     cov_seal = _cov(["preventive sealant", "sealant"])
     out["sealants_D1351_pct"] = _num(cov_seal)
     if out["sealants_D1351_pct"] is None:
-        out["sealants_D1351_pct"] = _nnum(r"SEALANTS\s+D1351[^\n]*?(\d+)%") or out["preventative_D0120_pct"]
+        out["sealants_D1351_pct"] = _coalesce(
+            _nnum(r"SEALANTS\s+D1351[^\n]*?(\d+)%"), out["preventative_D0120_pct"]
+        )
 
     # Age: coverage row age_max first. A notes "AGE LIMIT :N" is the fallback —
     # NOT the "1X N Years" frequency (that is a recall interval, not an age).
@@ -1513,6 +1529,19 @@ _NETWORK_BRANDS = (
     "DENTAQUEST", "PRINCIPAL", "SUNLIFE", "AMERITAS",
 )
 
+# Brand aliases that name the SAME carrier under different tokens, so a record
+# declaring its own carrier isn't mistaken for a foreign rental network.
+# "UCCI" = United Concordia Companies Inc. — the same carrier a patient block
+# calls "UNITED CONCORDIA".
+_BRAND_CANON = {
+    "UCCI": "CONCORDIA",
+}
+
+
+def _canon_brands(brands: set) -> set:
+    """Collapse brand tokens onto their canonical carrier (UCCI≡United Concordia)."""
+    return {_BRAND_CANON.get(b, b) for b in brands}
+
 
 def _fee_schedule_ok(plan: dict, patient_carrier: str) -> bool:
     """
@@ -1522,12 +1551,12 @@ def _fee_schedule_ok(plan: dict, patient_carrier: str) -> bool:
     Neutral (True) in every other case.
     """
     pc = (patient_carrier or "").upper()
-    pbrands = {b for b in _NETWORK_BRANDS if b in pc}
+    pbrands = _canon_brands({b for b in _NETWORK_BRANDS if b in pc})
     if not pbrands:
         return True
     notes = str(plan.get("benefits", {}).get("notes", "") or "").upper()
     for decl in _FEE_SCHED_RE.findall(notes):
-        found = {b for b in _NETWORK_BRANDS if b in decl}
+        found = _canon_brands({b for b in _NETWORK_BRANDS if b in decl})
         if found and not (found & pbrands):
             return False        # declares a recognised foreign network
     return True

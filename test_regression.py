@@ -628,6 +628,27 @@ async def case_ddri_carina_tie():
            f"tie={r.get('tie')} picked={r.get('matching_id')}")
 
 
+def case_denticon_zero_pct_not_fabricated():
+    """A legitimate 0% coverage on the Denticon side must survive — not fall
+    through a truthy `or` to a fabricated default / inherited preventive rate.
+    (Sellars plan had Preventive Fluoride 0% but extracted a fabricated 100%.)"""
+    plan = {"ins_plan_id": "1", "plan_details": {},
+            "benefits": {"notes": "", "full_text": ""},
+            "coverage": [
+                {"category": "Diagnostic (d0120)", "coverage_pct": "100"},
+                {"category": "Restorative Fillings", "coverage_pct": "0"},
+                {"category": "Restorative Crowns", "coverage_pct": "0"},
+                {"category": "Preventive Fluoride", "coverage_pct": "0"}]}
+    d = extract_denticon_plan_fields(plan)
+    ok = (d["preventative_D0120_pct"] == 100.0
+          and d["basic_D2331_D2140_pct"] == 0.0
+          and d["major_D2740_pct"] == 0.0
+          and d["fluoride_D1206_pct"] == 0.0)   # real 0, NOT inherited 100
+    report("denticon: real 0% coverage kept (not fabricated to a default)",
+           PASS if ok else FAIL,
+           f"basic={d['basic_D2331_D2140_pct']} major={d['major_D2740_pct']} fluoride={d['fluoride_D1206_pct']}")
+
+
 def case_denticon_age_from_coverage():
     """Denticon age limits must come from the structured coverage-row `age_max`,
     NOT a "1X N Years" frequency in the notes (which a regex used to mistake for
@@ -824,6 +845,7 @@ async def main():
     case_denticon_benefits_and_spacemaint()
     case_aetna_extraction()
     case_unlimited_maximum()
+    case_denticon_zero_pct_not_fabricated()
     case_denticon_age_from_coverage()
     await case_completeness_tiebreak()
     await case_group_alt_identifier()
