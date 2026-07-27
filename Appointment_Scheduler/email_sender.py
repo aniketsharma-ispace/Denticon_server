@@ -20,6 +20,7 @@ Office names are matched case/whitespace-insensitively.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -75,6 +76,121 @@ def resolve_recipients(office_name: str, mapping: dict | None = None) -> list:
     mapping = mapping or load_email_map()
     norm_lookup = {_norm(k): v for k, v in mapping.get("mappings", {}).items()}
     return norm_lookup.get(_norm(office_name), list(mapping.get("default", [])))
+
+
+def _split_emails(cell) -> list:
+    """Split an email cell on ; , / whitespace into a clean list."""
+    if cell is None:
+        return []
+    return [e.strip() for e in re.split(r"[;,/\s]+", str(cell)) if e.strip() and "@" in e]
+
+
+def parse_email_map_upload(name: str, data: bytes, keep_default: bool = True) -> dict:
+    """
+    Parse an uploaded Office → Email mapping file (.xlsx/.xls/.csv) and save it.
+    Recognises an office-name column (contains 'office') and an email column
+    (contains 'email'/'mail'/'recipient'). A row whose office is 'default', '*' or
+    'fallback' sets the fallback recipients. Emails may be ;/,-separated.
+    """
+    import pandas as pd  # local import keeps module load light
+
+    bio = io.BytesIO(data)
+    if name.lower().endswith(".csv"):
+        df = pd.read_csv(bio, dtype=object)
+    else:
+        df = pd.read_excel(bio, dtype=object)
+    df.columns = [str(c).strip() for c in df.columns]
+
+    office_col = next((c for c in df.columns if "office" in c.lower()), None)
+    email_col = next((c for c in df.columns
+                      if any(k in c.lower() for k in ("email", "mail", "recipient"))), None)
+    if not office_col or not email_col:
+        raise ValueError(
+            "Mapping file needs an office-name column and an email column. "
+            f"Found columns: {', '.join(df.columns)}"
+        )
+
+    existing = load_email_map()
+    default = list(existing.get("default", [])) if keep_default else []
+    mappings = {}
+    for _, r in df.iterrows():
+        office = "" if pd.isna(r[office_col]) else str(r[office_col]).strip()
+        emails = _split_emails(r[email_col])
+        if not office or not emails:
+            continue
+        if _norm(office) in ("default", "*", "fallback"):
+            default = emails
+        else:
+            mappings[office] = emails
+
+    return save_email_map({"default": default, "mappings": mappings})
+
+
+def email_office_reports(reports: list, *, mode: str = "draft",
+                         sender: str | None = None, mapping: dict | None = None) -> list:
+    """
+    Email a batch of per-office reports via desktop Outlook (one mail per office).
+
+    reports : [{office, filename, xlsx_bytes}, ...] (from build_office_reports)
+    mode    : "draft" (Display, not sent) or "send" (Send)
+    sender  : optional 'send on behalf of' address (shared mailbox)
+
+    Runs Outlook COM on the calling thread (CoInitialize per thread, required when
+    invoked from a web-request worker). Returns a per-office result list.
+    """
+    import tempfile
+    import pythoncom
+    import win32com.client
+
+    mapping = mapping or load_email_map()
+    tmp_dir = os.path.join(tempfile.gettempdir(), "denticon_day_start")
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    results = []
+    pythoncom.CoInitialize()
+    try:
+        outlook = win32com.client.Dispatch("Outlook.Application")
+        for rep in reports:
+            office = rep["office"]
+            recipients = resolve_recipients(office, mapping)
+            try:
+                if not recipients:
+                    raise ValueError("no recipients mapped for this office")
+                tmp_path = os.path.join(tmp_dir, rep["filename"])
+                with open(tmp_path, "wb") as f:
+                    f.write(rep["xlsx_bytes"])
+
+                mail = outlook.CreateItem(0)  # olMailItem
+                mail.To = ";".join(recipients)
+                mail.Subject = f"Day Start Report — {office}"
+                mail.Body = (
+                    f"Hello,\n\nPlease find attached the Day Start eligibility report "
+                    f"for {office}.\n\nThank you,\nEligibility Verification Team"
+                )
+                mail.Attachments.Add(os.path.abspath(tmp_path))
+                if sender:
+                    mail.SentOnBehalfOfName = sender
+
+                if mode == "send":
+                    mail.Send()
+                    action = "sent"
+                    try:
+                        os.remove(tmp_path)  # attachment already transmitted
+                    except OSError:
+                        pass
+                else:
+                    mail.Display(False)  # open draft for review; keep temp file
+                    action = "drafted"
+
+                results.append({"office": office, "recipients": recipients,
+                                "rows": rep.get("rows"), "action": action, "ok": True})
+            except Exception as e:
+                results.append({"office": office, "recipients": recipients,
+                                "rows": rep.get("rows"), "action": "failed",
+                                "ok": False, "error": str(e)})
+    finally:
+        pythoncom.CoUninitialize()
+    return results
 
 
 # ── Outlook COM sending ───────────────────────────────────────────────────────

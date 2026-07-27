@@ -27,6 +27,8 @@ from fastapi.responses import Response, FileResponse
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from typing import List
 from datetime import datetime
+from starlette.concurrency import run_in_threadpool
+import functools
 import base64
 import os
 
@@ -35,12 +37,18 @@ from pdf_extractor import parse_insurance_pdf
 from Appointment_Scheduler.appointment_processor import (
     process_appointments,
     generate_day_start_reports,
+    build_office_reports,
     load_exclusions,
     save_exclusions,
     load_block_names,
     save_block_names,
     history_info,
     reset_history,
+)
+from Appointment_Scheduler.email_sender import (
+    email_office_reports,
+    load_email_map,
+    parse_email_map_upload,
 )
 
 app = FastAPI(title="AI Insurance Matcher")
@@ -248,6 +256,81 @@ def get_history():
 @app.post("/api/appointments/history/reset")
 def clear_history():
     return reset_history()
+
+
+# ── Step 6 Part B: email office reports via Outlook ─────────────────────────────
+
+@app.get("/api/appointments/email-map")
+def get_email_map():
+    return load_email_map()
+
+
+@app.post("/api/appointments/email-map/upload")
+async def upload_email_map(file: UploadFile = File(...)):
+    name = file.filename or "mapping.xlsx"
+    if not name.lower().endswith((".xlsx", ".xls", ".csv")):
+        raise HTTPException(status_code=400, detail=f"'{name}' must be an .xlsx, .xls or .csv file.")
+    try:
+        mapping = parse_email_map_upload(name, await file.read())
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not parse mapping file: {e}")
+    return {"office_count": len(mapping.get("mappings", {})), "default": mapping.get("default", [])}
+
+
+@app.post("/api/appointments/email-reports")
+async def email_reports_api(
+    files: List[UploadFile] = File(...),
+    mode: str = Form("draft"),
+    sender: str = Form(""),
+):
+    """
+    SOP Step 6 (Part B) — cleanse the uploaded report(s), build one Day Start Excel
+    per office, and email each to its mapped recipients via desktop Outlook.
+    mode='draft' opens drafts for review; mode='send' sends immediately.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="Upload at least one appointment report.")
+    if mode not in ("draft", "send"):
+        raise HTTPException(status_code=400, detail="mode must be 'draft' or 'send'.")
+
+    payload = []
+    for f in files:
+        name = f.filename or "report.xlsx"
+        if not name.lower().endswith((".xlsx", ".xls", ".csv")):
+            raise HTTPException(status_code=400, detail=f"'{name}' must be an .xlsx, .xls or .csv file.")
+        payload.append((name, await f.read()))
+
+    try:
+        built = build_office_reports(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Report generation failed: {e}")
+
+    try:
+        # Outlook COM must run in a worker thread (its own CoInitialize), not on the
+        # async event loop — offload it there.
+        results = await run_in_threadpool(
+            functools.partial(email_office_reports, built["reports"], mode=mode, sender=(sender or None))
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Outlook emailing failed: {e}. Make sure classic Outlook is open and signed in "
+                   f"on the machine running the server.",
+        )
+
+    sent = sum(1 for r in results if r["ok"])
+    return {
+        "mode": mode,
+        "office_count": len(results),
+        "succeeded": sent,
+        "failed": len(results) - sent,
+        "results": results,
+    }
+
 
 @app.post("/api/new-plan")
 def generate_new_plan(req: NewPlanRequest):

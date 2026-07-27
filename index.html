@@ -330,6 +330,14 @@
             <button class="btn-sm" id="btnSaveBlockNames" style="margin-top:10px;">💾 Save Block List</button>
             <span id="blockSaved" style="font-size:0.74rem;color:#00e676;margin-left:8px;"></span>
         </div>
+        <div class="config-box">
+            <h4>📧 Office → Email Mapping</h4>
+            <div class="hist-line"><span class="hist-count" id="mapCount">–</span> offices mapped</div>
+            <div style="font-size:0.74rem;color:#8b93a7;margin-bottom:10px;" id="mapDefault"></div>
+            <p style="font-size:0.72rem;color:#8b93a7;margin:0 0 8px;">Upload Excel/CSV: an <b>Office Name</b> column + an <b>Email</b> column (multiple emails separated by ; or ,). A row named <b>default</b> sets the fallback.</p>
+            <input type="file" id="fileEmailMap" accept=".xlsx,.xls,.csv" style="font-size:0.75rem;">
+            <div id="mapUploadMsg" style="font-size:0.74rem;color:#00e676;margin-top:6px;"></div>
+        </div>
     </div>
 
     <div class="section-label">03 — Run</div>
@@ -337,6 +345,22 @@
         <button class="run-btn appt-btn" id="btnProcessAppt" disabled>✨ Process &amp; Download Cleaned Report</button>
         <button class="run-btn appt-btn" id="btnDayStart" disabled style="background:linear-gradient(90deg,#00b8d4 0%,#0277bd 100%);box-shadow:0 4px 15px rgba(0,184,212,0.3);">🏢 Generate Day Start Reports (ZIP)</button>
     </div>
+
+    <div class="section-label">04 — Email Office Reports (Outlook)</div>
+    <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
+        <label style="font-size:0.8rem;color:#c9d3e3;">Mode:
+            <select id="emailMode" style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.15);border-radius:6px;color:#fff;padding:7px 10px;font-family:inherit;">
+                <option value="draft">Draft (review in Outlook)</option>
+                <option value="send">Send immediately</option>
+            </select>
+        </label>
+        <input type="text" id="emailSender" placeholder="Send-on-behalf address (optional, e.g. bpoispace@ispace.com)"
+               style="flex:1;min-width:220px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.15);border-radius:6px;color:#fff;padding:8px 12px;font-family:inherit;font-size:0.82rem;">
+    </div>
+    <div class="btn-row" style="grid-template-columns:1fr;">
+        <button class="run-btn appt-btn" id="btnEmail" disabled style="background:linear-gradient(90deg,#7c4dff 0%,#4527a0 100%);box-shadow:0 4px 15px rgba(124,77,255,0.3);">📧 Email Reports to Offices via Outlook</button>
+    </div>
+    <p style="font-size:0.72rem;color:#8b93a7;margin:8px 0 0;">⚠️ Requires classic Outlook open &amp; signed in on this machine. "Draft" opens the emails for review; "Send immediately" sends one email per office to its mapped recipients.</p>
 
     <div class="loader appt-loader" id="apptLoader">🧹 Cleansing appointments…</div>
     <div id="apptOutput"></div>
@@ -945,6 +969,7 @@ const statusAppt      = document.getElementById('statusAppt');
 const boxAppt         = document.getElementById('boxAppt');
 const btnProcessAppt  = document.getElementById('btnProcessAppt');
 const btnDayStart     = document.getElementById('btnDayStart');
+const btnEmail        = document.getElementById('btnEmail');
 const apptLoader      = document.getElementById('apptLoader');
 const apptOutput      = document.getElementById('apptOutput');
 const histCount       = document.getElementById('histCount');
@@ -961,12 +986,14 @@ fileAppt.addEventListener('change', e => {
         statusAppt.style.color = '#00d2ff';
         btnProcessAppt.disabled = false;
         btnDayStart.disabled = false;
+        btnEmail.disabled = false;
     } else {
         boxAppt.classList.remove('ready');
         statusAppt.textContent = 'Waiting for files…';
         statusAppt.style.color = '#a0aabf';
         btnProcessAppt.disabled = true;
         btnDayStart.disabled = true;
+        btnEmail.disabled = true;
     }
 });
 
@@ -1157,10 +1184,90 @@ function renderDayStartResult(d) {
         </div>`;
 }
 
+/* ── Office → Email mapping ── */
+async function loadEmailMap() {
+    try {
+        const r = await fetch('/api/appointments/email-map');
+        const d = await r.json();
+        document.getElementById('mapCount').textContent = Object.keys(d.mappings || {}).length;
+        const def = d.default || [];
+        document.getElementById('mapDefault').textContent =
+            def.length ? `Fallback → ${def.join(', ')}` : 'No fallback set';
+    } catch { document.getElementById('mapDefault').textContent = 'Could not load mapping'; }
+}
+
+document.getElementById('fileEmailMap').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    const msg = document.getElementById('mapUploadMsg');
+    if (!file) return;
+    msg.style.color = '#a0aabf'; msg.textContent = 'Uploading…';
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+        const r = await fetch('/api/appointments/email-map/upload', { method: 'POST', body: fd });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || `Server error ${r.status}`);
+        msg.style.color = '#00e676';
+        msg.textContent = `✓ Loaded ${d.office_count} offices`;
+        loadEmailMap();
+    } catch (err) { msg.style.color = '#ff8a80'; msg.textContent = '✗ ' + err.message; }
+});
+
+btnEmail.addEventListener('click', async () => {
+    if (!apptFiles.length) return;
+    const mode = document.getElementById('emailMode').value;
+    if (mode === 'send' && !confirm('Send emails to ALL offices now via Outlook? This cannot be undone.')) return;
+
+    apptLoader.textContent = mode === 'send' ? '📧 Sending via Outlook…' : '📧 Creating Outlook drafts…';
+    apptLoader.classList.add('visible');
+    apptOutput.innerHTML = '';
+    btnEmail.disabled = true;
+
+    const fd = new FormData();
+    apptFiles.forEach(f => fd.append('files', f));
+    fd.append('mode', mode);
+    fd.append('sender', document.getElementById('emailSender').value.trim());
+
+    try {
+        const r = await fetch('/api/appointments/email-reports', { method: 'POST', body: fd });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || `Server error ${r.status}`);
+        renderEmailResult(d);
+    } catch (e) {
+        apptOutput.innerHTML =
+            `<div class="result-card match-fail"><b>❌ Emailing failed</b><div class="reason-box">${e.message}</div></div>`;
+    } finally {
+        apptLoader.classList.remove('visible');
+        apptLoader.textContent = '🧹 Cleansing appointments…';
+        btnEmail.disabled = false;
+    }
+});
+
+function renderEmailResult(d) {
+    const rows = (d.results || []).map(r =>
+        `<tr><td>${r.office}</td><td>${(r.recipients || []).join(', ') || '—'}</td>` +
+        `<td style="text-align:right;color:${r.ok ? '#00e676' : '#ff8a80'};">${r.ok ? r.action : 'FAILED: ' + (r.error || '')}</td></tr>`).join('');
+    apptOutput.innerHTML = `
+        <div class="result-card appt-success" style="border-left-color:#7c4dff;">
+            <div class="stat-row">
+                <div class="stat-pill keep"><div class="num">${d.succeeded}</div><div class="lbl">${d.mode === 'send' ? 'Sent' : 'Drafted'}</div></div>
+                <div class="stat-pill drop"><div class="num">${d.failed}</div><div class="lbl">Failed</div></div>
+                <div class="stat-pill"><div class="num">${d.office_count}</div><div class="lbl">Offices</div></div>
+            </div>
+            <div class="ranked-plans-header"><span>Per-Office Email Result</span><span class="divider"></span></div>
+            <table class="appt-summary">
+                <tr style="color:#a0aabf;font-size:0.72rem;text-transform:uppercase;letter-spacing:0.08em;"><td>Office</td><td>Recipients</td><td style="text-align:right;">Status</td></tr>
+                ${rows}
+            </table>
+            ${d.mode === 'draft' ? '<div style="margin-top:10px;font-size:0.8rem;color:#a0aabf;">Drafts opened in Outlook — review, then re-run in Send mode.</div>' : ''}
+        </div>`;
+}
+
 // Load config when the page opens
 loadHistoryInfo();
 loadExclusions();
 loadBlockNames();
+loadEmailMap();
 
 </script>
 </body>

@@ -604,20 +604,17 @@ def process_appointments(files: list[tuple[str, bytes]], commit: bool = True) ->
     }
 
 
-def generate_day_start_reports(files: list[tuple[str, bytes]]) -> dict:
+def build_office_reports(files: list[tuple[str, bytes]]) -> dict:
     """
-    SOP Step 6 — Generate an office-wise Day Start Report.
+    SOP Step 6 core — cleanse, then build ONE Day Start Excel per office (one row
+    per appointment, both carriers shown, no P/S split; only the Step-6 columns).
+    Offices with no surviving appointments produce no file (tester #18).
 
-    Runs the shared cleansing pipeline (Steps 2–5 + block), then produces ONE
-    Excel per office (one row per appointment, both carriers shown — no P/S split)
-    containing only the Step-6 columns, and returns them bundled in a ZIP. Offices
-    with no surviving appointments get no file (tester #18). Does NOT commit to
-    history — this is a report view, not the processing action.
+    Returns {reports: [{office, rows, filename, xlsx_bytes}], columns, steps}.
     """
     c = _cleanse(files)
     df, colmap = c["df"], c["colmap"]
 
-    # Build the report frame with the Step-6 columns that exist in this upload.
     report = pd.DataFrame(index=df.index)
     present_headers = []
     for header, key in DAY_START_COLUMNS:
@@ -638,28 +635,40 @@ def generate_day_start_reports(files: list[tuple[str, bytes]]) -> dict:
     report["__office_group"] = df["__office"].values
 
     date_tag = datetime.now().strftime("%Y%m%d")
-    offices = []
+    reports = []
+    for office, group in report.groupby("__office_group", sort=True):
+        office_name = office or "Unknown Office"
+        out_df = group[present_headers]
+        xb = io.BytesIO()
+        with pd.ExcelWriter(xb, engine="openpyxl") as writer:
+            out_df.to_excel(writer, index=False, sheet_name="Day Start")
+        reports.append({
+            "office": office_name,
+            "rows": int(len(out_df)),
+            "filename": f"DayStart_{_safe_filename(office_name)}_{date_tag}.xlsx",
+            "xlsx_bytes": xb.getvalue(),
+        })
+
+    return {"reports": reports, "columns": present_headers, "steps": c["steps"]}
+
+
+def generate_day_start_reports(files: list[tuple[str, bytes]]) -> dict:
+    """SOP Step 6 — office-wise Day Start Reports bundled into a ZIP for download."""
+    built = build_office_reports(files)
     zip_buf = io.BytesIO()
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for office, group in report.groupby("__office_group", sort=True):
-            office_name = office or "Unknown Office"
-            out_df = group[present_headers]
-            xb = io.BytesIO()
-            with pd.ExcelWriter(xb, engine="openpyxl") as writer:
-                out_df.to_excel(writer, index=False, sheet_name="Day Start")
-            fname = f"DayStart_{_safe_filename(office_name)}_{date_tag}.xlsx"
-            zf.writestr(fname, xb.getvalue())
-            offices.append({"office": office_name, "rows": int(len(out_df)), "file": fname})
+        for rep in built["reports"]:
+            zf.writestr(rep["filename"], rep["xlsx_bytes"])
     zip_buf.seek(0)
 
     return {
         "summary": {
             "files": [name for name, _ in files],
-            "steps": c["steps"],
-            "columns": present_headers,
-            "office_count": len(offices),
-            "total_report_rows": int(len(report)),
-            "offices": offices,
+            "steps": built["steps"],
+            "columns": built["columns"],
+            "office_count": len(built["reports"]),
+            "total_report_rows": sum(r["rows"] for r in built["reports"]),
+            "offices": [{"office": r["office"], "rows": r["rows"], "file": r["filename"]} for r in built["reports"]],
         },
         "zip_bytes": zip_buf.getvalue(),
     }
