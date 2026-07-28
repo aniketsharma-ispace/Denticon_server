@@ -96,14 +96,39 @@ def parse_email_map_upload(name: str, data: bytes, keep_default: bool = True) ->
 
     bio = io.BytesIO(data)
     if name.lower().endswith(".csv"):
-        df = pd.read_csv(bio, dtype=object)
+        raw = pd.read_csv(bio, header=None, dtype=object)
     else:
-        df = pd.read_excel(bio, dtype=object)
-    df.columns = [str(c).strip() for c in df.columns]
+        raw = pd.read_excel(bio, header=None, dtype=object)
+
+    # Detect the header row (files often have a title row above it): the first row
+    # with an 'office' cell and an 'email'/'mail'/'recipient' cell in DIFFERENT
+    # columns (so a one-cell title like "DCA Offices with Email IDs" is not matched).
+    def _cols_with(cells, keys):
+        return [j for j, c in enumerate(cells)
+                if not pd.isna(c) and any(k in str(c).lower() for k in keys)]
+
+    hdr = None
+    for i in range(min(15, len(raw))):
+        cells = list(raw.iloc[i])
+        office_cols = _cols_with(cells, ("office",))
+        email_cols_i = _cols_with(cells, ("email", "mail", "recipient"))
+        if office_cols and email_cols_i and any(o != e for o in office_cols for e in email_cols_i):
+            hdr = i
+            break
+    if hdr is None:
+        raise ValueError(
+            "Mapping file needs a row with an office-name column and an email column. "
+            "Expected headers like 'Office Name' and 'Email IDs'."
+        )
+
+    df = raw.iloc[hdr + 1:].copy()
+    df.columns = [str(c).strip() for c in raw.iloc[hdr]]
+    df = df.reset_index(drop=True)
 
     office_col = next((c for c in df.columns if "office" in c.lower()), None)
-    email_col = next((c for c in df.columns
-                      if any(k in c.lower() for k in ("email", "mail", "recipient"))), None)
+    # Prefer the plain email column over a 'manager' one for the primary recipient.
+    email_cols = [c for c in df.columns if any(k in c.lower() for k in ("email", "mail", "recipient"))]
+    email_col = next((c for c in email_cols if "manager" not in c.lower()), None) or (email_cols[0] if email_cols else None)
     if not office_col or not email_col:
         raise ValueError(
             "Mapping file needs an office-name column and an email column. "
