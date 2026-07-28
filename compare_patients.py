@@ -596,6 +596,40 @@ def extract_portal_fields(portal_raw: dict) -> dict:
     out["individual_annual_max"] = _first_fin("annual_max", "individual_annual_max")
     out["ortho_lifetime_max"]    = _first_fin("ortho_lifetime", "ortho_lifetime_max")
 
+    # ── Cigna stores financials as record lists (maximum_records /
+    # deductible_records), not annual_max/deductible_ind keys — pull from
+    # there whatever the generic keys above didn't fill. Individual/Family
+    # split on the `covers` tag (IND/FAM); "Policy Year Maximum" is the annual
+    # max and "Lifetime Maximum" is the ortho lifetime max.
+    def _cigna_rec(records, want_covers=None, want_kw=None, exclude_kw=None):
+        for r in records or []:
+            desc = str(r.get("desc", "")).lower()
+            covers = str(r.get("covers", "")).upper()
+            if want_covers and covers != want_covers:
+                continue
+            if want_kw and want_kw not in desc:
+                continue
+            if exclude_kw and exclude_kw in desc:
+                continue
+            v = _dollar(r.get("amount"))
+            if v is not None:
+                return v
+        return None
+
+    _max_recs = financials.get("maximum_records") if isinstance(financials, dict) else None
+    _ded_recs = financials.get("deductible_records") if isinstance(financials, dict) else None
+    if _max_recs or _ded_recs:
+        if out["individual_deductible"] is None:
+            out["individual_deductible"] = _cigna_rec(_ded_recs, want_covers="IND")
+        if out["family_deductible"] is None:
+            out["family_deductible"] = _cigna_rec(_ded_recs, want_covers="FAM")
+        if out["individual_annual_max"] is None:
+            # Annual max = the IND "... Year Maximum" (Policy Year / Calendar
+            # Year), i.e. the non-lifetime individual maximum.
+            out["individual_annual_max"] = _cigna_rec(_max_recs, want_covers="IND", exclude_kw="lifetime")
+        if out["ortho_lifetime_max"] is None:
+            out["ortho_lifetime_max"] = _cigna_rec(_max_recs, want_kw="lifetime")
+
     # ── OVERRIDE ORTHO LIFETIME MAX IF EXPLICITLY NOT COVERED ──
     covered_services = portal.get("covered_services", [])
     for cs in covered_services:
@@ -1840,15 +1874,19 @@ async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict
         # then the most recently MAINTAINED record (modified before created —
         # offices keep editing the record they actually use).
         # Last-resort tie-break: record completeness. Among duplicate records
-        # that are otherwise identical on every signal above, the actively-
-        # maintained one has real supplementary values entered (Curodont/veneer/
-        # surgical-ext percentages and real age limits) while stale copies leave
-        # them blank/0. Prefer the populated record — the plan the office
-        # actually uses (DentaQuest Hall/Williams, where all other signals tie).
+        # otherwise identical on every signal above, the actively-maintained one
+        # has real supplementary values entered while stale copies leave them
+        # blank/0. The AUXILIARY differentiators (Curodont/veneer/surgical-ext
+        # percentages) are the *intentional* "this is the live record" markers,
+        # so they rank ahead of age-limit completeness, which is noisier
+        # (Cigna Gilligan: 24299 has Curodont populated, the others don't).
         fv = r.get("field_validation", {}) or {}
-        populated = sum(
-            1 for f in ("curodont_D2991_pct", "veneer_D2962_pct", "surg_ext_D7210_pct",
-                        "fluoride_D1206_age", "sealants_D1351_age",
+        aux_pop = sum(
+            1 for f in ("curodont_D2991_pct", "veneer_D2962_pct", "surg_ext_D7210_pct")
+            if fv.get(f, {}).get("denticon") not in (None, 0, 0.0)
+        )
+        age_pop = sum(
+            1 for f in ("fluoride_D1206_age", "sealants_D1351_age",
                         "space_maint_1510_age", "ortho_D8080_age")
             if fv.get(f, {}).get("denticon") not in (None, 0, 0.0)
         )
@@ -1857,7 +1895,7 @@ async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict
                 0 if carrier_ok else 1,
                 0 if fee_ok else 1,
                 tuple(-v for v in modified), tuple(-v for v in created),
-                -populated)
+                -aux_pop, -age_pop)
 
     all_results.sort(key=_rank_key)
 

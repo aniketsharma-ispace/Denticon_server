@@ -370,6 +370,13 @@ REAL_CASES = [
      "ucci/jena_m_stewart_ucci(1).json",
      "ucci/Denticon_DeepAudit_Stewart, Jena_1784800479450.json",
      "22272", True),
+    # Cigna: financials come from maximum_records/deductible_records (empty in
+    # the generic keys). Among 12 duplicate records, only 24299 has the Curodont
+    # differentiator populated, so the aux-first completeness tie-break picks it.
+    ("Gilligan-Megrue, Kathleen (Cigna, records financials + aux completeness)",
+     "cigna/cigna/cigna_Kathleen_Gilligan-megrue_2026-07-27.json",
+     "cigna/cigna/Denticon_DeepAudit_Gilligan-Megrue, Kathleen KATHY_1784801702209.json",
+     "24299", True),
 ]
 
 
@@ -708,6 +715,38 @@ async def case_completeness_tiebreak():
            f"picked={r.get('matching_id')} tie={r.get('tie')}")
 
 
+def case_cigna_financials_from_records():
+    """Cigna stores financials as record lists (maximum_records /
+    deductible_records), not annual_max/deductible_ind keys. Individual/Family
+    split on `covers` (IND/FAM); the non-lifetime maximum is the annual max and
+    the 'Lifetime Maximum' is the ortho max. All must be pulled, not left null
+    (which caused every multi-plan Cigna patient to tie)."""
+    portal = {
+        "source": "Cigna Portal",
+        "summary": {"group_number": "3343586", "group_name": "ACHIEVEMENT FIRST"},
+        "financials": {
+            "maximum_records": [
+                {"desc": "Individual Calendar Year Maximum", "covers": "IND", "amount": "$1,600.00"},
+                {"desc": "Individual Lifetime Maximum", "covers": "IND", "amount": "$1,500.00"}],
+            "deductible_records": [
+                {"desc": "Individual Calendar Year Deductible", "covers": "IND", "amount": "$50.00"},
+                {"desc": "Family Calendar Year Deductible", "covers": "FAM", "amount": "$150.00"}]},
+        "coinsurance": [{"network": "TOTAL", "category": "Diagnostic and Preventive",
+                         "patient_pays": "0%"}],
+        "frequencies": [], "age_limits": [],
+    }
+    p = extract_portal_fields(portal)
+    ok = (p["group_number"] == "3343586"
+          and p["individual_deductible"] == 50.0
+          and p["family_deductible"] == 150.0
+          and p["individual_annual_max"] == 1600.0   # non-lifetime maximum
+          and p["ortho_lifetime_max"] == 1500.0)      # 'Lifetime Maximum'
+    report("cigna: financials pulled from maximum_records/deductible_records",
+           PASS if ok else FAIL,
+           f"indDed={p['individual_deductible']} famDed={p['family_deductible']} "
+           f"annMax={p['individual_annual_max']} ortho={p['ortho_lifetime_max']}")
+
+
 def case_fee_ok_ucci_is_concordia():
     """The fee-schedule 'foreign network' check must treat UCCI as United
     Concordia (same carrier). A record declaring its own 'UCCI PPO' fee schedule
@@ -875,6 +914,7 @@ async def main():
     case_unlimited_maximum()
     case_denticon_zero_pct_not_fabricated()
     case_denticon_age_from_coverage()
+    case_cigna_financials_from_records()
     case_fee_ok_ucci_is_concordia()
     await case_completeness_tiebreak()
     await case_group_alt_identifier()
