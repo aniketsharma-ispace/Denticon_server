@@ -110,24 +110,81 @@ function scrapePatientInfo() {
 // ══════════════════════════════════════════════════════════════════════════
 
 function scrapePlanDetails() {
-    function getLabelValue(labelText) {
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+    function getLabelValues(labelText) {
+        // Preferred structure:
+        // .details-column
+        //   .details-title
+        //   .details-value
+        //   .details-value
+        const titleElements = document.querySelectorAll(".details-title");
+
+        for (const titleEl of titleElements) {
+            if (titleEl.textContent.trim() !== labelText) continue;
+
+            const column = titleEl.closest(".details-column");
+
+            if (column) {
+                const values = Array.from(
+                    column.querySelectorAll(".details-value")
+                )
+                    .map(element => clean(element.innerText))
+                    .filter(Boolean);
+
+                if (values.length) {
+                    return values;
+                }
+            }
+        }
+
+        // Fallback for other page structures.
+        const walker = document.createTreeWalker(
+            document.body,
+            NodeFilter.SHOW_TEXT,
+            null,
+            false
+        );
+
         let node;
+
         while ((node = walker.nextNode())) {
             if (node.textContent.trim() !== labelText) continue;
+
             const labelEl = node.parentElement;
-            const sib = labelEl.nextElementSibling;
-            if (sib?.innerText?.trim()) return clean(sib.innerText);
-            const parentSib = labelEl.parentElement?.nextElementSibling;
-            if (parentSib?.innerText?.trim()) return clean(parentSib.innerText);
+            const sibling = labelEl?.nextElementSibling;
+
+            if (sibling?.innerText?.trim()) {
+                return [clean(sibling.innerText)];
+            }
+
+            const parentSibling =
+                labelEl?.parentElement?.nextElementSibling;
+
+            if (parentSibling?.innerText?.trim()) {
+                return [clean(parentSibling.innerText)];
+            }
         }
-        return "N/A";
+
+        return [];
     }
+
+    function getLabelValue(labelText) {
+        return getLabelValues(labelText)[0] || "N/A";
+    }
+
+    const employerGroupValues =
+        getLabelValues("Employer / Group #");
+
     return {
         start_date: getLabelValue("Start Date"),
         end_date: getLabelValue("End Date"),
         subscriber_id: getLabelValue("Subscriber SSN or ID"),
-        employer_group: getLabelValue("Employer / Group #"),
+
+        // CITY OF RACINE
+        employer_group: employerGroupValues[0] || "N/A",
+
+        // 148620
+        group_number: employerGroupValues[1] || "N/A",
+
         network: getLabelValue("Network"),
         address: getLabelValue("Address")
     };
