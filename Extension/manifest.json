@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "Insurance Auditor Pro",
-    "version": "1.27",
+    "version": "1.26",
     "permissions": [
         "storage",
         "activeTab",
@@ -28,7 +28,8 @@
         "https://www.deltadentalnj.com/*",
         "https://www.deltadentalwa.com/*",
         "https://providers.dentaquest.com/*",
-	    "https://app.deltadentalil.com/*"
+	    "https://app.deltadentalil.com/*",
+        "https://www.dnoaconnect.com/*"
     ],
     "action": {
         "default_popup": "popup.html"
@@ -91,6 +92,12 @@
         {
             "matches":["https://www.unitedconcordia.com/*"],
             "js":["content_ucci.js"],
+            "all_frames":true
+        },
+        {
+            "matches": ["https://www.dnoaconnect.com/*"],
+            "js": ["content_DNOA.js"],
+            "run_at": "document_start",
             "all_frames":true
         }
     ]
