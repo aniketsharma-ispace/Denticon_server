@@ -31,8 +31,8 @@ Installed copies update themselves by polling `update_url` (declared in the
 manifest). We host the update manifest + signed `.xpi` in a **dedicated public
 GitHub repo** so the private server code stays private:
 
-- **Repo:** `https://github.com/aniketsharma-ispace/insurance-auditor-pro` (public)
-- **update_url:** `https://github.com/aniketsharma-ispace/insurance-auditor-pro/releases/latest/download/updates.json`
+- **Repo:** `https://github.com/aniketsharma-ispace/insurance-auditor-pro-mozilla` (public)
+- **update_url:** `https://github.com/aniketsharma-ispace/insurance-auditor-pro-mozilla/releases/latest/download/updates.json`
 - The `.xpi` asset in each release MUST be named exactly **`insurance_auditor_pro.xpi`**
   so the `releases/latest/download/` URL stays stable. AMO hands you a
   hash-named file — rename it before uploading.
