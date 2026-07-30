@@ -3858,6 +3858,24 @@ def _benefits_detail_tier_max(text: str, tier: str) -> dict:
     }
 
 
+def _benefits_detail_ortho_max(text: str) -> dict:
+    """Ortho lifetime maximum from a '<tier> Maximum - Ortho' block, e.g.
+    'PPO Maximum - Ortho\\n$0.00 used - $2,000.00 max' (the '% used - % max'
+    line is present for Non-Par/Premier but not PPO). Absent → None (not 0)."""
+    for tier in ("PPO", "Premier", "Non-Par"):
+        m = re.search(
+            rf"{tier} Maximum - Ortho\n(?:\d+% used - \d+% max\n)?"
+            rf"\$([\d,]+\.\d+) used - \$([\d,]+\.\d+) max",
+            text,
+        )
+        if m:
+            used  = _parse_dollars(m.group(1))
+            total = _parse_dollars(m.group(2))
+            return {"total": _money_str(total), "used": _money_str(used),
+                    "remaining": _money_str(total - used)}
+    return {"total": None, "used": None, "remaining": None}
+
+
 def _benefits_detail_tier_deductible(text: str, label: str, tier: str) -> dict:
     """
     Individual deductible (PPO Deductible):\n$35.00 per year, $35.00 remains to be paid
@@ -3906,9 +3924,16 @@ def _parse_delta_dental_benefits_detail(text: str) -> dict:
 
     annual_max = _benefits_detail_tier_max(text, "PPO")
     ind_ded    = _benefits_detail_tier_deductible(text, "Individual deductible", "PPO")
-    fam_ded    = _benefits_detail_tier_deductible(text, "Family deductible", "PPO")
+    # Family deductible: use the listed value; when the plan has no separate
+    # family deductible line (no family members), it equals the individual one.
+    if re.search(r"Family deductible", text, re.IGNORECASE):
+        fam_ded = _benefits_detail_tier_deductible(text, "Family deductible", "PPO")
+    else:
+        fam_ded = dict(ind_ded)
 
-    ortho_lifetime = {"total": "$ 0.00", "used": "$ 0.00", "remaining": "$ 0.00"}
+    # Ortho lifetime maximum — read from the "<tier> Maximum - Ortho" block
+    # (previously hardcoded to $0.00, which mismatched a real Denticon ortho max).
+    ortho_lifetime = _benefits_detail_ortho_max(text)
 
     matches = list(_BENEFITS_DETAIL_PROC_ROW.finditer(text))
     procedures = []
@@ -3920,7 +3945,10 @@ def _parse_delta_dental_benefits_detail(text: str) -> dict:
         codes_raw = re.sub(r"\s+", " ", m.group(2)).replace(" or ", ",")
         codes = [c.strip() for c in codes_raw.split(",")]
         pct = m.group(3)
-        benefit_level = "0%" if pct == "N/A" else pct
+        # "N/A" plan-pays = not applicable to this patient (e.g. an age-excluded
+        # benefit like adult fluoride) — leave None so it is SKIPPED, not
+        # compared as a fabricated 0% against the plan-level Denticon value.
+        benefit_level = None if pct == "N/A" else pct
 
         if re.search(r"bitewing", name.lower()):
             codes = ["D0274"]

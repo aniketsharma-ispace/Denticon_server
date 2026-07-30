@@ -377,6 +377,14 @@ REAL_CASES = [
      "cigna/cigna/cigna_Kathleen_Gilligan-megrue_2026-07-27.json",
      "cigna/cigna/Denticon_DeepAudit_Gilligan-Megrue, Kathleen KATHY_1784801702209.json",
      "24299", True),
+    # Delta WI 'benefits-detail' PDF (Wang): ortho max must be read from the
+    # 'PPO Maximum - Ortho ... $2,000.00 max' block (was hardcoded $0), the
+    # family deductible defaults to the individual ($50) when no family line is
+    # present, and an 'N/A' (age-excluded fluoride) must not fabricate a 0%.
+    ("Wang, Amy (Delta WI benefits-detail: ortho + family-ded defaults)",
+     "benefits-detail-1 1.pdf",
+     "Denticon_DeepAudit_Wang, Amy_1785352374617.json",
+     "298081", True),
 ]
 
 
@@ -446,6 +454,41 @@ def case_no_fabricated_portal_values():
            PASS if ok_tk else FAIL,
            f"grp={tp['group_number']} major={tp['major_D2740_pct']} ortho={tp['ortho_D8080_pct']} "
            f"annmax={tp['individual_annual_max']} sealants={tp['sealants_D1351_pct']}")
+
+    # Benefits-detail (Delta WI): NO "Maximum - Ortho" block and an "N/A" proc
+    # row. Ortho must stay missing (not the old hardcoded $0), and an N/A
+    # plan-pays must NOT be fabricated to 0%.
+    from pdf_extractor import _parse_delta_dental_benefits_detail
+    bd_text = (
+        "Subscriber name:\nTEST PATIENT\nGroup #:\n999\nGroup name:\nTEST\n"
+        "PPO Maximum\n11% used - 89% max\n$100.00 used - $1,500.00 max\n"
+        "Individual deductible (PPO Deductible):\n$50.00 per year, $50.00 remains to be paid\n"
+        "Benefits for TEST PATIENT\n"
+        "Fluoride (D1208)\nN/A\nN/A\nN/A\nNot A Covered Benefit\n"
+    )
+    bd = _parse_delta_dental_benefits_detail(bd_text)
+    bp = extract_portal_fields(bd)
+    bd_procs = {x["procedure_code"]: x.get("benefit_level")
+                for x in bd.get("benefit_coverage", {}).get("procedures", [])}
+    ok_bd = (bp["ortho_lifetime_max"] is None            # no ortho block -> missing, not $0
+             and bp["individual_annual_max"] == 1500.0
+             and bd_procs.get("D1208") is None)           # N/A -> missing, not 0%
+    report("no-fabrication: benefits-detail absent ortho + N/A stay missing",
+           PASS if ok_bd else FAIL,
+           f"ortho={bp['ortho_lifetime_max']} annmax={bp['individual_annual_max']} D1208={bd_procs.get('D1208')}")
+
+    # DentaQuest: no Family deductible in the export → must stay None, never a
+    # fabricated $0 that critically rejects the correct plan (Hall).
+    from pdf_extractor import _parse_dentaquest
+    dq_text = (
+        "Dental Health Alliance (DHA) Benefits at a glance Deductible: $50.0 "
+        "Individual Maximum: $1,500.0\nGroup Number: ABC123\n"
+    )
+    dq = _parse_dentaquest(dq_text)
+    dp = extract_portal_fields(dq)
+    ok_dq = dp["family_deductible"] is None
+    report("no-fabrication: DentaQuest absent family deductible stays None",
+           PASS if ok_dq else FAIL, f"famDed={dp['family_deductible']}")
 
 
 async def case_wi_none_not_fabricated():
@@ -715,6 +758,35 @@ async def case_completeness_tiebreak():
            f"picked={r.get('matching_id')} tie={r.get('tie')}")
 
 
+def case_benefits_detail_ortho_and_family():
+    """Delta WI 'benefits-detail' parser: ortho max read from the
+    '<tier> Maximum - Ortho' block; family deductible defaults to the individual
+    when no family line exists; and 'N/A' plan-pays (age-excluded) → None, not 0%."""
+    from pdf_extractor import _parse_delta_dental_benefits_detail
+    text = (
+        "Subscriber name:\nAMY WANG\n"
+        "Group #:\n002900000511700000\nGroup name:\nElite Plan\n"
+        "PPO Maximum\n11% used - 89% max\n$217.00 used - $2,000.00 max\n"
+        "PPO Maximum - Ortho\n$0.00 used - $2,000.00 max\n"
+        "Individual deductible (PPO Deductible):\n$50.00 per year, $50.00 remains to be paid\n"
+        "Benefits for AMY WANG\n"
+        "Fluoride (D1208)\nN/A\nN/A\nN/A\nNot A Covered Benefit\n"
+    )
+    d = _parse_delta_dental_benefits_detail(text)
+    p = extract_portal_fields(d)
+    procs = {x["procedure_code"]: x.get("benefit_level")
+             for x in d.get("benefit_coverage", {}).get("procedures", [])}
+    ok = (p["individual_annual_max"] == 2000.0
+          and p["ortho_lifetime_max"] == 2000.0          # read, not hardcoded 0
+          and p["individual_deductible"] == 50.0
+          and p["family_deductible"] == 50.0             # defaults to individual
+          and procs.get("D1208") is None)                 # N/A not fabricated to 0%
+    report("benefits-detail: ortho read, family=individual, N/A not fabricated",
+           PASS if ok else FAIL,
+           f"annMax={p['individual_annual_max']} ortho={p['ortho_lifetime_max']} "
+           f"famDed={p['family_deductible']} D1208={procs.get('D1208')}")
+
+
 def case_cigna_financials_from_records():
     """Cigna stores financials as record lists (maximum_records /
     deductible_records), not annual_max/deductible_ind keys. Individual/Family
@@ -914,6 +986,7 @@ async def main():
     case_unlimited_maximum()
     case_denticon_zero_pct_not_fabricated()
     case_denticon_age_from_coverage()
+    case_benefits_detail_ortho_and_family()
     case_cigna_financials_from_records()
     case_fee_ok_ucci_is_concordia()
     await case_completeness_tiebreak()
