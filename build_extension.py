@@ -106,6 +106,37 @@ def build(out_path: Path) -> None:
     print(f"Built {out_path}  ({len(files)} files, {out_path.stat().st_size:,} bytes)")
 
 
+def verify_xpi(xpi_path: Path) -> int:
+    """Sanity-check a signed .xpi before you upload it to a GitHub release.
+
+    Confirms the packaged version + update_url match the current source manifest
+    and that Mozilla actually signed it. Returns a process exit code.
+    """
+    manifest = read_manifest(SOURCE_DIR / "manifest.json")
+    want_version = manifest["version"]
+    want_url = manifest["browser_specific_settings"]["gecko"].get("update_url")
+
+    with zipfile.ZipFile(xpi_path) as zf:
+        names = zf.namelist()
+        packaged = json.loads(zf.read("manifest.json"))
+    got_version = packaged["version"]
+    got_url = packaged["browser_specific_settings"]["gecko"].get("update_url")
+    signed = any(n.lower() == "meta-inf/mozilla.rsa" for n in names)
+
+    checks = [
+        (f"version == {want_version}", got_version == want_version, got_version),
+        ("update_url matches source", got_url == want_url, got_url),
+        ("Mozilla-signed", signed, "META-INF/mozilla.rsa present" if signed else "NOT SIGNED"),
+    ]
+    print(f"Verifying {xpi_path}")
+    ok = True
+    for label, passed, detail in checks:
+        print(f"  [{'OK ' if passed else 'FAIL'}] {label}  ({detail})")
+        ok = ok and passed
+    print("RESULT:", "PASS - safe to upload" if ok else "FAIL - do NOT upload this file")
+    return 0 if ok else 1
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -114,7 +145,17 @@ def main() -> None:
         default=None,
         help="Output zip path (default: dist/InsuranceAuditorPro-<version>.zip)",
     )
+    parser.add_argument(
+        "--verify",
+        type=Path,
+        default=None,
+        metavar="XPI",
+        help="Verify a signed .xpi matches the source manifest, then exit (no build).",
+    )
     args = parser.parse_args()
+
+    if args.verify is not None:
+        sys.exit(verify_xpi(args.verify))
 
     manifest = read_manifest(SOURCE_DIR / "manifest.json")
     version = manifest["version"]

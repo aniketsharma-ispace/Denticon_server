@@ -54,9 +54,18 @@ One-time setup (only needed once, ever):
    (regenerated from the manifest each time).
 3. Sign the zip on AMO (see below) and download the signed `.xpi`.
 4. **Rename** the signed file to `insurance_auditor_pro.xpi`.
-5. On the public repo, create a **new GitHub Release** (tag e.g. `v1.27`) and
+5. **Verify before uploading** (catches uploading the wrong/old file — a very
+   easy mistake since every release uses the same filename):
+   ```
+   python build_extension.py --verify insurance_auditor_pro.xpi
+   ```
+   It must print `RESULT: PASS`. If it FAILs (wrong version / wrong update_url /
+   not signed), you grabbed the wrong file — fix it before continuing.
+6. On the public repo, create a **new GitHub Release** (tag e.g. `v1.28`) and
    attach TWO assets: `insurance_auditor_pro.xpi` and `dist/updates.json`.
-6. Done. Within ~24h (or on next restart) every install auto-updates. No action
+   Tip: delete the freshly-signed download from your Downloads folder afterward
+   so it can't be confused with next release's file.
+7. Done. Within ~24h (or on next restart) every install auto-updates. No action
    for the offices.
 
 ## Signing (self-hosted / "unlisted")
