@@ -27,9 +27,48 @@ EXCLUDE_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini"}
 EXCLUDE_SUFFIXES = {".map", ".zip", ".log", ".bak", ".md"}
 
 
-def read_version(manifest_path: Path) -> str:
+def read_manifest(manifest_path: Path) -> dict:
     with manifest_path.open(encoding="utf-8") as fh:
-        return json.load(fh)["version"]
+        return json.load(fh)
+
+
+# Constant filename the signed .xpi must be renamed to before uploading it to a
+# GitHub release, so the "releases/latest/download/<name>" URL is stable.
+XPI_ASSET_NAME = "insurance_auditor_pro.xpi"
+
+
+def write_updates_json(manifest: dict, out_path: Path) -> None:
+    """Emit the Firefox self-hosted update manifest (updates.json).
+
+    Firefox polls `update_url` (declared in the manifest) and installs the
+    version listed here when it is newer than what's installed. `update_link`
+    points at the .xpi asset in the same GitHub release.
+    """
+    gecko = manifest["browser_specific_settings"]["gecko"]
+    addon_id = gecko["id"]
+    update_url = gecko.get("update_url")
+    if not update_url:
+        return  # auto-update not configured; nothing to emit
+
+    # Derive the .xpi URL from the update_url (same release, sibling asset).
+    base = update_url.rsplit("/", 1)[0]
+    update_link = f"{base}/{XPI_ASSET_NAME}"
+
+    updates = {
+        "addons": {
+            addon_id: {
+                "updates": [
+                    {
+                        "version": manifest["version"],
+                        "update_link": update_link,
+                    }
+                ]
+            }
+        }
+    }
+    with out_path.open("w", encoding="utf-8") as fh:
+        json.dump(updates, fh, indent=2)
+    print(f"Built {out_path}  (version {manifest['version']} -> {update_link})")
 
 
 def should_include(path: Path) -> bool:
@@ -77,9 +116,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    version = read_version(SOURCE_DIR / "manifest.json")
+    manifest = read_manifest(SOURCE_DIR / "manifest.json")
+    version = manifest["version"]
     out_path = args.out or (DIST_DIR / f"InsuranceAuditorPro-{version}.zip")
     build(out_path)
+    write_updates_json(manifest, out_path.parent / "updates.json")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,12 @@
+{
+  "addons": {
+    "insurance-auditor-pro@ispace.com": {
+      "updates": [
+        {
+          "version": "1.27",
+          "update_link": "https://github.com/aniketsharma-ispace/insurance-auditor-pro/releases/latest/download/insurance_auditor_pro.xpi"
+        }
+      ]
+    }
+  }
+}

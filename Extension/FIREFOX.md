@@ -25,17 +25,39 @@ Why it works on Firefox:
   extension reads patient data from the insurance portals and saves it locally;
   it does not transmit that data to our servers or third parties.
 
+## Auto-update (self-hosted via GitHub Releases)
+
+Installed copies update themselves by polling `update_url` (declared in the
+manifest). We host the update manifest + signed `.xpi` in a **dedicated public
+GitHub repo** so the private server code stays private:
+
+- **Repo:** `https://github.com/aniketsharma-ispace/insurance-auditor-pro` (public)
+- **update_url:** `https://github.com/aniketsharma-ispace/insurance-auditor-pro/releases/latest/download/updates.json`
+- The `.xpi` asset in each release MUST be named exactly **`insurance_auditor_pro.xpi`**
+  so the `releases/latest/download/` URL stays stable. AMO hands you a
+  hash-named file — rename it before uploading.
+
+One-time setup (only needed once, ever):
+1. Create the public repo above (empty is fine).
+2. Do a normal release (below). This is also the build that first carries
+   `update_url`, so everyone must install THIS `.xpi` once (their current copy
+   has no `update_url` and can't self-update). After that, updates are automatic.
+
 ## Release a new version
 
 1. Bump `"version"` in `Extension/manifest.json` (e.g. `1.26` -> `1.27`).
-2. Build the package:
+2. Build:
    ```
    python build_extension.py
    ```
-   Produces `dist/InsuranceAuditorPro-<version>.zip`.
-3. Sign it (see below) and distribute the new `.xpi`. Installed copies update
-   automatically only if you host an update manifest; otherwise re-distribute the
-   `.xpi` and users install over the top (same ID = clean upgrade).
+   Produces `dist/InsuranceAuditorPro-<version>.zip` **and** `dist/updates.json`
+   (regenerated from the manifest each time).
+3. Sign the zip on AMO (see below) and download the signed `.xpi`.
+4. **Rename** the signed file to `insurance_auditor_pro.xpi`.
+5. On the public repo, create a **new GitHub Release** (tag e.g. `v1.27`) and
+   attach TWO assets: `insurance_auditor_pro.xpi` and `dist/updates.json`.
+6. Done. Within ~24h (or on next restart) every install auto-updates. No action
+   for the offices.
 
 ## Signing (self-hosted / "unlisted")
 
