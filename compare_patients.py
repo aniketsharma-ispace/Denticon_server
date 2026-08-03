@@ -357,6 +357,237 @@ def _extract_ddri_portal_fields(raw: dict) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────
+# PHASE 1F: PYTHON-NATIVE EXTRACTION FROM DELTA DENTAL (NATIONAL) PORTAL JSON
+# ──────────────────────────────────────────────────────────────────
+
+# Age-limit phrasings seen in Delta Dental benefit rows. Only UPPER bounds are
+# usable as plan age limits — "12 years and older" is a MINIMUM age and must
+# never be recorded as a limit.
+_DD_AGE_UPPER_RES = (
+    # "Child up to and not including age 19" / "up to age 14"
+    re.compile(r"up to (?:and not including )?age\s+(\d+)", re.IGNORECASE),
+    re.compile(r"under (?:the )?age (?:of )?(\d+)",          re.IGNORECASE),
+    re.compile(r"(\d+)\s*(?:years?)?\s*(?:of age )?and (?:under|younger)", re.IGNORECASE),
+    re.compile(r"through age\s+(\d+)",                       re.IGNORECASE),
+)
+
+
+def _dd_age_limit(text) -> float | None:
+    """Upper age bound from a Delta Dental age_limits string; None if it states
+    no limit, a minimum-age rule, or anything unrecognised."""
+    s = str(text or "").strip()
+    if not s or s.lower() in ("none", "n/a", "na"):
+        return None
+    if re.search(r"and older|older than|minimum age", s, re.IGNORECASE):
+        return None                      # minimum-age rule, not a cap
+    for rx in _DD_AGE_UPPER_RES:
+        m = rx.search(s)
+        if m:
+            age = float(m.group(1))
+            return None if age >= 99 else age
+    return None
+
+
+def _extract_dd_portal_fields(raw: dict) -> dict:
+    """
+    FORMAT F — Delta Dental national provider portal scraper output.
+    Identified by `source: "Delta Dental"` + a `tabs` block.
+
+    Structure:
+      {
+        "source": "Delta Dental",
+        "primary_patient": {"plan": "Delta Dental PPO", "group": "DISNEY - ADVANTAGE",
+                            "static_fields": {"Group number": "03000-05101",
+                                              "Member type": "Subscriber"}},
+        "tabs": {
+          "overview": {
+            "deductibles": [{"type": "Calendar Individual Deductible ...",
+                             "networks": ["Delta Dental PPO Dentist"],
+                             "amount": "$25.00"}],
+            "maximums":    [{"type": "Calendar Individual Maximum ...",
+                             "treatment_types": [...], "networks": [...],
+                             "amount": "$2,000.00"}],
+            "benefits_overview": [{"treatment_type": "Orthodontics Orthodontic ...",
+                                   "contract_benefit_level": "50%"}]
+          },
+          "benefits_search": [{"code": "D0120", "benefit_level": "100%",
+                               "rows": [{"age_limits": "Child up to and not
+                                         including age 19"}]}]
+        }
+      }
+
+    Two portal-specific rules matter for correct matching:
+
+    1. NETWORK TIERS — deductible/maximum rows are repeated per network
+       (PPO/DPO vs Premier vs Non-Delta) with DIFFERENT amounts. Denticon
+       records the in-network (PPO/DPO) values, so the PPO/DPO row must win;
+       taking the first row silently yields the Premier amount.
+    2. TREATMENT-TYPE SCOPING — "Lifetime Individual Maximum" is only the
+       ORTHO lifetime max when its treatment_types include Orthodontics.
+       The same label also carries TMJ/Adjunctive lifetime caps (e.g. $300),
+       which must not be compared against Denticon's ortho lifetime max.
+    """
+    out = {}
+
+    pp    = raw.get("primary_patient", {}) or {}
+    tabs  = raw.get("tabs", {}) or {}
+    ov    = tabs.get("overview", {}) or {}
+    stat  = pp.get("static_fields", {}) or {}
+    elig  = raw.get("eligibility", {}) or {}
+
+    # ── GROUP ──
+    def _first_real(*vals):
+        for v in vals:
+            s = str(v or "").strip()
+            if s and s.upper() not in ("N/A", "NA", "NONE"):
+                return s
+        return None
+
+    out["group_number"] = _first_real(stat.get("Group number"),
+                                      elig.get("group_number"),
+                                      (elig.get("all_fields") or {}).get("Group number"))
+    out["group_name"]   = _first_real(pp.get("group"), elig.get("group_name"))
+
+    rel = str(stat.get("Member type", "")).strip().lower()
+    out["has_dependents"] = (
+        rel not in ("", "subscriber", "self", "policyholder") if rel else None
+    )
+
+    # ── Which network tier is this patient's in-network plan? ──
+    # `primary_patient.plan` is e.g. "Delta Dental PPO" or "DPO".
+    plan_label = str(pp.get("plan", "")).upper()
+    tier = "DPO" if "DPO" in plan_label else "PPO"
+
+    def _is_in_network(row: dict) -> bool:
+        """True when this row's networks include the patient's own PPO/DPO tier."""
+        nets = " | ".join(str(n) for n in (row.get("networks") or [])).upper()
+        if not nets:
+            return False
+        return f"{tier} DENTIST" in nets or f"DELTA DENTAL {tier}" in nets
+
+    def _money(s):
+        """'$2,000.00'→2000.0; 'Unlimited'→99999; 'None'/'N/A'→None."""
+        if s is None:
+            return None
+        t = str(s).strip().lower()
+        if not t or t in ("n/a", "na", "none"):
+            return None
+        if "unlimited" in t:
+            return _UNLIMITED_MAX
+        m = re.search(r"([\d,]+\.?\d*)", str(s))
+        return float(m.group(1).replace(",", "")) if m else None
+
+    def _pick(rows: list, type_kw: str, *, exclude_kw: str | None = None,
+              require_treatment: str | None = None):
+        """
+        Amount for the first row whose `type` contains type_kw (and, when given,
+        whose treatment_types include require_treatment). In-network rows are
+        preferred over Premier/Non-Delta ones.
+        """
+        cands = []
+        for row in rows or []:
+            t = str(row.get("type", ""))
+            tl = t.lower()
+            if type_kw.lower() not in tl:
+                continue
+            if exclude_kw and exclude_kw.lower() in tl:
+                continue
+            if require_treatment:
+                tts = " | ".join(str(x) for x in (row.get("treatment_types") or [])).lower()
+                if require_treatment.lower() not in tts:
+                    continue
+            cands.append(row)
+        if not cands:
+            return None
+        # In-network tier first; otherwise fall back to whatever was listed.
+        for row in cands:
+            if _is_in_network(row):
+                return _money(row.get("amount"))
+        return _money(cands[0].get("amount"))
+
+    deds = ov.get("deductibles", []) or []
+    maxs = ov.get("maximums", []) or []
+
+    # "Lifetime Individual Deductible" is a different provision from the
+    # calendar-year individual deductible — exclude it here.
+    out["individual_deductible"] = _pick(deds, "Individual Deductible",
+                                         exclude_kw="Lifetime")
+    out["family_deductible"]     = _pick(deds, "Family Deductible",
+                                         exclude_kw="Lifetime")
+    out["individual_annual_max"] = _pick(maxs, "Individual Maximum",
+                                         exclude_kw="Lifetime")
+    # Ortho lifetime max ONLY from a lifetime row scoped to Orthodontics.
+    out["ortho_lifetime_max"]    = _pick(maxs, "Lifetime Individual Maximum",
+                                         require_treatment="Orthodontics")
+
+    # ── PER-CODE COVERAGE from benefits_search ──
+    codes: dict[str, dict] = {}
+    for entry in tabs.get("benefits_search", []) or []:
+        code = str(entry.get("code", "")).upper().strip()
+        if code and code not in codes:
+            codes[code] = entry
+
+    def _pct(*wanted: str):
+        for c in wanted:
+            e = codes.get(c)
+            if e is None:
+                continue
+            lvl = str(e.get("benefit_level", "")).strip()
+            # "N/A" = not a covered service for this plan → no comparable
+            # plan-level percentage. A RANGE ("50% - 80%") is ambiguous and
+            # must never be collapsed into one number.
+            if not lvl or lvl.upper() in ("N/A", "NA", "NONE") or "-" in lvl:
+                continue
+            v = _num(lvl)
+            if v is not None:
+                return v
+        return None
+
+    def _age(*wanted: str):
+        for c in wanted:
+            e = codes.get(c)
+            if e is None:
+                continue
+            for row in e.get("rows", []) or []:
+                age = _dd_age_limit(row.get("age_limits"))
+                if age is not None:
+                    return age
+        return None
+
+    out["preventative_D0120_pct"] = _pct("D0120", "D0150", "D0140")
+    # Delta Dental's benefit search carries D2391 (posterior resin composite)
+    # rather than D2331/D2140 — same Basic Restorative benefit category.
+    out["basic_D2331_D2140_pct"]  = _pct("D2331", "D2140", "D2391")
+    out["major_D2740_pct"]        = _pct("D2740")
+    out["fluoride_D1206_pct"]     = _pct("D1206", "D1208")
+    out["fluoride_D1206_age"]     = _age("D1206", "D1208")
+    out["sealants_D1351_pct"]     = _pct("D1351")
+    out["sealants_D1351_age"]     = _age("D1351")
+    out["space_maint_1510_pct"]   = _pct("D1510")
+    out["space_maint_1510_age"]   = _age("D1510")
+    out["ortho_D8080_pct"]        = _pct("D8080", "D8070", "D8090")
+    out["ortho_D8080_age"]        = _age("D8080", "D8070", "D8090")
+
+    # Ortho isn't in the code-level benefit search; fall back to the
+    # category row in benefits_overview ("Orthodontics Orthodontic Related
+    # Services"). Ranges stay None — see _pct above.
+    if out["ortho_D8080_pct"] is None:
+        for b in ov.get("benefits_overview", []) or []:
+            if "ortho" in str(b.get("treatment_type", "")).lower():
+                lvl = str(b.get("contract_benefit_level", "")).strip()
+                if lvl and "-" not in lvl and lvl.upper() not in ("N/A", "NA", "NONE"):
+                    out["ortho_D8080_pct"] = _num(lvl)
+                break
+
+    # Auxiliary differentiators (separate duplicate Denticon records).
+    out["veneer_D2962_pct"]   = _pct("D2962")
+    out["curodont_D2991_pct"] = _pct("D2991")
+    out["surg_ext_D7210_pct"] = _pct("D7210")
+
+    return out
+
+
+# ──────────────────────────────────────────────────────────────────
 # PHASE 1E: PYTHON-NATIVE EXTRACTION FROM AETNA CLAIMCONNECT PORTAL JSON
 # ──────────────────────────────────────────────────────────────────
 def _extract_aetna_portal_fields(raw: dict) -> dict:
@@ -542,6 +773,16 @@ def extract_portal_fields(portal_raw: dict) -> dict:
     # Identified by its `payer` block plus a `service_level_benefits` list.
     if isinstance(portal, dict) and portal.get("payer") and portal.get("service_level_benefits") is not None:
         return _extract_aetna_portal_fields(portal)
+
+    # ── Detect FORMAT F: Delta Dental national provider portal ──
+    # Identified by source "Delta Dental" + the tabbed page structure
+    # (overview / benefits_search). Checked before FORMAT A/B because this
+    # export has neither benefit_coverage.procedures nor coinsurance[], so it
+    # would otherwise fall through and extract almost nothing.
+    if isinstance(portal, dict) and isinstance(portal.get("tabs"), dict) and (
+            "delta dental" in str(portal.get("source", "")).lower()
+            or portal.get("primary_patient")):
+        return _extract_dd_portal_fields(portal)
 
     # ── Detect FORMAT A: benefit_coverage.procedures ──
     # benefit_coverage may live inside the unwrapped portal (DentaQuest) or at
@@ -851,7 +1092,10 @@ def extract_denticon_plan_fields(plan: dict) -> dict:
     # ─────────────────────────────────────────────
     # 1. GROUP
     # ─────────────────────────────────────────────
-    grp_m = re.search(r"GROUP\s*#\s*:\s*(\S+)", notes, re.IGNORECASE)
+    # Group numbers may be hyphenated with surrounding spaces ("03000 - 05101",
+    # Delta Dental style), so allow inner " - " instead of stopping at the
+    # first space — a truncated "03000" fails to match the portal's full value.
+    grp_m = re.search(r"GROUP\s*#\s*:\s*(\S+(?:\s*-\s*\S+)*)", notes, re.IGNORECASE)
     emp_m = re.search(r"EMPLOYER\s*:\s*([^\n_]+)", notes, re.IGNORECASE)
     out["group_number"] = grp_m.group(1).strip() if grp_m else (
         details.get("Group #") or details.get("Group No.")
@@ -1596,15 +1840,71 @@ def _fee_schedule_ok(plan: dict, patient_carrier: str) -> bool:
     return True
 
 
-def _plan_record_meta(plan: dict, patient_carrier: str) -> tuple[bool, bool, tuple, tuple]:
+def _parse_any_date(s) -> tuple:
     """
-    Returns (carrier_matches, fee_schedule_ok, created_date, modified_date)
-    for one Denticon plan. Dates come from the plan-search table in
-    benefits.full_text. Row format:
+    'MM/DD/YYYY', 'YYYY-MM-DD' or 'MM-DD-YYYY' → (year, month, day);
+    unparseable → (0, 0, 0). Two-digit years are assumed 20xx.
+    """
+    t = str(s or "").strip()
+    m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", t)          # 2025-03-20
+    if m:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    m = re.match(r"(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})", t)   # 01/22/2026, 09-09-2025
+    if m:
+        yr = int(m.group(3))
+        if yr < 100:
+            yr += 2000
+        return (yr, int(m.group(1)), int(m.group(2)))
+    return (0, 0, 0)
+
+
+# "Last Update: 01/22/2026" / "PLAN VERIFIED BY :X DATE :2025-03-20 16:59:34"
+_NOTES_DATE_RES = (
+    re.compile(r"Last\s*Update\s*:?\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", re.IGNORECASE),
+    re.compile(r"DATE\s*:?\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", re.IGNORECASE),
+)
+
+
+def _notes_maintained_date(plan: dict) -> tuple:
+    """
+    Latest maintenance date stated inside the plan notes ("Last Update:",
+    "PLAN VERIFIED BY ... DATE :"). Used only as a LAST-RESORT tie-break for
+    exports whose benefits.full_text carries no plan-search table (and hence
+    no created/modified dates) — e.g. the Delta Dental national portal audit.
+    """
+    notes = str(plan.get("benefits", {}).get("notes", "") or "")
+    best = (0, 0, 0)
+    for rx in _NOTES_DATE_RES:
+        for m in rx.finditer(notes):
+            d = _parse_any_date(m.group(1))
+            if d > best:
+                best = d
+    return best
+
+
+def _plan_is_in_use(plan: dict) -> bool:
+    """
+    False only when Denticon explicitly flags the plan record as "Not Used"
+    (plan_details.Used). Offices leave abandoned duplicates behind with this
+    flag, so an unused record should never outrank one in active use.
+    Missing/unknown flag → True (neutral).
+    """
+    used = str((plan.get("plan_details", {}) or {}).get("Used", "") or "").strip().lower()
+    if not used or used in ("n/a", "na", "none"):
+        return True
+    return "not used" not in used
+
+
+def _plan_record_meta(plan: dict, patient_carrier: str) -> tuple[bool, bool, bool, tuple, tuple]:
+    """
+    Returns (carrier_matches, in_use, fee_schedule_ok, created_date,
+    modified_date) for one Denticon plan. Dates come from the plan-search
+    table in benefits.full_text. Row format:
       "74400 777777018 1274 UCCI FEDVIP PID 54771 FEDVIP HIGH OPTION
        01/01/2025 ISPACEGA22937 01/30/2026 MEDSMANSURI2937"
     """
     fee_ok = _fee_schedule_ok(plan, patient_carrier)
+    in_use = _plan_is_in_use(plan)
     pid = str(plan.get("ins_plan_id", "")).strip()
     ft  = str(plan.get("benefits", {}).get("full_text", "") or "")
     m = re.search(
@@ -1614,10 +1914,11 @@ def _plan_record_meta(plan: dict, patient_carrier: str) -> tuple[bool, bool, tup
         ft,
     ) if pid and ft else None
     if not m:
-        return False, fee_ok, (0, 0, 0), (0, 0, 0)
+        return False, in_use, fee_ok, (0, 0, 0), (0, 0, 0)
     row_text = re.sub(r"\s+", " ", m.group(1)).upper()
     carrier_ok = bool(patient_carrier) and patient_carrier in row_text
-    return carrier_ok, fee_ok, _parse_mdY(m.group(2)), _parse_mdY(m.group(3) or "")
+    return (carrier_ok, in_use, fee_ok,
+            _parse_mdY(m.group(2)), _parse_mdY(m.group(3) or ""))
 
 
 def _normalize_carrier(name) -> str:
@@ -1782,6 +2083,11 @@ async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict
         str(p.get("ins_plan_id", "?")): _plan_record_meta(p, patient_carrier)
         for p in plans
     }
+    # Notes-stated maintenance dates — last-resort tie-break (see _rank_key).
+    notes_dates = {
+        str(p.get("ins_plan_id", "?")): _notes_maintained_date(p)
+        for p in plans
+    }
     # Per-plan out-of-network flag, used as a tie-break against the patient's
     # own network status (see _rank_key).
     plan_oon = {
@@ -1858,8 +2164,8 @@ async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict
     def _rank_key(x):
         conf, crit, r = x
         pid = str(r.get("matching_id"))
-        carrier_ok, fee_ok, created, modified = plan_meta.get(
-            pid, (False, True, (0, 0, 0), (0, 0, 0))
+        carrier_ok, in_use, fee_ok, created, modified = plan_meta.get(
+            pid, (False, True, True, (0, 0, 0), (0, 0, 0))
         )
         # Network alignment: the record whose network matches the PATIENT's
         # network is the right one. When the patient is out-of-network, the OON
@@ -1890,12 +2196,19 @@ async def match_insurance_plan(portal_raw: dict, denticon_wrapper: dict) -> dict
                         "space_maint_1510_age", "ortho_D8080_age")
             if fv.get(f, {}).get("denticon") not in (None, 0, 0.0)
         )
+        # Absolute last resort: the maintenance date stated inside the notes.
+        # Only reached when every signal above ties AND the export carries no
+        # plan-search dates, so it can only decide orderings that were
+        # previously arbitrary (input order).
+        notes_date = notes_dates.get(pid, (0, 0, 0))
         return (0 if r.get("match_found") else 1, crit, -conf,
                 0 if net_aligned else 1,
+                0 if in_use else 1,
                 0 if carrier_ok else 1,
                 0 if fee_ok else 1,
                 tuple(-v for v in modified), tuple(-v for v in created),
-                -aux_pop, -age_pop)
+                -aux_pop, -age_pop,
+                tuple(-v for v in notes_date))
 
     all_results.sort(key=_rank_key)
 

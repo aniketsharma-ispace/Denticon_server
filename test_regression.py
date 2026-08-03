@@ -17,6 +17,9 @@ import sys
 logging.disable(logging.CRITICAL)
 
 from compare_patients import (
+    _group_numbers_match,
+    _notes_maintained_date,
+    _plan_is_in_use,
     compare_plans,
     extract_denticon_plan_fields,
     extract_portal_fields,
@@ -200,6 +203,17 @@ def case_extraction_rules():
 # (portal_file, denticon_file, expected_plan_id, expect_match)
 # ──────────────────────────────────────────────────────────────────
 REAL_CASES = [
+    # ── Delta Dental national portal (FORMAT F), audited 2026-08-03 ──
+    # Single-plan patients: the pick is certain, and these lock in that the
+    # new parser resolves 16-17 fields (was 5) with a clean six-field pass.
+    ("Smith, Tamara (Delta Dental national, single plan)",
+     "DD INS/tamara_smith_Delta_Dental 1.json",
+     "DD INS/Denticon_DeepAudit_Smith, Tamara_1785321125966 1.json",
+     "28748", True),
+    ("Boykin, Micaiah (Delta Dental national, ortho range not fabricated)",
+     "DD INS/micaiah_boykin_Delta_Dental 1.json",
+     "DD INS/Denticon_DeepAudit_Boykin, Micaiah Ma-ka-ya_1785313905456 1.json",
+     "18635", True),
     ("Gilligan-Megrue, Kathleen (Cigna)",
      "cigna_Kathleen_Gilligan-megrue_2026-07-15 (2).json",
      "Denticon_DeepAudit_Gilligan-Megrue, Kathleen_1784105277586.json",
@@ -519,6 +533,132 @@ async def case_wi_none_not_fabricated():
     report("wi: 'None' major=0 (not fabricated 50) + 291434 in top group",
            PASS if ok else FAIL,
            f"portal_major={major} 291434_conf={target and target['confidence_score']} top={top}")
+
+
+def case_dd_national_extraction():
+    """
+    Delta Dental national portal (FORMAT F): tabbed export with per-network
+    deductible/maximum rows and a `benefits_search` code list. Verifies the
+    four rules that made every DD audit wrong before this format existed:
+      1. the PPO/DPO (in-network) row wins over Premier/Non-Delta amounts
+      2. "Lifetime Individual Maximum" counts as ortho max ONLY when its
+         treatment_types include Orthodontics (TMJ/Adjunctive caps must not)
+      3. "Lifetime Individual Deductible" is not the calendar deductible
+      4. ranges ("50% - 80%") and "N/A" are never collapsed into a number
+    """
+    dd = {
+        "source": "Delta Dental",
+        "primary_patient": {
+            "plan": "Delta Dental PPO", "group": "DISNEY - ADVANTAGE",
+            "static_fields": {"Group number": "03000-05101",
+                              "Member type": "Subscriber"},
+        },
+        "tabs": {
+            "overview": {
+                "deductibles": [
+                    {"type": "Calendar Individual Deductible Accumulation period",
+                     "networks": ["Delta Dental Premier Dentist",
+                                  "Non-Delta Dental Dentist"], "amount": "$75.00"},
+                    {"type": "Calendar Individual Deductible Accumulation period",
+                     "networks": ["Delta Dental PPO Dentist"], "amount": "$25.00"},
+                    {"type": "Lifetime Individual Deductible",
+                     "networks": ["Delta Dental PPO Dentist"], "amount": "$999.00"},
+                    {"type": "Calendar Family Deductible Accumulation period",
+                     "networks": ["Delta Dental PPO Dentist"], "amount": "$75.00"},
+                ],
+                "maximums": [
+                    {"type": "Calendar Individual Maximum Accumulation period",
+                     "treatment_types": ["Preventive"],
+                     "networks": ["Delta Dental Premier Dentist"], "amount": "$1,500.00"},
+                    {"type": "Calendar Individual Maximum Accumulation period",
+                     "treatment_types": ["Preventive"],
+                     "networks": ["Delta Dental PPO Dentist"], "amount": "$2,000.00"},
+                    # TMJ lifetime cap — must NOT become the ortho lifetime max
+                    {"type": "Lifetime Individual Maximum",
+                     "treatment_types": ["Adjunctive General Services",
+                                         "Temporomandibular Joint (TMJ)"],
+                     "networks": ["Delta Dental PPO Dentist"], "amount": "$300.00"},
+                    {"type": "Lifetime Individual Maximum",
+                     "treatment_types": ["Orthodontics"],
+                     "networks": ["Delta Dental PPO Dentist"], "amount": "$2,000.00"},
+                ],
+                "benefits_overview": [
+                    {"treatment_type": "Orthodontics Orthodontic Related Services",
+                     "contract_benefit_level": "50%"},
+                ],
+            },
+            "benefits_search": [
+                {"code": "D0120", "benefit_level": "100%", "rows": [{"age_limits": "None"}]},
+                # Delta lists D2391 instead of D2331/D2140 for basic restorative
+                {"code": "D2391", "benefit_level": "80%", "rows": [{"age_limits": "None"}]},
+                {"code": "D2740", "benefit_level": "50%",
+                 "rows": [{"age_limits": "12 years and older"}]},   # minimum age, not a cap
+                {"code": "D1206", "benefit_level": "100%",
+                 "rows": [{"age_limits": "Child up to and not including age 19"}]},
+                {"code": "D1351", "benefit_level": "100%",
+                 "rows": [{"age_limits": "Child up to and not including age 14"}]},
+                {"code": "D1510", "benefit_level": "100%",
+                 "rows": [{"age_limits": "Child up to and not including age 13"}]},
+                {"code": "D2962", "benefit_level": "N/A", "rows": [{"age_limits": "None"}]},
+            ],
+        },
+    }
+    p = extract_portal_fields(dd)
+    checks = {
+        "group_number":          p["group_number"] == "03000-05101",
+        "group_name":            p["group_name"] == "DISNEY - ADVANTAGE",
+        "ind_ded_ppo_not_premier": p["individual_deductible"] == 25.0,
+        "fam_ded":               p["family_deductible"] == 75.0,
+        "annual_max_ppo":        p["individual_annual_max"] == 2000.0,
+        "ortho_max_scoped":      p["ortho_lifetime_max"] == 2000.0,
+        "prev":                  p["preventative_D0120_pct"] == 100.0,
+        "basic_from_D2391":      p["basic_D2331_D2140_pct"] == 80.0,
+        "major":                 p["major_D2740_pct"] == 50.0,
+        "fluoride_age":          p["fluoride_D1206_age"] == 19.0,
+        "sealant_age":           p["sealants_D1351_age"] == 14.0,
+        "space_age":             p["space_maint_1510_age"] == 13.0,
+        "ortho_pct_from_overview": p["ortho_D8080_pct"] == 50.0,
+        "na_not_numeric":        p["veneer_D2962_pct"] is None,
+    }
+    bad = [k for k, v in checks.items() if not v]
+    report("dd-national: FORMAT F in-network rows, scoped ortho max, ages",
+           PASS if not bad else FAIL,
+           f"failed={bad}" if bad else
+           f"indDed={p['individual_deductible']} annMax={p['individual_annual_max']} "
+           f"orthoMax={p['ortho_lifetime_max']} basic={p['basic_D2331_D2140_pct']} "
+           f"flAge={p['fluoride_D1206_age']}")
+
+    # Ambiguous percentage RANGE must never be collapsed to a single number
+    # (this produced a fabricated ortho 70% for Boykin before the fix).
+    dd_range = json.loads(json.dumps(dd))
+    dd_range["tabs"]["overview"]["benefits_overview"][0]["contract_benefit_level"] = "50% - 80%"
+    dd_range["tabs"]["benefits_search"][1]["benefit_level"] = "50% - 80%"
+    p2 = extract_portal_fields(dd_range)
+    ok = p2["ortho_D8080_pct"] is None and p2["basic_D2331_D2140_pct"] is None
+    report("dd-national: percentage ranges stay None (no fabricated midpoint)",
+           PASS if ok else FAIL,
+           f"ortho={p2['ortho_D8080_pct']} basic={p2['basic_D2331_D2140_pct']}")
+
+    # Denticon side: hyphenated group number with spaces must survive intact.
+    d = extract_denticon_plan_fields({
+        "ins_plan_id": "18675", "plan_details": {},
+        "benefits": {"notes": "EMPLOYER : DISNEY - ADVANTAGE GROUP # :03000 - 05101 "
+                              "WHAT FEE SCHEDULE : Delta PPO", "full_text": ""},
+        "coverage": [],
+    })
+    ok = _group_numbers_match("03000-05101", d.get("group_number"))
+    report("dd-national: Denticon 'GROUP # :03000 - 05101' matches portal",
+           PASS if ok else FAIL, f"denticon_group={d.get('group_number')!r}")
+
+    # "Not Used" records must be demoted, and notes dates give a last-resort order.
+    ok = (_plan_is_in_use({"plan_details": {"Used": "In Use"}}) is True
+          and _plan_is_in_use({"plan_details": {"Used": "Not Used"}}) is False
+          and _plan_is_in_use({"plan_details": {}}) is True
+          and _notes_maintained_date(
+              {"benefits": {"notes": "Last Update: 01/22/2026 ... DATE :2025-03-20"}}
+          ) == (2026, 1, 22))
+    report("dd-national: Used flag + notes maintenance date parsed",
+           PASS if ok else FAIL)
 
 
 def case_ddri_extraction():
@@ -980,6 +1120,7 @@ async def main():
     await case_metlife_duplicates()
     case_extraction_rules()
     case_no_fabricated_portal_values()
+    case_dd_national_extraction()
     case_ddri_extraction()
     case_denticon_benefits_and_spacemaint()
     case_aetna_extraction()
