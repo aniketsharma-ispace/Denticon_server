@@ -394,6 +394,20 @@
 
 <script>
 /* ─────────────────────────────────────────
+   API BASE
+   The backend binds 0.0.0.0 (IPv4 only), but on Windows `localhost`
+   resolves to ::1 first — so a hardcoded http://localhost:8000 gets a
+   refused IPv6 connection and fetch dies with "Failed to fetch".
+   Hardcoding it also breaks the LAN case: served from another machine,
+   "localhost" points at the viewer's PC, not the server.
+   So: when this page is served over http(s), talk to whatever origin
+   served it. Only fall back to a literal IPv4 address for file:// use.
+───────────────────────────────────────── */
+const API_BASE = location.protocol.startsWith('http')
+    ? location.origin
+    : 'http://127.0.0.1:8000';
+
+/* ─────────────────────────────────────────
    STATE
 ───────────────────────────────────────── */
 let portalData   = null;
@@ -457,7 +471,7 @@ async function handlePdfUpload(file) {
     formData.append('file', file);
 
     try {
-        const response = await fetch('http://localhost:8000/api/parse-pdf', { method: 'POST', body: formData });
+        const response = await fetch(`${API_BASE}/api/parse-pdf`, { method: 'POST', body: formData });
         if (!response.ok) {
             let detail = 'Failed to parse PDF.';
             try { detail = (await response.json()).detail || detail; } catch (_) {}
@@ -497,7 +511,7 @@ btnMatch.addEventListener('click', async () => {
         denticon_data: denticonData.denticon_data || denticonData,
     };
     try {
-        const response = await fetch('http://localhost:8000/api/match', {
+        const response = await fetch(`${API_BASE}/api/match`, {
             method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload),
         });
         if (!response.ok) throw new Error('Backend server error. Is FastAPI running on port 8000?');
@@ -536,7 +550,7 @@ btnNotes.addEventListener('click', async () => {
     notesLoader.classList.add('visible');
     btnNotes.disabled = true;
     try {
-        const res = await fetch('http://localhost:8000/api/patient-notes', {
+        const res = await fetch(`${API_BASE}/api/patient-notes`, {
             method:'POST', headers:{'Content-Type':'application/json'},
             body:JSON.stringify({ denticon_data:denticonData.denticon_data||denticonData, insurance_data:portalData }),
         });
@@ -946,7 +960,7 @@ btnNewPlan.addEventListener('click', async () => {
 
     // ── STEP 4: Call backend ───────────────────────────────────────────────
     try {
-        const response = await fetch('http://localhost:8000/api/new-plan', {
+        const response = await fetch(`${API_BASE}/api/new-plan`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
