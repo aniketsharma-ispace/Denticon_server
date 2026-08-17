@@ -30,10 +30,16 @@ from datetime import datetime
 from starlette.concurrency import run_in_threadpool
 import functools
 import base64
+import json
 import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 from pdf_extractor import parse_insurance_pdf
+from sabrina_compare import (
+    audit_sabrina_pdf,
+    is_sabrina_pdf,
+    parse_sabrina_pdf,
+)
 from Appointment_Scheduler.appointment_processor import (
     process_appointments,
     generate_day_start_reports,
@@ -156,6 +162,88 @@ async def parse_pdf_endpoint(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF parsing failed: {str(e)}")
     
+# ── Sabrina flow (BPO teams that don't use Denticon) ──────────────────────────
+#
+# These teams export a patient breakdown PDF from Sabrina instead of a Denticon
+# JSON. There are no candidate plans to rank, so /api/match does not apply — the
+# job is a straight field-by-field audit against the insurance portal, handled
+# entirely by `sabrina_compare`. The Denticon path is untouched.
+
+@app.post("/api/sabrina-parse")
+async def sabrina_parse_endpoint(file: UploadFile = File(...)):
+    """
+    Confirm an uploaded PDF is a Sabrina breakdown and return the fields read
+    off it. The UI calls this on upload so it can acknowledge the file (and
+    reject a wrong one) before the portal export is even loaded.
+    """
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Uploaded file must be a PDF")
+
+    pdf_bytes = await file.read()
+    try:
+        parsed = await run_in_threadpool(parse_sabrina_pdf, pdf_bytes)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Sabrina PDF parsing failed: {e}")
+
+    fields = parsed["fields"]
+    return {
+        "is_sabrina":        is_sabrina_pdf(parsed["text"]),
+        "marker_count":      parsed["marker_count"],
+        "fields_found":      sum(1 for v in fields.values() if v not in (None, "")),
+        "fields_total":      len(fields),
+        "patient_name":      fields.get("patient_name"),
+        "insurance_name":    fields.get("ins_name"),
+        "fields":            fields,
+        "labels_not_found":  parsed["labels_not_found"],
+    }
+
+
+@app.post("/api/sabrina-compare")
+async def sabrina_compare_endpoint(
+    file: UploadFile = File(...),
+    portal_data: Optional[str] = Form(None),
+    portal_file: Optional[UploadFile] = File(None),
+):
+    """
+    Audit a Sabrina breakdown PDF against the insurance portal.
+
+    The portal side may arrive either as `portal_data` (a JSON string — the
+    portal export, or the output of /api/parse-pdf) or as `portal_file` (a
+    carrier PDF, parsed here). Returns per-field statuses plus a mismatch list.
+    """
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="The Sabrina file must be a PDF")
+
+    portal_raw = None
+    if portal_data:
+        try:
+            portal_raw = json.loads(portal_data)
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"portal_data is not valid JSON: {e}")
+    elif portal_file is not None:
+        if not (portal_file.filename or "").lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail="portal_file must be a PDF")
+        try:
+            portal_raw = await parse_insurance_pdf(await portal_file.read())
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+    if not portal_raw:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide the insurance portal export as portal_data (JSON) or portal_file (PDF).",
+        )
+
+    try:
+        return await audit_sabrina_pdf(await file.read(), portal_raw)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Sabrina comparison failed: {e}")
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}

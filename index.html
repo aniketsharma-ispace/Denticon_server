@@ -197,6 +197,35 @@
         .tie-item { font-size:0.8rem; color:#e0c080; margin-top:3px; }
         .tie-score { font-weight:700; color:#ff9800; }
 
+        /* ── Sabrina PDF ↔ Portal field audit ── */
+        .sab-badge { display:inline-block; background:rgba(0,210,255,0.15); color:#00d2ff; border:1px solid rgba(0,210,255,0.35); font-size:0.62rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; padding:3px 9px; border-radius:4px; margin-left:8px; vertical-align:middle; }
+        .sab-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:4px; }
+        .sab-patient { font-size:1.25rem; font-weight:700; color:#fff; }
+        .sab-sub { font-size:0.78rem; color:#a0aabf; }
+        .sab-table { width:100%; border-collapse:collapse; font-size:0.78rem; margin-top:10px; }
+        .sab-table th { text-align:left; font-size:0.6rem; text-transform:uppercase; letter-spacing:0.1em; color:#8b93a7; font-weight:600; padding:0 8px 8px; border-bottom:1px solid rgba(255,255,255,0.08); }
+        .sab-table td { padding:7px 8px; border-bottom:1px solid rgba(255,255,255,0.04); vertical-align:top; }
+        .sab-table tr:last-child td { border-bottom:none; }
+        .sab-table tr.sab-row-bad { background:rgba(255,23,68,0.07); }
+        .sab-table tr.sab-row-crit { background:rgba(255,112,67,0.1); }
+        .sab-field { color:#c9d3e3; font-weight:600; width:34%; }
+        .sab-val { color:#e6edf3; font-family:'SF Mono',Menlo,Consolas,monospace; font-size:0.76rem; width:24%; word-break:break-word; }
+        .sab-val.sab-empty { color:#5c6478; font-style:italic; font-family:inherit; }
+        .sab-val.sab-bad { color:#ff8a80; font-weight:700; }
+        .sab-note { color:#8b93a7; font-size:0.7rem; font-style:italic; }
+        .sab-chip { font-size:0.58rem; font-weight:700; padding:2px 7px; border-radius:4px; white-space:nowrap; text-transform:uppercase; letter-spacing:0.05em; }
+        .sab-chip.ok   { background:rgba(0,230,118,0.15); color:#00e676; border:1px solid rgba(0,230,118,0.3); }
+        .sab-chip.bad  { background:rgba(255,23,68,0.18);  color:#ff5252; border:1px solid rgba(255,23,68,0.35); }
+        .sab-chip.warn { background:rgba(255,171,64,0.15); color:#ffab40; border:1px solid rgba(255,171,64,0.3); }
+        .sab-chip.mute { background:rgba(255,255,255,0.06); color:#8b93a7; border:1px solid rgba(255,255,255,0.1); }
+        .sab-crit-dot { color:#ff7043; font-weight:700; margin-right:5px; }
+        .sab-section-title { display:flex; align-items:center; gap:10px; font-size:0.66rem; text-transform:uppercase; letter-spacing:0.12em; color:#00d2ff; font-weight:700; margin:26px 0 2px; }
+        .sab-section-title .divider { flex:1; height:1px; background:rgba(255,255,255,0.08); }
+        .sab-section-count { font-size:0.6rem; color:#8b93a7; letter-spacing:0.05em; }
+        .sab-clean { background:rgba(0,230,118,0.08); border:1px solid rgba(0,230,118,0.3); border-radius:10px; padding:16px 18px; color:#00e676; font-weight:600; font-size:0.9rem; margin-top:14px; }
+        .sab-toggle { font-size:0.72rem; color:#00d2ff; cursor:pointer; text-decoration:underline; margin-top:18px; display:inline-block; }
+        .sab-diag { font-size:0.68rem; color:#8b93a7; margin-top:16px; line-height:1.6; background:rgba(255,255,255,0.03); border-radius:8px; padding:12px 14px; }
+
         /* ── Insurance Override Modal ── */
         .modal-overlay {
             display:none; position:fixed; inset:0; background:rgba(0,0,0,0.72);
@@ -390,9 +419,9 @@
             <div id="statusPortal" style="font-weight:500;margin-top:10px;color:#a0aabf;">Waiting for file…</div>
         </div>
         <div class="upload-box" id="boxDenticon">
-            <h3>2. Denticon JSON</h3>
-            <p style="font-size:13px;color:#a0aabf;">(Deep Audit Export)</p>
-            <input type="file" id="fileDenticon" accept=".json">
+            <h3>2. Denticon JSON <span style="color:#a0aabf;font-weight:400;">or</span> Sabrina PDF</h3>
+            <p style="font-size:13px;color:#a0aabf;">(Deep Audit Export — or a Sabrina breakdown PDF)</p>
+            <input type="file" id="fileDenticon" accept=".json,.pdf">
             <div id="statusDenticon" style="font-weight:500;margin-top:10px;color:#a0aabf;">Waiting for file…</div>
         </div>
     </div>
@@ -580,6 +609,12 @@ let portalData   = null;
 let denticonData = null;
 let lastNotesText = '';
 
+/* Sabrina mode — set when a PDF is dropped in slot 2 instead of a Denticon
+   JSON. While it is active the Denticon plan-matching flow is bypassed
+   entirely and slot 2 is audited field-by-field against the portal instead. */
+let sabrinaFile = null;
+let sabrinaInfo = null;
+
 const filePortal   = document.getElementById('filePortal');
 const fileDenticon = document.getElementById('fileDenticon');
 const btnMatch     = document.getElementById('btnMatch');
@@ -605,6 +640,14 @@ function handleFile(event, type) {
         handlePdfUpload(file);
         return;
     }
+    /* A PDF in slot 2 means this team works in Sabrina, not Denticon →
+       run the Sabrina field audit instead of AI plan matching. */
+    if (type === 'denticon' && isPdf) {
+        handleSabrinaUpload(file);
+        return;
+    }
+    // A Denticon JSON replaces any Sabrina PDF previously loaded.
+    if (type === 'denticon') clearSabrinaMode();
 
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -656,7 +699,72 @@ async function handlePdfUpload(file) {
     }
 }
 
+/* ─────────────────────────────────────────
+   SABRINA PDF (slot 2 alternative to Denticon)
+───────────────────────────────────────── */
+async function handleSabrinaUpload(file) {
+    const statusEl = document.getElementById('statusDenticon');
+    statusEl.innerText = '⏳ Reading Sabrina PDF…';
+    statusEl.style.color = '#ffab40';
+    denticonData = null;           // Sabrina replaces the Denticon export
+    sabrinaFile  = null;
+    sabrinaInfo  = null;
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const res = await fetch(`${API_BASE}/api/sabrina-parse`, { method:'POST', body:formData });
+        if (!res.ok) {
+            let detail = 'Failed to read the Sabrina PDF.';
+            try { detail = (await res.json()).detail || detail; } catch (_) {}
+            throw new Error(detail);
+        }
+        const info = await res.json();
+        if (!info.is_sabrina) {
+            throw new Error(
+                'This PDF does not look like a Sabrina patient breakdown '
+                + `(only ${info.marker_count} of the expected field labels were found).\n\n`
+                + 'Upload the breakdown PDF downloaded from Sabrina, or a Denticon JSON export.'
+            );
+        }
+        sabrinaFile = file;
+        sabrinaInfo = info;
+        statusEl.innerHTML = `✅ Sabrina PDF loaded — <b>${escHtml(info.patient_name || 'patient')}</b> `
+                           + `(${info.fields_found}/${info.fields_total} fields read)`;
+        statusEl.style.color = '#00e676';
+        document.getElementById('boxDenticon').classList.add('ready');
+        refreshButtons();
+    } catch (err) {
+        console.error(err);
+        statusEl.innerText = '❌ Not a Sabrina PDF';
+        statusEl.style.color = '#ff5252';
+        document.getElementById('boxDenticon').classList.remove('ready');
+        fileDenticon.value = '';
+        refreshButtons();
+        alert(err.message);
+    }
+}
+
+function clearSabrinaMode() {
+    sabrinaFile = null;
+    sabrinaInfo = null;
+}
+
 function refreshButtons() {
+    /* Sabrina mode: only the field audit is available — patient notes and the
+       new-plan PDF both need Denticon data that Sabrina teams don't have. */
+    if (sabrinaFile) {
+        btnMatch.disabled   = !portalData;
+        btnMatch.innerText  = '🔍 Compare Sabrina PDF vs Portal';
+        btnNotes.disabled   = true;
+        btnNewPlan.disabled = true;
+        btnNotes.title      = btnNewPlan.title =
+            'Not available for Sabrina uploads — these need a Denticon export.';
+        return;
+    }
+    btnMatch.innerText = '✨ Run AI Plan Matching';
+    btnNotes.title = btnNewPlan.title = '';
     const both = !!(portalData && denticonData);
     btnMatch.disabled   = !both;
     btnNotes.disabled   = !both;
@@ -669,6 +777,9 @@ fileDenticon.addEventListener('change', e => handleFile(e, 'denticon'));
    AI PLAN MATCHING
 ───────────────────────────────────────── */
 btnMatch.addEventListener('click', async () => {
+    /* Sabrina uploads never touch the plan-matching endpoint. */
+    if (sabrinaFile) { runSabrinaCompare(); return; }
+
     matchOutput.innerHTML = '';
     matchLoader.classList.add('visible');
     btnMatch.disabled = true;
@@ -824,6 +935,130 @@ function renderMatch(result) {
             <div class="reason-box"><strong style="color:#fff;">AI Reasoning:</strong><br/>${result.reason}</div>
             ${rankedTable}
         </div>`;
+}
+
+/* ─────────────────────────────────────────
+   SABRINA ↔ PORTAL FIELD AUDIT
+───────────────────────────────────────── */
+const SAB_STATUS = {
+    match:              { cls:'ok',   label:'Match' },
+    mismatch:           { cls:'bad',  label:'Mismatch' },
+    not_in_portal:      { cls:'mute', label:'Not on portal' },
+    missing_in_sabrina: { cls:'warn', label:'Blank in Sabrina' },
+    not_stated:         { cls:'mute', label:'Neither states' },
+    not_comparable:     { cls:'mute', label:'Not comparable' },
+};
+
+const SAB_THEAD = `<thead><tr>
+    <th>Field</th><th>Sabrina PDF</th><th>Insurance Portal</th><th>Status</th><th>Note</th>
+</tr></thead>`;
+
+function sabRow(r) {
+    const st  = SAB_STATUS[r.status] || SAB_STATUS.not_stated;
+    const bad = r.status === 'mismatch';
+    const rowCls = bad ? (r.critical ? ' class="sab-row-crit"' : ' class="sab-row-bad"') : '';
+    const cell = v => (v === null || v === undefined || v === '')
+        ? '<td class="sab-val sab-empty">—</td>'
+        : `<td class="sab-val${bad ? ' sab-bad' : ''}">${escHtml(v)}</td>`;
+    return `<tr${rowCls}>
+        <td class="sab-field">${bad && r.critical ? '<span class="sab-crit-dot">▸</span>' : ''}${escHtml(r.label)}</td>
+        ${cell(r.sabrina)}
+        ${cell(r.portal)}
+        <td><span class="sab-chip ${st.cls}">${st.label}</span></td>
+        <td class="sab-note">${r.note ? escHtml(r.note) : ''}</td>
+    </tr>`;
+}
+
+async function runSabrinaCompare() {
+    if (!portalData) { alert('Load the insurance portal export (JSON or PDF) first.'); return; }
+
+    matchOutput.innerHTML = '';
+    const loaderText = matchLoader.innerText;
+    matchLoader.innerText = '🔍 Comparing the Sabrina PDF against the insurance portal…';
+    matchLoader.classList.add('visible');
+    btnMatch.disabled = true;
+
+    try {
+        const fd = new FormData();
+        fd.append('file', sabrinaFile);
+        fd.append('portal_data', JSON.stringify(portalData));
+
+        const res = await fetch(`${API_BASE}/api/sabrina-compare`, { method:'POST', body:fd });
+        if (!res.ok) {
+            let detail = `Server error ${res.status}.`;
+            try { detail = (await res.json()).detail || detail; } catch (_) {}
+            throw new Error(detail);
+        }
+        renderSabrina(await res.json());
+    } catch (err) {
+        console.error(err);
+        matchOutput.innerHTML = `<div class="result-card match-fail" style="color:#ff5252;font-weight:600;">
+            Comparison failed: ${escHtml(err.message)}</div>`;
+    } finally {
+        matchLoader.classList.remove('visible');
+        matchLoader.innerText = loaderText;
+        refreshButtons();
+    }
+}
+
+function renderSabrina(result) {
+    const s    = result.summary  || {};
+    const p    = result.patient  || {};
+    const mism = result.mismatches || [];
+
+    const pills = `
+    <div class="stat-row">
+        <div class="stat-pill"><div class="num">${s.compared}</div><div class="lbl">Fields Compared</div></div>
+        <div class="stat-pill"><div class="num" style="color:#00e676;">${s.matches}</div><div class="lbl">Matching</div></div>
+        <div class="stat-pill"><div class="num" style="color:${mism.length ? '#ff5252' : '#00e676'};">${s.mismatches}</div><div class="lbl">Mismatched</div></div>
+        <div class="stat-pill"><div class="num" style="color:#ff7043;">${s.critical_mismatches}</div><div class="lbl">Critical</div></div>
+        <div class="stat-pill"><div class="num" style="color:#8b93a7;">${s.not_in_portal}</div><div class="lbl">Not On Portal</div></div>
+        <div class="stat-pill"><div class="num">${s.match_rate}%</div><div class="lbl">Match Rate</div></div>
+    </div>`;
+
+    const mismBlock = mism.length
+        ? `<div class="sab-section-title">Fields That Don't Match The Portal
+               <span class="sab-section-count">${mism.length}${s.critical_mismatches ? ` · ${s.critical_mismatches} critical` : ''}</span>
+               <span class="divider"></span></div>
+           <table class="sab-table">${SAB_THEAD}<tbody>${mism.map(sabRow).join('')}</tbody></table>`
+        : `<div class="sab-clean">✓ Every field the portal states agrees with the Sabrina PDF.</div>`;
+
+    const allBlock = (result.sections || []).map(sec => `
+        <div class="sab-section-title">${escHtml(sec.section)}
+            <span class="sab-section-count">${sec.rows.length}</span><span class="divider"></span></div>
+        <table class="sab-table">${SAB_THEAD}<tbody>${sec.rows.map(sabRow).join('')}</tbody></table>`).join('');
+
+    const notFound = result.diagnostics?.labels_not_found || [];
+    const diag = notFound.length
+        ? `<div class="sab-diag"><b>${notFound.length}</b> of the expected labels were not printed on this
+           PDF, so they could not be read: ${escHtml(notFound.join(', '))}</div>`
+        : '';
+
+    matchOutput.innerHTML = `
+    <div class="result-card ${mism.length ? 'match-fail' : 'match-success'}">
+        <div class="sab-head">
+            <span class="sab-patient">${escHtml(p.name || 'Sabrina Patient')}</span>
+            <span class="sab-badge">Sabrina ↔ Portal Audit</span>
+        </div>
+        <div class="sab-sub">
+            DOB ${escHtml(p.dob || '—')} &nbsp;·&nbsp; Member ID ${escHtml(p.member_id || '—')}
+            &nbsp;·&nbsp; ${escHtml(p.insurance || '—')}
+            ${result.portal_insurer ? `&nbsp;·&nbsp; portal source: ${escHtml(result.portal_insurer)}` : ''}
+        </div>
+        ${pills}
+        ${mismBlock}
+        <span class="sab-toggle" id="sabToggle">Show all ${s.total_fields} fields ▾</span>
+        <div id="sabAll" style="display:none;">${allBlock}</div>
+        ${diag}
+    </div>`;
+
+    const toggle = document.getElementById('sabToggle');
+    const all    = document.getElementById('sabAll');
+    toggle.addEventListener('click', () => {
+        const open = all.style.display !== 'none';
+        all.style.display = open ? 'none' : 'block';
+        toggle.innerText  = open ? `Show all ${s.total_fields} fields ▾` : 'Hide full field list ▴';
+    });
 }
 
 /* ─────────────────────────────────────────
