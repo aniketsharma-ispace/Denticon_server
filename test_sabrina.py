@@ -265,6 +265,26 @@ else:
                     "d9110", "d9944", "d9310"):
             check(f"[2] wrapped-frequency row {key} compares",
                   rows[key]["status"], "match")
+        # Coordination Of Benefits and OON Benefits are stated in this export,
+        # just not as plain fields — the first in a provision, the second in the
+        # per-category covered_services rows. Both must be compared, not
+        # written off as "not on portal".
+        check("[2] coordination of benefits is read from the provisions",
+              (rows["cob"]["portal"], rows["cob"]["status"]), ("Standard", "match"))
+        check("[2] OON benefits derived from covered_services",
+              (rows["oon_benefits"]["portal"], rows["oon_benefits"]["status"]),
+              ("Yes", "match"))
+
+        # These genuinely are absent from this export and must stay reported as
+        # such rather than guessed at:
+        #   Group Number  — captured only by extension builds after 2026-07-29
+        #   the deductibles — the portal itself reports "N/A"
+        #   D2980/D5212/D5899/D5995 — codes no batch requested before BATCH_8
+        for key in ("group_number", "indiv_ded", "family_ded",
+                    "d2980", "d5212", "d5899", "d5995"):
+            check(f"[2] {key} honestly reported as absent",
+                  rows[key]["status"], "not_in_portal")
+
         check("[2] whole sheet agrees with the portal",
               res["summary"]["mismatches"], 0)
         check("[2] nothing reported blank in Sabrina",
@@ -350,6 +370,30 @@ check("id: fully masked value is not comparable",
 check("id: leading-visible mask", sc._compare("id", "833926200", "8339XXXXX")[0], True)
 check("id: a real X in an id is not treated as a mask",
       sc._compare("id", "X12345", "X12345")[0], True)
+
+# Coordination of benefits: the method is what compares, not the order rule.
+_COB_PROV = {"metlife_data": {"provisions": [
+    {"rule": "Coordination of Benefits Rule",
+     "value": "Coordination of Benefits with any other dental plan: Birthday rule, Regular COB"}]}}
+check("cob: 'Regular COB' reads as Standard",
+      sc._portal_cob({}, _COB_PROV), "Standard")
+check("cob: non-duplication is distinguished",
+      sc._portal_cob({}, {"metlife_data": {"provisions": [
+          {"rule": "Coordination of Benefits Rule",
+           "value": "Non-Duplication of benefits applies"}]}}), "Non-Duplication")
+check("cob: silent portal stays silent", sc._portal_cob({}, {"metlife_data": {}}), None)
+
+# OON benefits come from the per-category out_of_network column.
+check("oon: a category paying out of network means Yes",
+      sc._portal_oon_benefits({}, {"metlife_data": {"covered_services": [
+          {"category": "PREVENTIVE", "in_network": "100%", "out_of_network": "100%"}]}}), "Yes")
+check("oon: every category not covered means No",
+      sc._portal_oon_benefits({}, {"metlife_data": {"covered_services": [
+          {"category": "PREVENTIVE", "in_network": "100%", "out_of_network": "Not Covered"},
+          {"category": "MAJOR", "in_network": "50%", "out_of_network": "Not Covered"}]}}), "No")
+check("oon: no out_of_network column at all stays silent",
+      sc._portal_oon_benefits({}, {"metlife_data": {"covered_services": [
+          {"category": "PREVENTIVE", "in_network": "100%"}]}}), None)
 
 # A value the portal never stated must never be reported as a mismatch.
 check("portal silence is not a mismatch", sc._compare("money", "2000", "")[0], None)

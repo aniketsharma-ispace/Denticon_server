@@ -48,7 +48,7 @@
     // Chrome, Edge (including stricter managed setups), and Firefox.
     // ══════════════════════════════════════════════════════════════════════════
 
-    // 61 codes across 7 batches — chunked into groups of 10 at runtime (site hard limit)
+    // 65 codes across 8 batches — chunked into groups of 10 at runtime (site hard limit)
     const BATCH_1 = ["D1110", "D4910", "D4355", "D1206", "D1208", "D0274", "D0210", "D0120", "D0150"];
     const BATCH_2 = ["D2331", "D2140", "D2740", "D1351", "D1510", "D8080", "D0180", "D0140", "D0240"];
     const BATCH_3 = ["D0330", "D0220", "D0230", "D0364", "D0431", "D1120", "D2991", "D2950", "D2620"];
@@ -56,6 +56,10 @@
     const BATCH_5 = ["D4346", "D4381", "D4260", "D4249", "D3310", "D3330", "D7140", "D7210", "D7240"];
     const BATCH_6 = ["D7953", "D6010", "D6056", "D2332", "D6245", "D5860", "D5740", "D5982", "D9430"];
     const BATCH_7 = ["D9239", "D3347", "D7259", "D6065", "D6194", "D8010", "D8090", "D9230"];
+    // Codes the Sabrina breakdown sheet audits that no other batch requested —
+    // without them the portal is never asked, and the comparison can only
+    // report "not stated" for rows the sheet does fill in.
+    const BATCH_8 = ["D2980", "D5212", "D5899", "D5995"];
 
     async function scrapeSubscriberFromDropdown() {
         try {
@@ -591,7 +595,7 @@
         const allCodes = [...new Set([
             ...BATCH_1, ...BATCH_2, ...BATCH_3,
             ...BATCH_4, ...BATCH_5, ...BATCH_6,
-            ...BATCH_7, ...extraList
+            ...BATCH_7, ...BATCH_8, ...extraList
         ])];
 
         const CHUNK_SIZE = 10;

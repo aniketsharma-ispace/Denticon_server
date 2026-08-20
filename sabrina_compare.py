@@ -138,7 +138,7 @@ _SPEC: list[dict] = [
     # ── Plan provisions ──────────────────────────────────────────────────────
     {"key": "waiting_period", "label": "Is there a Waiting Period",  "kind": "yesno", "section": "Plan Provisions", "portal": "waiting_period",
      "aliases": ["Waiting Period", "Is there a Waiting Period?"]},
-    {"key": "cob",            "label": "Coordination Of Benefits",   "kind": "text",  "section": "Plan Provisions", "portal": None,
+    {"key": "cob",            "label": "Coordination Of Benefits",   "kind": "text",  "section": "Plan Provisions", "portal": "_cob",
      "aliases": ["Coordination of Benefits", "COB"]},
 
     {"key": "pct_prev",  "label": "D0120 Preventative", "kind": "pct", "section": "Plan Provisions", "portal": "pct_prev",
@@ -1033,12 +1033,89 @@ def _portal_yearly_max_paid(bd: dict, portal_raw: dict) -> str | None:
     return f"{max(total - remaining, 0.0):.2f}"
 
 
+# How a plan coordinates with other coverage. MetLife states it in a provision
+# ("… any other dental plan: Birthday rule, Regular COB") mixing the order-of-
+# benefits rule with the COB method; only the method is comparable, so the
+# recognized methods are mapped to the wording Sabrina uses.
+_COB_METHODS = (
+    ("non-duplication", "Non-Duplication"),
+    ("nonduplication",  "Non-Duplication"),
+    ("non duplication", "Non-Duplication"),
+    ("maintenance of benefits", "Maintenance of Benefits"),
+    ("carve out",  "Carve Out"),
+    ("carve-out",  "Carve Out"),
+    ("regular cob", "Standard"),
+    ("standard cob", "Standard"),
+    ("traditional", "Standard"),
+    ("full cob",   "Standard"),
+)
+
+
+def _coalesce_keys(obj: dict, *keys):
+    """First key present on `obj` with a non-blank value."""
+    for key in keys:
+        if key in obj and not _blank(obj[key]):
+            return obj[key]
+    return None
+
+
+def _portal_cob(bd: dict, portal_raw: dict) -> str | None:
+    """Coordination-of-benefits method as stated in the portal's provisions."""
+    ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
+    for prov in (ml.get("provisions") or []):
+        if not isinstance(prov, dict):
+            continue
+        if "coordination of benefits" not in str(prov.get("rule", "")).lower():
+            continue
+        value = str(prov.get("value", "")).lower()
+        for needle, method in _COB_METHODS:
+            if needle in value:
+                return method
+        # The provision exists but names no method we recognize — report the
+        # raw text rather than silently claiming the portal said nothing.
+        return str(prov.get("value", "")).strip() or None
+    return None
+
+
 def _portal_oon_benefits(bd: dict, portal_raw: dict) -> str | None:
     """
-    Whether the plan pays out-of-network. Only answered when the portal says so
-    explicitly — an in-network fee schedule does NOT imply OON coverage.
+    Whether the plan pays anything out of network.
+
+    Read from the per-category `covered_services` rows, which carry an
+    `out_of_network` benefit alongside the in-network one:
+
+        {"category": "PREVENTIVE",
+         "in_network":     "100% Deductible Applies : No",
+         "out_of_network": "100% Deductible Applies : No"}
+
+    Any category paying more than 0% out of network means the plan has OON
+    benefits. Only when no category states an OON benefit at all do we fall
+    back to the provision text — and an in-network fee schedule is never taken
+    to imply OON coverage.
     """
     ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
+
+    services = ml.get("covered_services")
+    if isinstance(services, list) and services:
+        stated = pays = False
+        for row in services:
+            if not isinstance(row, dict):
+                continue
+            raw = _coalesce_keys(row, "out_of_network", "out_network", "oon",
+                                 "outofnetwork", "non_par")
+            if _blank(raw):
+                continue
+            stated = True
+            text = str(raw).lower()
+            if "not covered" in text or "no coverage" in text:
+                continue
+            m = re.search(r"(\d+(?:\.\d+)?)\s*%", text)
+            if m and float(m.group(1)) > 0:
+                pays = True
+                break
+        if stated:
+            return "Yes" if pays else "No"
+
     blobs = []
     for prov in (ml.get("provisions") or []):
         blobs.append(" ".join(str(v) for v in prov.values()) if isinstance(prov, dict) else str(prov))
@@ -1056,6 +1133,7 @@ def _portal_oon_benefits(bd: dict, portal_raw: dict) -> str | None:
 # All three share the (breakdown, raw_portal) signature so `_portal_value` can
 # call them uniformly, even where one of the two arguments isn't needed.
 _DERIVED = {
+    "_cob": _portal_cob,
     "_in_network": _portal_in_network,
     "_oon_benefits": _portal_oon_benefits,
     "_yearly_max_paid": _portal_yearly_max_paid,
