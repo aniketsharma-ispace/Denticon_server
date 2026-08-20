@@ -1,17 +1,7 @@
 {
     "manifest_version": 3,
     "name": "Insurance Auditor Pro",
-    "version": "1.28",
-    "browser_specific_settings": {
-        "gecko": {
-            "id": "insurance-auditor-pro@ispace.com",
-            "strict_min_version": "121.0",
-            "update_url": "https://github.com/aniketsharma-ispace/insurance-auditor-pro-mozilla/releases/latest/download/updates.json",
-            "data_collection_permissions": {
-                "required": ["none"]
-            }
-        }
-    },
+    "version": "1.26",
     "permissions": [
         "storage",
         "activeTab",
@@ -39,7 +29,8 @@
         "https://www.deltadentalwa.com/*",
         "https://providers.dentaquest.com/*",
 	    "https://app.deltadentalil.com/*",
-        "https://www.dnoaconnect.com/*"
+        "https://www.dnoaconnect.com/*",
+        "https://www4.deltadentalwi.com/*"
     ],
     "action": {
         "default_popup": "popup.html"
@@ -59,8 +50,15 @@
         {
             "matches": ["https://dentalprovider.metlife.com/*"],
             "js": ["content_metlife.js"],
-            "all_frames": true,
+            "all_frames":true,
             "run_at": "document_start"
+        },
+        {
+            "matches": ["https://dentalprovider.metlife.com/*"],
+            "js": ["content_metlife.js"],
+            "all_frames": true,
+            "run_at": "document_start",
+            "world": "MAIN"
         },
         {
             "matches": ["https://cignaforhcp.cigna.com/*"],
@@ -109,6 +107,15 @@
             "js": ["content_DNOA.js"],
             "run_at": "document_start",
             "all_frames":true
+        },
+        {
+            "matches": [
+                "https://www4.deltadentalwi.com/dentist/*"
+            ],
+            "js": [
+                "content_DD_WI.js"
+            ],
+            "run_at": "document_idle"
         }
     ]
 }
