@@ -15,6 +15,12 @@ Why it works on Firefox:
 - `strict_min_version` is `121.0` because Firefox only starts the background page
   reliably alongside a `service_worker` key from 121 onward.
 
+**Heads-up:** pushing Chrome changes tends to overwrite `manifest.json` with a
+Chrome-only copy that drops the `browser_specific_settings` block. You don't have
+to fix that by hand — `build_extension.py` owns the block (`GECKO_SETTINGS`),
+re-injects it into every package, and restores it on disk (prints
+`NOTE: restored...`). Just always run the build before signing.
+
 ## Add-on identity (keep stable across releases)
 
 - **Extension ID (gecko.id):** `insurance-auditor-pro@ispace.com`

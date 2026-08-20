@@ -36,6 +36,28 @@ def read_manifest(manifest_path: Path) -> dict:
 # GitHub release, so the "releases/latest/download/<name>" URL is stable.
 XPI_ASSET_NAME = "insurance_auditor_pro.xpi"
 
+# ── Firefox config, source of truth ──────────────────────────────────────────
+# Chrome ignores `browser_specific_settings`; Firefox requires it. Pushing Chrome
+# changes tends to overwrite manifest.json with a Chrome-only copy that drops this
+# block. So the build OWNS it: it re-injects this into the package (and heals the
+# on-disk manifest) every run, no matter what state manifest.json is in.
+GECKO_SETTINGS = {
+    "gecko": {
+        "id": "insurance-auditor-pro@ispace.com",
+        "strict_min_version": "121.0",
+        "update_url": "https://github.com/aniketsharma-ispace/insurance-auditor-pro-mozilla/releases/latest/download/updates.json",
+        "data_collection_permissions": {"required": ["none"]},
+    }
+}
+
+
+def ensure_firefox_config(manifest: dict) -> bool:
+    """Force the Firefox block into `manifest`. Returns True if it changed."""
+    if manifest.get("browser_specific_settings") == GECKO_SETTINGS:
+        return False
+    manifest["browser_specific_settings"] = GECKO_SETTINGS
+    return True
+
 
 def write_updates_json(manifest: dict, out_path: Path) -> None:
     """Emit the Firefox self-hosted update manifest (updates.json).
@@ -79,15 +101,10 @@ def should_include(path: Path) -> bool:
     return True
 
 
-def build(out_path: Path) -> None:
-    manifest_path = SOURCE_DIR / "manifest.json"
-    if not manifest_path.exists():
-        sys.exit(f"manifest.json not found in {SOURCE_DIR}")
-
-    # Fail fast on malformed JSON so we never ship a broken manifest.
-    with manifest_path.open(encoding="utf-8") as fh:
-        json.load(fh)
-
+def build(manifest: dict, out_path: Path) -> None:
+    """Zip the extension. `manifest` (with the Firefox block already ensured) is
+    written into the package instead of the on-disk file, so the .xpi is correct
+    even if manifest.json on disk is momentarily missing the Firefox block."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     files = sorted(
@@ -96,12 +113,16 @@ def build(out_path: Path) -> None:
     if out_path.exists():
         out_path.unlink()
 
+    manifest_bytes = json.dumps(manifest, indent=4).encode("utf-8")
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for file_path in files:
             # Store files at the archive root (manifest.json, content_*.js, ...)
             # to match the existing package layout.
             arcname = file_path.relative_to(SOURCE_DIR).as_posix()
-            zf.write(file_path, arcname)
+            if arcname == "manifest.json":
+                zf.writestr(arcname, manifest_bytes)  # the ensured version
+            else:
+                zf.write(file_path, arcname)
 
     print(f"Built {out_path}  ({len(files)} files, {out_path.stat().st_size:,} bytes)")
 
@@ -157,10 +178,20 @@ def main() -> None:
     if args.verify is not None:
         sys.exit(verify_xpi(args.verify))
 
-    manifest = read_manifest(SOURCE_DIR / "manifest.json")
+    manifest_path = SOURCE_DIR / "manifest.json"
+    manifest = read_manifest(manifest_path)
+
+    # Self-heal: if a Chrome push wiped the Firefox block, restore it on disk so
+    # the source, the package, and updates.json all stay consistent.
+    if ensure_firefox_config(manifest):
+        with manifest_path.open("w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, indent=4)
+            fh.write("\n")
+        print("NOTE: restored missing/outdated browser_specific_settings in manifest.json")
+
     version = manifest["version"]
     out_path = args.out or (DIST_DIR / f"InsuranceAuditorPro-{version}.zip")
-    build(out_path)
+    build(manifest, out_path)
     write_updates_json(manifest, out_path.parent / "updates.json")
 
 
