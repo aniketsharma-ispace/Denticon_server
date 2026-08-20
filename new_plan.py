@@ -711,8 +711,18 @@ def _yes_no_from_basis(text, target):
 
 def _missing_tooth_clause(text):
     t = re.sub(r'\s+', ' ', str(text).lower()).strip()
-    if 'lost prior to effective date: no' in t:  return 'Yes'
-    if 'lost prior to effective date: yes' in t: return 'No'
+    # The provision answers TWO questions — the general case and a separate
+    # congenital-teeth case:
+    #   "…benefits available for teeth lost prior to effective date: Yes
+    #    …benefits available for congenital teeth lost prior to effective date: No"
+    # The clause status is the GENERAL answer, so read the text before the
+    # congenital sentence. Scanning the whole string finds whichever pattern is
+    # tested first and reports a plan that DOES cover teeth lost before the
+    # effective date (clause does not apply) as though the clause applied.
+    general = t.split('congenital')[0] if 'congenital' in t else t
+    for scope in (general, t):
+        if 'lost prior to effective date: no' in scope:  return 'Yes'
+        if 'lost prior to effective date: yes' in scope: return 'No'
     return '—'
 
 

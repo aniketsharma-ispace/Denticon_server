@@ -21,8 +21,18 @@ import sys
 
 import sabrina_compare as sc
 
+# Windows consoles default to cp1252 and cannot encode the section rules below.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 BASE = os.path.dirname(os.path.abspath(__file__))
 SABRINA_PDF = os.path.join(BASE, "Material", "Comparison", "Metlife.pdf")
+SABRINA_PDF_2 = os.path.join(BASE, "Material", "Comparison", "Metlife - 81986.pdf")
+PORTAL_JSON_2 = os.path.join(BASE, "Material", "Comparison",
+                             "tudor_piroteala_metlife_audit (1).json")
 DD_PORTAL_DIR = os.path.join(BASE, "Material", "Comparison", "DD INS")
 
 _passed = _failed = _skipped = 0
@@ -165,6 +175,103 @@ else:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  1b. SECOND REAL EXPORT — wrapped table cells + a masked portal id
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# This export (Tudor Piroteala, MetLife) wraps cell text across lines, so the
+# Frequency cell "No Frequency" arrives as "No" + "Frequency". The stray
+# fragment collides with the table's own "Frequency" column header, and before
+# _reflow_wrapped() it ended the value hunt and left 8 rows blank:
+#   D0220, D1510, D4260, D4341, D4381, D9110, D9944, D9310
+# The portal states 100% for every one of them, so each blank surfaced in the UI
+# as "BLANK IN SABRINA" against a real portal value.
+
+EXPECTED_2 = {
+    "patient_name": "Tudor Piroteala", "patient_dob": "05/18/1987",
+    "member_id": "833926200", "subscriber_name": "Tudor Piroteala",
+    "subscriber_dob": "05/18/1987",
+    "ins_name": "Metlife", "group_name": "NOVELIS CORPORATION",
+    "group_number": "303836", "payor_id": "65978",
+    "ins_address": "P O BOX 981282 , , EL PASO, TX - 79998",   # wraps 2 lines
+    "in_network": "In", "oon_benefits": "Yes",
+    "eff_date": "01/01/2024", "plan_year_start": "January",
+    "yearly_max": "2500", "yearly_max_paid": "138.00",
+    "indiv_ded": "0", "indiv_ded_paid": "0",
+    "family_ded": "0", "family_ded_paid": "0",
+    "ded_prev": "No", "ded_diag": "No",
+    "waiting_period": "No", "cob": "Standard",
+    "pct_prev": "100%", "pct_basic": "100%", "pct_major": "100%",
+    "ortho_max": "2000", "ortho_max_paid": "543.20",
+    "ortho_ded": "0", "ortho_ded_paid": "0",
+    "missing_tooth": "No", "prev_in_max": "Yes",
+    # The eight rows whose Frequency cell wrapped — each must be the
+    # Percentage, never the wrapped fragment and never the Age Limit.
+    "d0220": "100%",   # "No" + "Frequency" / 100%
+    "d1510": "100%",   # "No" + "Frequency" / 100% / 14   <- not the age 14
+    "d4260": "100%",
+    "d4341": "100%",   # "No" + "Frequency" / 100% / 4 / NH
+    "d4381": "100%",
+    "d9110": "100%",
+    "d9944": "100%",
+    "d9310": "100%",
+    # ...and the rest of the sheet
+    "d0120": "100%", "d0140": "100%", "d0150": "100%", "d0210": "100%",
+    "d0330": "100%", "d0274": "100%", "d1110": "100%", "d1206": "100%",
+    "d1208": "100%", "d1351": "100%", "d2160": "100%", "d2391": "100%",
+    "d2740": "100%", "d2950": "100%", "d2980": "80%", "d3310": "100%",
+    "d4346": "100%", "d4355": "100%", "d4910": "100%", "d5110": "80%",
+    "d5212": "80%", "d5899": "0", "d6010": "80%", "d6750": "80%",
+    "d7140": "100%", "d7210": "100%", "d9230": "0", "d9243": "100%",
+    "ortho_coverage": "80%", "d8090": "80%", "d5995": "0",
+    "d6057": "80%", "d6058": "80%",
+}
+
+print("── 1b. SECOND REAL EXPORT (Tudor Piroteala / MetLife) ──")
+if not os.path.exists(SABRINA_PDF_2):
+    skip("second Sabrina PDF parse", f"{SABRINA_PDF_2} not present")
+    parsed2 = None
+else:
+    with open(SABRINA_PDF_2, "rb") as fh:
+        parsed2 = sc.parse_sabrina_pdf(fh.read())
+    check("detected as a Sabrina sheet", sc.is_sabrina_pdf(parsed2["text"]), True)
+    check("all spec'd labels found", parsed2["labels_not_found"], [])
+    f2 = parsed2["fields"]
+    check("spec fully covered by expectations", len(f2), len(EXPECTED_2))
+    for key, want in EXPECTED_2.items():
+        check(f"[2] field {key}", f2.get(key), want)
+    check("[2] no field left blank",
+          sum(1 for v in f2.values() if not sc._blank(v)), len(EXPECTED_2))
+
+    # Against this patient's real portal export the sheet agrees completely —
+    # the two mismatches the UI first reported were both artefacts:
+    #   · Member ID#  — the portal masks it ("XXXXXXX6200")
+    #   · Missing Tooth Clause — the congenital answer was read as the general one
+    if not os.path.exists(PORTAL_JSON_2):
+        skip("[2] comparison against real portal export", "portal JSON not present")
+    else:
+        import json as _json
+        with open(PORTAL_JSON_2, encoding="utf-8") as fh:
+            portal2 = _json.load(fh)
+        res = sc.compare_sabrina_to_portal(parsed2, portal2)
+        rows = {r["key"]: r for sec in res["sections"] for r in sec["rows"]}
+        check("[2] masked portal member id is not a mismatch",
+              rows["member_id"]["status"], "match")
+        check("[2] masked member id is explained",
+              "masked" in rows["member_id"]["note"], True)
+        check("[2] missing tooth clause reads the general answer",
+              (rows["missing_tooth"]["portal"], rows["missing_tooth"]["status"]),
+              ("No", "match"))
+        for key in ("d0220", "d1510", "d4260", "d4341", "d4381",
+                    "d9110", "d9944", "d9310"):
+            check(f"[2] wrapped-frequency row {key} compares",
+                  rows[key]["status"], "match")
+        check("[2] whole sheet agrees with the portal",
+              res["summary"]["mismatches"], 0)
+        check("[2] nothing reported blank in Sabrina",
+              res["summary"]["missing_in_sabrina"], 0)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  2. DETECTION
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -232,6 +339,17 @@ check("address: a different PO box is caught",
 
 check("text: 'Metlife' vs '(IN) MetLife(TX)- PO Box 981282- 79998'",
       sc._compare("text", "Metlife", "(IN) MetLife(TX)- PO Box 981282- 79998")[0], True)
+
+# Masked portal identifiers ("XXXXXXX6200") cannot be compared literally.
+check("id: masked portal value with agreeing visible digits",
+      sc._compare("id", "833926200", "XXXXXXX6200")[0], True)
+check("id: masked portal value with differing visible digits",
+      sc._compare("id", "833926200", "XXXXXXX9999")[0], False)
+check("id: fully masked value is not comparable",
+      sc._compare("id", "833926200", "XXXXXXXXX")[0], None)
+check("id: leading-visible mask", sc._compare("id", "833926200", "8339XXXXX")[0], True)
+check("id: a real X in an id is not treated as a mask",
+      sc._compare("id", "X12345", "X12345")[0], True)
 
 # A value the portal never stated must never be reported as a mismatch.
 check("portal silence is not a mismatch", sc._compare("money", "2000", "")[0], None)

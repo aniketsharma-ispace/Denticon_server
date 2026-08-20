@@ -330,6 +330,52 @@ def _split_lines(text: str) -> list[str]:
     return out
 
 
+def _reflow_wrapped(lines: list[str]) -> list[str]:
+    """
+    Re-join text the PDF extractor split in the middle of a cell.
+
+    Sabrina's table cells wrap, so one cell can arrive as two lines:
+
+        D0220 PAs / "No" / "Frequency" / 100%      ← "No Frequency" wrapped
+        Benefit Name / Frequency / ... / "Age" / "Limit"
+
+    A fragment is identified by the fact that joining it to its predecessor
+    produces something already known — one of the sheet's labels, or a
+    Frequency phrase. Without this, the stray fragment "Frequency" collides
+    with the table's own "Frequency" column header and is read as the next
+    label, which ends the value hunt and leaves the whole row blank.
+
+    Only a first piece that is NOT itself a complete label may absorb a
+    follower, so two genuinely separate labels are never fused.
+    """
+    out = list(lines)
+    for _ in range(3):                      # a cell can wrap more than once
+        merged: list[str] = []
+        i = 0
+        changed = False
+        while i < len(out):
+            joined = None
+            if _norm_label(out[i]) not in _STOP_LABELS:
+                for take in (3, 2):         # longest wrap first
+                    if i + take > len(out):
+                        continue
+                    cand = " ".join(out[i:i + take])
+                    if _norm_label(cand) in _STOP_LABELS or _FREQ_RE.match(cand.strip()):
+                        joined = (cand, take)
+                        break
+            if joined:
+                merged.append(joined[0])
+                i += joined[1]
+                changed = True
+            else:
+                merged.append(out[i])
+                i += 1
+        out = merged
+        if not changed:
+            break
+    return out
+
+
 def _looks_like_value(candidate: str) -> bool:
     """A string is usable as a value unless it is itself a label/section header."""
     n = _norm_label(candidate)
@@ -572,7 +618,7 @@ def sabrina_marker_count(text: str) -> int:
 
 def parse_sabrina_text(text: str) -> dict:
     """Pull every spec'd field out of already-extracted Sabrina PDF text."""
-    lines = _split_lines(text)
+    lines = _reflow_wrapped(_split_lines(text))
 
     values: dict[str, str | None] = {}
     cursor: dict[int, int] = {}     # line index → words already claimed
@@ -729,6 +775,33 @@ def _num_month(v) -> int | None:
     return None
 
 
+# Three or more repeated mask characters — enough to distinguish a masked
+# identifier from a real one that merely contains an X.
+_MASK_RE = re.compile(r"(?:X{3,}|\*{3,}|•{3,}|#{3,})", re.IGNORECASE)
+
+
+def _visible_part(value: str) -> tuple[str, str] | None:
+    """
+    For a partially masked identifier, what the mask leaves readable:
+    ("suffix", "6200") for "XXXXXXX6200", ("prefix", "8339") for "8339XXXXX".
+
+    None when nothing can be aligned — masked in the middle, or masked end to
+    end. Masks do not preserve length ("XXXXXXX6200" is 11 characters for a
+    9-character id), so the visible run is compared, not the position.
+    """
+    m = _MASK_RE.search(value)
+    if not m:
+        return None
+    before, after = value[:m.start()], value[m.end():]
+    if before and after:
+        return None                      # masked in the middle
+    if after:
+        return "suffix", after
+    if before:
+        return "prefix", before
+    return None                          # nothing visible at all
+
+
 def _norm_id(v) -> str | None:
     """IDs compare on alphanumerics only — '12345-01' vs '1234501'."""
     if _blank(v):
@@ -832,6 +905,24 @@ def _compare(kind: str, sab, por) -> tuple[bool | None, str]:
             return None, ""
         if a == b:
             return True, ""
+
+        # Portals routinely mask identifiers ("XXXXXXX6200"). Such a value can
+        # never equal the real one, so comparing it literally manufactures a
+        # mismatch on every patient. Compare only what the mask actually shows.
+        for masked, plain, who in ((b, a, "portal"), (a, b, "Sabrina")):
+            if not _MASK_RE.search(masked):
+                continue
+            visible = _visible_part(masked)
+            if visible is None:
+                return None, f"{who} value is fully masked — not comparable"
+            side, text = visible
+            agrees = plain.endswith(text) if side == "suffix" else plain.startswith(text)
+            return agrees, (
+                f"{who} value is masked; the {len(text)} visible characters agree"
+                if agrees else
+                f"{who} value is masked and its visible characters differ"
+            )
+
         # Group numbers/payor IDs are often padded or suffixed by one system.
         da, db = re.sub(r"\D", "", a), re.sub(r"\D", "", b)
         if da and db and da.lstrip("0") == db.lstrip("0"):
@@ -1125,6 +1216,14 @@ async def audit_sabrina_pdf(pdf_bytes: bytes, portal_raw: dict) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _cli() -> int:
+    # Windows consoles default to cp1252, which cannot encode the box-drawing
+    # characters below; force UTF-8 so the dump never dies on its own output.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     flags = {a for a in sys.argv[1:] if a.startswith("--")}
 
