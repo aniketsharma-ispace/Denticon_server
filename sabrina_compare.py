@@ -285,6 +285,19 @@ def _build_aspect_spec() -> list[dict]:
 _SPEC += _build_aspect_spec()
 
 
+# The fields actually printed as labels on the sheet, excluding the generated
+# Frequency / Age Limit / History rows. This is what "fields read" means to a
+# user looking at the upload box — counting the generated rows there makes a
+# perfectly good parse look half-broken, since most CDT rows legitimately have
+# no age limit or service history.
+CORE_FIELD_KEYS = tuple(f["key"] for f in _SPEC if not f.get("derived"))
+
+
+def core_fields(fields: dict) -> dict:
+    """Only the values read from a label of their own."""
+    return {k: v for k, v in (fields or {}).items() if k in set(CORE_FIELD_KEYS)}
+
+
 # Fields that drive a claim's financial outcome — surfaced first in the UI and
 # counted separately so a reviewer sees the expensive disagreements immediately.
 _CRITICAL_KEYS = {

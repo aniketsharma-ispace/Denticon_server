@@ -730,8 +730,11 @@ async function handleSabrinaUpload(file) {
         }
         sabrinaFile = file;
         sabrinaInfo = info;
+        const rowNote = info.benefit_rows_read
+            ? `, ${info.benefit_rows_read} benefit rows`
+            : '';
         statusEl.innerHTML = `✅ Sabrina PDF loaded — <b>${escHtml(info.patient_name || 'patient')}</b> `
-                           + `(${info.fields_found}/${info.fields_total} fields read)`;
+                           + `(${info.fields_found}/${info.fields_total} fields${rowNote})`;
         statusEl.style.color = '#00e676';
         document.getElementById('boxDenticon').classList.add('ready');
         refreshButtons();

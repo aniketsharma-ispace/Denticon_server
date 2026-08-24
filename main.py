@@ -37,6 +37,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 from pdf_extractor import parse_insurance_pdf
 from sabrina_compare import (
     audit_sabrina_pdf,
+    core_fields,
     is_sabrina_pdf,
     parse_sabrina_pdf,
 )
@@ -188,11 +189,15 @@ async def sabrina_parse_endpoint(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Sabrina PDF parsing failed: {e}")
 
     fields = parsed["fields"]
+    # Counted over the labelled fields only — the generated Frequency/Age/History
+    # rows are not "fields on the sheet" and most are legitimately empty.
+    core = core_fields(fields)
     return {
         "is_sabrina":        is_sabrina_pdf(parsed["text"]),
         "marker_count":      parsed["marker_count"],
-        "fields_found":      sum(1 for v in fields.values() if v not in (None, "")),
-        "fields_total":      len(fields),
+        "fields_found":      sum(1 for v in core.values() if v not in (None, "")),
+        "fields_total":      len(core),
+        "benefit_rows_read": len(parsed.get("benefit_rows") or {}),
         "patient_name":      fields.get("patient_name"),
         "insurance_name":    fields.get("ins_name"),
         "fields":            fields,
