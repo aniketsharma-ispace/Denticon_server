@@ -222,6 +222,69 @@ _SPEC: list[dict] = [
     {"key": "d9310", "label": "D9310", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D9310")},
 ]
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  BENEFIT DETAILS — the other three columns of each CDT row
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Every Benefit Details row states four comparable things, and the portal's
+# procedure records carry a counterpart for each:
+#
+#     Sabrina column   portal field              example pair
+#     ─────────────────────────────────────────────────────────────────────────
+#     Frequency        frequency_limit           2X1Year / 2 TIMES IN 1 CALENDAR YEAR
+#     Percentage       benefit_level             100%    / 100%
+#     Age Limit        age_limit                 14      / 0-14
+#     History          late_date_of_service      05/11/2026 / 05/11/26
+#
+# The Percentage rows are declared explicitly above; these three are generated
+# per CDT code so the two lists cannot drift apart. They are flagged `derived`
+# because they are read from the row's cells rather than from a label of their
+# own — nothing in the label matcher should ever look for them.
+
+_BENEFIT_ASPECTS = (
+    ("freq", "Frequency", "frequency", "frequency_limit"),
+    ("age",  "Age Limit", "agelimit",  "age_limit"),
+    ("hist", "History",   "history",   "late_date_of_service"),
+)
+
+_ASPECT_SECTION = "Coverage Detail — Frequency / Age / History"
+
+# Sabrina puts the D4341 quadrant count in the Age Limit column rather than an
+# age, so that one cell has no portal counterpart and must not be compared.
+_AGE_COLUMN_EXCEPTIONS = {
+    "d4341": "Sabrina uses this column for the D4341 quadrant count, not an age",
+}
+
+
+def _build_aspect_spec() -> list[dict]:
+    out = []
+    for field in _SPEC:
+        if field["section"] != "Coverage by CDT Code":
+            continue
+        src = field.get("portal")
+        if not (isinstance(src, tuple) and src and src[0] == "code"):
+            continue
+        codes = src[1:]
+        for suffix, title, kind, portal_field in _BENEFIT_ASPECTS:
+            entry = {
+                "key":     f'{field["key"]}__{suffix}',
+                "label":   f'{field["label"]} · {title}',
+                "kind":    kind,
+                "section": _ASPECT_SECTION,
+                "portal":  ("codefield", portal_field) + codes,
+                "derived": True,
+                "row_key": field["key"],
+                "aspect":  suffix,
+            }
+            if suffix == "age" and field["key"] in _AGE_COLUMN_EXCEPTIONS:
+                entry["uncomparable"] = _AGE_COLUMN_EXCEPTIONS[field["key"]]
+            out.append(entry)
+    return out
+
+
+_SPEC += _build_aspect_spec()
+
+
 # Fields that drive a claim's financial outcome — surfaced first in the UI and
 # counted separately so a reviewer sees the expensive disagreements immediately.
 _CRITICAL_KEYS = {
@@ -255,6 +318,8 @@ def _norm_label(s: str) -> str:
 # field's label as if it were this field's value.
 _ALL_LABELS: set[str] = set()
 for _f in _SPEC:
+    if _f.get("derived"):
+        continue          # read from a row's cells, never from a label
     _ALL_LABELS.add(_norm_label(_f["label"]))
     for _a in _f.get("aliases", ()):
         _ALL_LABELS.add(_norm_label(_a))
@@ -376,8 +441,15 @@ def _reflow_wrapped(lines: list[str]) -> list[str]:
     return out
 
 
+# Page furniture that sits directly after the last table row.
+_BOILERPLATE_RE = re.compile(
+    r"^\s*(?:©|\(c\))|all rights reserved|verification date", re.IGNORECASE)
+
+
 def _looks_like_value(candidate: str) -> bool:
-    """A string is usable as a value unless it is itself a label/section header."""
+    """A string is usable as a value unless it is a label, header or boilerplate."""
+    if _BOILERPLATE_RE.search(candidate):
+        return False
     n = _norm_label(candidate)
     return bool(n) and n not in _NON_VALUES
 
@@ -468,6 +540,79 @@ def _pick_cell(kind: str, cands: list[tuple[int, str]]) -> tuple[int, str] | Non
         return (cands[-1][0], joined) if joined else None
 
     return cands[0]
+
+
+# Sabrina writes "NH" (no history) where a procedure has never been performed.
+_HISTORY_NONE = {"nh", "no history", "none", "n/h"}
+
+
+def _classify_row_cells(cells: list[str]) -> dict[str, str | None]:
+    """
+    Split one Benefit Details row's cells into its columns.
+
+    Empty cells are omitted by the extractor, so position alone cannot say which
+    column a cell belongs to — each is identified by its shape instead, in
+    column order:
+
+        Frequency   before the percentage, matching the frequency vocabulary
+        Percentage  the first cell that reads as a percentage
+        Age Limit   a bare 1-3 digit number after the percentage
+        History     a date, or "NH", after the percentage
+
+    A cell after the percentage that is none of these (the Coverage column, page
+    furniture) is ignored rather than guessed at.
+    """
+    freq = pct = age = hist = None
+    for cell in cells:
+        s = cell.strip()
+        if pct is None:
+            if freq is None and _FREQ_RE.match(s):
+                freq = s
+            elif _num_pct(s) is not None:
+                pct = s
+            continue
+        if hist is None and (_num_date(s) is not None or s.lower() in _HISTORY_NONE):
+            hist = s
+        elif age is None and re.fullmatch(r"\d{1,3}", s):
+            age = s
+    return {"frequency": freq, "percentage": pct, "age_limit": age, "history": hist}
+
+
+def _capture_benefit_rows(lines: list[str]) -> dict[str, dict]:
+    """
+    Read the Frequency / Age Limit / History cells for every CDT row.
+
+    Runs as its own pass: the percentage is already resolved by the main field
+    loop, and re-finding each label here keeps that verified path untouched.
+    """
+    rows: dict[str, dict] = {}
+    for field in _SPEC:
+        if field.get("derived") or field["section"] != "Coverage by CDT Code":
+            continue
+        targets = sorted(
+            [_norm_label(field["label"])] +
+            [_norm_label(a) for a in field.get("aliases", ())],
+            key=lambda t: -len(t.split()))
+
+        at = None
+        for target in targets:
+            for i, line in enumerate(lines):
+                words = line.split()
+                if any(_label_span(words, p, target) for p in range(len(words))):
+                    at = i
+                    break
+            if at is not None:
+                break
+        if at is None:
+            continue
+
+        cells = []
+        for m in range(at + 1, min(at + 8, len(lines))):
+            if _any_label_at(lines[m].split(), 0) or not _looks_like_value(lines[m]):
+                break
+            cells.append(lines[m])
+        rows[field["key"]] = _classify_row_cells(cells)
+    return rows
 
 
 def _anchor_line(lines: list[str], anchor: str) -> int:
@@ -625,10 +770,22 @@ def parse_sabrina_text(text: str) -> dict:
     missing_labels: list[str] = []
 
     for field in _SPEC:
+        if field.get("derived"):
+            continue                     # filled in from the row pass below
         value, idx = _find_value(lines, field, cursor)
         values[field["key"]] = value
         if idx is None:
             missing_labels.append(field["label"])
+
+    # Frequency / Age Limit / History for each CDT row.
+    benefit_rows = _capture_benefit_rows(lines)
+    for row_key, columns in benefit_rows.items():
+        values[f"{row_key}__freq"] = columns["frequency"]
+        values[f"{row_key}__age"] = columns["age_limit"]
+        values[f"{row_key}__hist"] = columns["history"]
+    for field in _SPEC:
+        if field.get("derived"):
+            values.setdefault(field["key"], None)
 
     if _DEBUG and missing_labels:
         log.warning("Sabrina labels not found in PDF (%d): %s",
@@ -636,6 +793,7 @@ def parse_sabrina_text(text: str) -> dict:
 
     return {
         "fields": values,
+        "benefit_rows": benefit_rows,
         "labels_not_found": missing_labels,
         "line_count": len(lines),
     }
@@ -802,6 +960,107 @@ def _visible_part(value: str) -> tuple[str, str] | None:
     return None                          # nothing visible at all
 
 
+# Frequency, as the two systems say it:
+#   Sabrina  "2X1Year"  "1X60Months"  "1XLifetime"  "No Frequency"  "NC"
+#   portal   "2 TIMES IN 1 CALENDAR YEAR"  "1 TIME IN 60 MONTHS"
+#            "ONCE PER LIFETIME"  "No Limitations"  "*NOT COVERED"
+# Both reduce to (how many, per how many months). A year is normalized to 12
+# months so "1X1Year" and "1 TIME IN 1 CALENDAR YEAR" agree; the portal often
+# appends conditions ("…, PERMANENT MOLARS ONLY") which are ignored.
+_FREQ_UNLIMITED = ("unlimited",)
+_FREQ_NOT_COVERED = ("not covered",)
+
+_FREQ_COMPACT_RE = re.compile(
+    r"^(\d+)\s*x\s*(\d*)\s*(year|month|week|day|visit)s?$", re.IGNORECASE)
+_FREQ_PROSE_RE = re.compile(
+    r"^(?:(\d+)|once|twice)\s*(?:times?)?\s*(?:in|per|every)\s*(\d*)\s*"
+    r"(?:calendar\s*|contract\s*|plan\s*|benefit\s*)?(year|month|week|day)s?",
+    re.IGNORECASE)
+
+
+def _num_frequency(v) -> tuple | None:
+    if _blank(v):
+        return None
+    s = re.sub(r"\s+", " ", str(v)).strip().lower().lstrip("*")
+    if "not covered" in s or s in ("nc", "n/c"):
+        return _FREQ_NOT_COVERED
+    if "no limitation" in s or "no frequency" in s or "unlimited" in s:
+        return _FREQ_UNLIMITED
+    if "lifetime" in s:
+        m = re.match(r"(\d+)\s*x", s)
+        return (int(m.group(1)) if m else 1, "lifetime")
+    m = _FREQ_COMPACT_RE.match(s)
+    if not m:
+        m = _FREQ_PROSE_RE.match(s)
+        if m:
+            count = int(m.group(1)) if m.group(1) else (2 if s.startswith("twice") else 1)
+            span = int(m.group(2) or 1)
+            unit = m.group(3).lower()
+            return (count, span * 12 if unit == "year" else span)
+        return None
+    count = int(m.group(1))
+    span = int(m.group(2) or 1)
+    unit = m.group(3).lower()
+    return (count, span * 12 if unit == "year" else span)
+
+
+def _num_agelimit(v) -> int | None:
+    """
+    Upper age bound. Sabrina states a single number ("14"); the portal states a
+    range ("0-14"), so both reduce to the ceiling.
+    """
+    if _blank(v):
+        return None
+    s = str(v).strip()
+    m = re.fullmatch(r"\s*(\d{1,3})\s*[-–]\s*(\d{1,3})\s*", s)
+    if m:
+        return int(m.group(2))
+    m = re.fullmatch(r"\s*(\d{1,3})\s*", s)
+    if m:
+        return int(m.group(1))
+    if re.search(r"\d{1,3}\s*(?:and\s*(?:up|over|older)|\+)", s, re.IGNORECASE):
+        return 99
+    if "no age limit" in s.lower() or "none" in s.lower():
+        return 99
+    return None
+
+
+def _agelimit_lower(v) -> int | None:
+    """Lower bound of a portal age range; None when it states only a ceiling."""
+    m = re.fullmatch(r"\s*(\d{1,3})\s*[-–]\s*(\d{1,3})\s*", str(v or ""))
+    return int(m.group(1)) if m else None
+
+
+def _blank_means_no_limit(kind: str, portal_value) -> bool:
+    """
+    Whether an EMPTY Frequency / Age Limit cell agrees with the portal.
+
+    Sabrina leaves these cells blank to say "no limit", which is exactly what
+    the portal says as "No Limitations" or as the full 0-99 age span. Counting
+    those blanks as gaps buries the real findings under ~30 rows of noise.
+
+    A blank is only agreement when the portal states no limit either. A real
+    restriction the sheet failed to record — "1 TIME IN 1 CALENDAR YEAR", or an
+    age range with a floor such as 14-99 — stays reported.
+    """
+    if kind == "frequency":
+        return _num_frequency(portal_value) == _FREQ_UNLIMITED
+    if kind == "agelimit":
+        ceiling = _num_agelimit(portal_value)
+        return (ceiling is not None and ceiling >= 99
+                and _agelimit_lower(portal_value) in (0, None))
+    return False
+
+
+def _num_history(v) -> str | None:
+    """Last date of service, or the sentinel NONE for Sabrina's "NH"."""
+    if _blank(v):
+        return None
+    if str(v).strip().lower() in _HISTORY_NONE:
+        return "NONE"
+    return _num_date(v)
+
+
 def _norm_id(v) -> str | None:
     """IDs compare on alphanumerics only — '12345-01' vs '1234501'."""
     if _blank(v):
@@ -898,6 +1157,39 @@ def _compare(kind: str, sab, por) -> tuple[bool | None, str]:
         if a is None or b is None:
             return None, ""
         return a == b, ""
+
+    if kind == "frequency":
+        a, b = _num_frequency(sab), _num_frequency(por)
+        if a is None or b is None:
+            return None, ""
+        if a == b:
+            return True, ""
+        # "1X60Months" and "1X5Years" are the same limit stated two ways; the
+        # canonical form already reconciles those, so a difference here is real.
+        return False, ""
+
+    if kind == "agelimit":
+        a, b = _num_agelimit(sab), _num_agelimit(por)
+        if a is None or b is None:
+            return None, ""
+        if a == b:
+            return True, ""
+        # 99 and above is "no real cap" on both sides.
+        if a >= 99 and b >= 99:
+            return True, "both state no effective age cap"
+        return False, ""
+
+    if kind == "history":
+        a, b = _num_history(sab), _num_history(por)
+        if a is None or b is None:
+            return None, ""
+        if a == b:
+            return True, ""
+        if a == "NONE":
+            return False, "Sabrina shows no history but the portal has a service date"
+        if b == "NONE":
+            return False, "portal shows no history but Sabrina has a service date"
+        return False, ""
 
     if kind == "id":
         a, b = _norm_id(sab), _norm_id(por)
@@ -996,6 +1288,18 @@ def _pct_from_procs(procs: dict, codes: tuple[str, ...]) -> str | None:
         # An explicit "not covered" frequency IS a stated 0% benefit.
         if "not covered" in str(proc.get("frequency_limit", "")).lower():
             return "0%"
+    return None
+
+
+def _procfield_from_procs(procs: dict, field: str, codes: tuple[str, ...]) -> str | None:
+    """A named field off the first CDT code the portal actually reports."""
+    for code in codes:
+        proc = (procs or {}).get(code.upper())
+        if not proc:
+            continue
+        value = proc.get(field)
+        if not _blank(value):
+            return str(value)
     return None
 
 
@@ -1147,6 +1451,8 @@ def _portal_value(field: dict, bd: dict, portal_raw: dict) -> str | None:
         return None
     if isinstance(src, tuple) and src and src[0] == "code":
         return _pct_from_procs(bd.get("procs", {}), src[1:])
+    if isinstance(src, tuple) and src and src[0] == "codefield":
+        return _procfield_from_procs(bd.get("procs", {}), src[1], src[2:])
     if isinstance(src, str) and src in _DERIVED:
         return _DERIVED[src](bd, portal_raw)
     val = bd.get(src) if isinstance(src, str) else None
@@ -1196,9 +1502,15 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             note = ("no equivalent field in the portal export"
                     if field.get("portal") is None
                     else "portal did not state this value")
+        elif sab_blank and _blank_means_no_limit(field["kind"], por_raw):
+            status = STATUS_MATCH
+            note = "blank on the sheet and no limit on the portal — same thing"
         elif sab_blank:
             status = STATUS_MISSING_IN_SABRINA
             note = "blank on the Sabrina sheet"
+        elif field.get("uncomparable"):
+            status = STATUS_NOT_COMPARABLE
+            note = field["uncomparable"]
         else:
             equal, cmp_note = _compare(field["kind"], sab_raw, por_raw)
             note = cmp_note

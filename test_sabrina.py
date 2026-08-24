@@ -37,6 +37,16 @@ DD_PORTAL_DIR = os.path.join(BASE, "Material", "Comparison", "DD INS")
 
 _passed = _failed = _skipped = 0
 
+# The spec also carries generated Frequency / Age Limit / History rows for every
+# CDT code (flagged `derived`, read from a row's cells rather than a label of
+# their own). The per-field expectations below cover the label-parsed core; the
+# generated rows are asserted separately in section 1c.
+CORE_KEYS = [f["key"] for f in sc._SPEC if not f.get("derived")]
+
+
+def core_only(fields):
+    return {k: v for k, v in fields.items() if k in CORE_KEYS}
+
 
 def check(name, got, want):
     global _passed, _failed
@@ -166,12 +176,36 @@ else:
     check("all spec'd labels found on the sheet", parsed["labels_not_found"], [])
 
     fields = parsed["fields"]
-    check("field spec covers exactly the audited set", len(fields), len(EXPECTED_FIELDS))
+    check("field spec covers exactly the audited set",
+          len(core_only(fields)), len(EXPECTED_FIELDS))
     for key, want in EXPECTED_FIELDS.items():
         check(f"field {key}", fields.get(key), want)
 
-    read = sum(1 for v in fields.values() if not sc._blank(v))
-    check("every field read (none blank)", read, len(EXPECTED_FIELDS))
+    read = sum(1 for v in core_only(fields).values() if not sc._blank(v))
+    check("every core field read (none blank)", read, len(EXPECTED_FIELDS))
+
+    # All four Benefit Details columns, as printed on Jack's sheet.
+    ROWS_1 = {
+        "d0120": ("2X1Year", "100%", None, "01/28/2026"),
+        "d0220": ("No Frequency", "100%", None, None),
+        "d1206": ("2X1Year", "100%", "19", "NH"),
+        "d1351": ("1X36Months", "100%", "99", "NH"),
+        "d1510": ("No Frequency", "100%", "99", None),
+        "d2740": ("1X5Years", "50%", None, None),
+        "d3310": (None, "80%", None, None),           # row has no frequency cell
+        "d4341": ("No Frequency", "80%", "4", "NH"),   # the "4" is quadrants
+        "d4355": ("1XLifetime", "80%", None, None),
+        "d4910": ("4X1Year", "80%", None, "01/29/2026"),
+        "d5899": ("NC", "0", None, None),
+        "d9944": ("1X24Months", "50%", None, None),
+        "ortho_coverage": (None, "50%", "19", None),
+        "d9310": ("2X1Year", "80%", None, None),
+    }
+    for key, want in ROWS_1.items():
+        row = parsed["benefit_rows"].get(key, {})
+        check(f"benefit row {key}",
+              (row.get("frequency"), row.get("percentage"),
+               row.get("age_limit"), row.get("history")), want)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -236,11 +270,11 @@ else:
     check("detected as a Sabrina sheet", sc.is_sabrina_pdf(parsed2["text"]), True)
     check("all spec'd labels found", parsed2["labels_not_found"], [])
     f2 = parsed2["fields"]
-    check("spec fully covered by expectations", len(f2), len(EXPECTED_2))
+    check("spec fully covered by expectations", len(core_only(f2)), len(EXPECTED_2))
     for key, want in EXPECTED_2.items():
         check(f"[2] field {key}", f2.get(key), want)
-    check("[2] no field left blank",
-          sum(1 for v in f2.values() if not sc._blank(v)), len(EXPECTED_2))
+    check("[2] no core field left blank",
+          sum(1 for v in core_only(f2).values() if not sc._blank(v)), len(EXPECTED_2))
 
     # Against this patient's real portal export the sheet agrees completely —
     # the two mismatches the UI first reported were both artefacts:
@@ -287,8 +321,118 @@ else:
 
         check("[2] whole sheet agrees with the portal",
               res["summary"]["mismatches"], 0)
-        check("[2] nothing reported blank in Sabrina",
-              res["summary"]["missing_in_sabrina"], 0)
+        # Only genuine gaps remain: a real restriction the portal states and the
+        # sheet does not. Empty Frequency/Age cells that merely mean "no limit"
+        # are agreement, not gaps, and must not be counted here.
+        check("[2] only genuine sheet gaps are reported blank",
+              sorted(r["key"] for sec in res["sections"] for r in sec["rows"]
+                     if r["status"] == "missing_in_sabrina"),
+              ["d1110__age", "d3310__freq", "d9230__freq"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  1c. BENEFIT DETAILS — Frequency, Percentage, Age Limit, History
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# All four columns of every CDT row are compared, not just the percentage. The
+# two systems word them completely differently:
+#
+#     Frequency   2X1Year      vs  2 TIMES IN 1 CALENDAR YEAR
+#                 1XLifetime   vs  ONCE PER LIFETIME
+#                 No Frequency vs  No Limitations
+#                 NC           vs  *NOT COVERED
+#     Age Limit   14           vs  0-14   (sheet gives one number, portal a range)
+#     History     05/11/2026   vs  05/11/26
+
+print("── 1c. BENEFIT DETAILS COLUMNS ──")
+
+# Cell classification: empty cells are omitted, so each is identified by shape.
+ROW_CASES = [
+    # cells as printed                     -> frequency, percentage, age, history
+    (["No Frequency", "100%"],                ("No Frequency", "100%", None, None)),
+    (["2X1Year", "100%", "01/28/2026"],       ("2X1Year", "100%", None, "01/28/2026")),
+    (["2X1Year", "100%", "19", "NH"],         ("2X1Year", "100%", "19", "NH")),
+    (["No Frequency", "100%", "99"],          ("No Frequency", "100%", "99", None)),
+    (["1XLifetime", "80%"],                   ("1XLifetime", "80%", None, None)),
+    (["NC", "0"],                             ("NC", "0", None, None)),
+    (["100%"],                                (None, "100%", None, None)),
+    (["0"],                                   (None, "0", None, None)),
+    (["50%", "19"],                           (None, "50%", "19", None)),
+    # page furniture after the final row must never be taken for a cell
+    (["No Frequency", "100%", "© 2026 iSpace, Inc."],
+                                              ("No Frequency", "100%", None, None)),
+]
+for cells, want in ROW_CASES:
+    got = sc._classify_row_cells(list(cells))
+    check(f"row cells {cells}",
+          (got["frequency"], got["percentage"], got["age_limit"], got["history"]), want)
+
+# Frequency equivalence across the two vocabularies.
+FREQ_PAIRS = [
+    ("2X1Year",      "2 TIMES IN 1 CALENDAR YEAR",  True),
+    ("1X1Year",      "1 TIME IN 1 CALENDAR YEAR",   True),
+    ("4X1Year",      "4 TIMES IN 1 CALENDAR YEAR",  True),
+    ("1X60Months",   "1 TIME IN 60 MONTHS",         True),
+    ("1X84Months",   "1 TIME IN 84 MONTHS",         True),
+    ("1XLifetime",   "ONCE PER LIFETIME",           True),
+    ("No Frequency", "No Limitations",              True),
+    ("NC",           "*NOT COVERED",                True),
+    # conditions the portal appends are not part of the limit
+    ("1X60Months",   "1 TIME IN 60 MONTHS, PERMANENT MOLARS ONLY", True),
+    # 5 years and 60 months are the same limit stated two ways
+    ("1X5Years",     "1 TIME IN 60 MONTHS",         True),
+    # genuine differences must still surface
+    ("2X1Year",      "1 TIME IN 1 CALENDAR YEAR",   False),
+    ("1X60Months",   "1 TIME IN 36 MONTHS",         False),
+    ("No Frequency", "2 TIMES IN 1 CALENDAR YEAR",  False),
+    ("1XLifetime",   "No Limitations",              False),
+]
+for sab, por, want in FREQ_PAIRS:
+    check(f"frequency {sab!r} vs {por!r}", sc._compare("frequency", sab, por)[0], want)
+
+# Age limit: a single number against a range, compared on the ceiling.
+for sab, por, want in [("14", "0-14", True), ("99", "0-99", True),
+                       ("19", "0-19", True), ("14", "0-19", False),
+                       ("99", "14-99", True), ("13", "0-14", False)]:
+    check(f"age limit {sab!r} vs {por!r}", sc._compare("agelimit", sab, por)[0], want)
+
+# History: the portal abbreviates the year; "NH" means never performed.
+check("history 05/11/2026 vs 05/11/26",
+      sc._compare("history", "05/11/2026", "05/11/26")[0], True)
+check("history differing dates",
+      sc._compare("history", "05/11/2026", "01/28/26")[0], False)
+check("history NH against a real service date",
+      sc._compare("history", "NH", "05/11/26")[0], False)
+check("history NH mismatch is explained",
+      "no history" in sc._compare("history", "NH", "05/11/26")[1], True)
+check("history against a silent portal is not comparable",
+      sc._compare("history", "05/11/2026", "")[0], None)
+
+# An empty Frequency/Age cell asserts "no limit" — agreement, not a gap.
+check("blank frequency agrees with 'No Limitations'",
+      sc._blank_means_no_limit("frequency", "No Limitations"), True)
+check("blank frequency does NOT excuse a real limit",
+      sc._blank_means_no_limit("frequency", "1 TIME IN 1 CALENDAR YEAR"), False)
+check("blank frequency does NOT excuse *NOT COVERED",
+      sc._blank_means_no_limit("frequency", "*NOT COVERED"), False)
+check("blank age agrees with the full 0-99 span",
+      sc._blank_means_no_limit("agelimit", "0-99"), True)
+check("blank age does NOT excuse an age floor (14-99)",
+      sc._blank_means_no_limit("agelimit", "14-99"), False)
+check("blank age does NOT excuse a real ceiling (0-14)",
+      sc._blank_means_no_limit("agelimit", "0-14"), False)
+
+# Sabrina puts the D4341 quadrant count in the Age Limit column, not an age.
+_d4341_age = next(f for f in sc._SPEC if f["key"] == "d4341__age")
+check("D4341 age column flagged uncomparable",
+      bool(_d4341_age.get("uncomparable")), True)
+
+# The generated rows cover every CDT code, three aspects each.
+_cdt = [f for f in sc._SPEC if f["section"] == "Coverage by CDT Code"]
+_derived = [f for f in sc._SPEC if f.get("derived")]
+check("three generated rows per CDT code", len(_derived), len(_cdt) * 3)
+check("generated rows stay out of the label matcher",
+      any(sc._norm_label(f["label"]) in sc._ALL_LABELS for f in _derived), False)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -482,7 +626,7 @@ else:
             with open(path, encoding="utf-8") as fh:
                 portal = json.load(fh)
             out = sc.compare_sabrina_to_portal(parsed, portal)
-            assert out["summary"]["total_fields"] == len(EXPECTED_FIELDS)
+            assert out["summary"]["total_fields"] == len(sc._SPEC)
             ok += 1
         check(f"Delta Dental portal exports normalize without error ({ok} files)",
               ok, len(dd_files))
