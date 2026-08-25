@@ -29,7 +29,7 @@ function simulateMouseAt(x, y) {
 // Wait a random 10–13 s while continuously "moving the cursor" around the
 // visible page so slow/lazy-rendered tab content has time (and hover events)
 // to fully populate before we scrape it.
-async function waitWithMouseMovement(minMs = 10000, maxMs = 13000) {
+async function waitWithMouseMovement(minMs = 2000, maxMs = 3000) {
     const total = minMs + Math.random() * (maxMs - minMs);
     const start = Date.now();
     console.log(`[V22] Waiting ${(total / 1000).toFixed(1)}s with simulated mouse movement...`);
@@ -256,8 +256,9 @@ function scrapePatientOverview() {
             relation_to_subscriber: relationToSubscriber,
             indi_max_rem:          lv(labels, 'Indi. Max (Rem.)'),
             indi_ded_rem:          lv(labels, 'Ind. Ded. (Rem.)')
+        },
             // sub_id and rp_dob are NOT scraped here — they live in the insurance tab
-        }
+            pri_sec_dental_ins: scrapePriSecDentalIns()
     };
 }
 
@@ -296,8 +297,14 @@ function scrapeInsuranceHeader() {
     const patientNameEl = document.querySelector('.patient-header-pat-name');
     const patientName = patientNameEl ? clean(patientNameEl.innerText) : "N/A";
 
-    console.log(`[V22] Insurance header — SubID: ${subId}, RP BD: ${rpDob}, Phone: ${carrierPhone}, Responsible: ${responsibleName}, Patient: ${patientName}`);
-    return { subId, rpDob, carrierPhone, responsibleName, patientName };
+    // ── Primary/Secondary designation — read directly from the page title bar ──
+    const planTypeEl = document.getElementById('TitleAndHelpBar_SpanPageTitle');
+    const planTypeText = planTypeEl ? clean(planTypeEl.innerText) : "";
+    const planTypeMatch = planTypeText.match(/Add\/Edit\s+(Primary|Secondary)\s+Dental Plan/i);
+    const primaryOrSecondary = planTypeMatch ? planTypeMatch[1] : "N/A";
+
+    console.log(`[V22] Insurance header — SubID: ${subId}, RP BD: ${rpDob}, Phone: ${carrierPhone}, Responsible: ${responsibleName}, Patient: ${patientName}, PlanType: ${primaryOrSecondary}`);
+    return { subId, rpDob, carrierPhone, responsibleName, patientName, primaryOrSecondary };
 }
 
 function scrapePlanTab() {
@@ -366,6 +373,29 @@ function scrapeCoverageTab() {
         };
     });
 }
+function scrapePriSecDentalIns() {
+    const container = document.getElementById('pri-sec-dental-ins');
+    if (!container) return { primary: {}, secondary: {} };
+
+    const primary = {};
+    const secondary = {};
+
+    const rows = container.querySelectorAll('.div-row');
+    rows.forEach(row => {
+        const labelEl = row.querySelector('.custom-col-20 .label-inner');
+        const label = labelEl ? clean(labelEl.innerText) : '';
+        if (!label) return;
+
+        const valueDivs = row.querySelectorAll('.custom-col-40.border-left-gray .label-inner-value');
+        const primVal = valueDivs[0] ? clean(valueDivs[0].innerText) : '';
+        const secVal  = valueDivs[1] ? clean(valueDivs[1].innerText) : '';
+
+        primary[label] = primVal || 'N/A';
+        secondary[label] = secVal || 'N/A';
+    });
+
+    return { primary, secondary };
+}
 
 function getPlanLinks() {
     const tbody = document.getElementById('searchInsurancePlanTableBody');
@@ -416,7 +446,7 @@ async function handleDownloadPatient() {
 // ─────────────────────────────────────────────
 async function deepCrawlInsurance() {
     if (!IS_C2_FRAME) {
-        alert("Please open the Primary Dental insurance tab first, then click Crawl Full Insurance Plan.");
+        alert("Please open the Primary/Secondary Dental insurance tab first, then click Crawl Full Insurance Plan.");
         return;
     }
 
@@ -635,6 +665,7 @@ async function deepCrawlInsurance() {
         store.denticon_data = {
             ...identityBase,
             patient:            patient,
+            //primary_secondary:  headerData.primaryOrSecondary,
             primary_insurance:  primaryIns,
             responsible_party:  respParty,
             plans:              allPlanAudits,
@@ -716,6 +747,7 @@ if (IS_A2_OVERVIEW || IS_C2_OVERVIEW) {
                     ...overview.primary_insurance,
                     sub_id: store.denticon_data?.primary_insurance?.sub_id || "N/A"
                 },
+                pri_sec_dental_ins: overview.pri_sec_dental_ins,
                 practice:           overview.practice
             };
             chrome.storage.local.set({ audit_context: store });

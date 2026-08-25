@@ -207,7 +207,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else if (isDNOA) {
         status.innerText = "DNOA Data: Ready to Crawl.";
     } else {
-        status.innerText = "Navigate to a Denticon patient page to begin.";
+        status.innerText = "Navigate to a patient page to begin.";
     }
 
     // ── Single button: Crawl (routes per-site) ──
@@ -239,14 +239,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // ── All other sites → standard crawl ──
-        chrome.tabs.sendMessage(tab.id, { command: "START_CRAWL" }, (response) => {
-            if (chrome.runtime.lastError) {
-                status.innerText = "Error: Refresh page and try again.";
-                console.warn("Crawl message error:", chrome.runtime.lastError.message);
-            } else {
+        // ── All other sites → standard crawl ──
+        let popupClosed = false;
+        const autoCloseTimer = setTimeout(() => {
+            if (!popupClosed) {
+                popupClosed = true;
                 status.innerText = "Crawl started...";
                 window.close();
             }
+        }, 1000);
+
+        chrome.tabs.sendMessage(tab.id, { command: "START_CRAWL" }, (response) => {
+            if (chrome.runtime.lastError) {
+                clearTimeout(autoCloseTimer);
+                popupClosed = true; // prevent the timer from also firing
+                status.innerText = "Error: Refresh page and try again.";
+                console.warn("Crawl message error:", chrome.runtime.lastError.message);
+            }
+    // If no error, do nothing here — the timer above already handles closing.
+    // (If it happens to fire before the timer, that's fine too, no conflict.)
         });
     };
 });

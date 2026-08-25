@@ -1168,6 +1168,32 @@ def _ddri_used(entry):
         return "0.00"
     return fmt_money(used)
 
+def _resolve_primary_secondary(dent: dict, plan: dict) -> str:
+    """
+    Determines Primary vs Secondary by matching the crawled plan's own
+    Group No. against the Group # captured separately for each column on
+    the Patient Overview page's Primary/Secondary Dental Ins block
+    (dent["pri_sec_dental_ins"]["primary"/"secondary"]["Group #"]).
+    Defaults to "Primary" whenever the overview data wasn't captured, is
+    incomplete, or doesn't cleanly resolve to Secondary alone.
+    """
+    pri_sec = dent.get("pri_sec_dental_ins", {})
+    if not isinstance(pri_sec, dict):
+        return "Primary"
+
+    plan_group_no = (plan.get("plan_details", {}).get("Group No.", "") or "").strip()
+    if not plan_group_no:
+        return "Primary"
+
+    sec_group  = (pri_sec.get("secondary", {}).get("Group #", "") or "").strip()
+    prim_group = (pri_sec.get("primary",   {}).get("Group #", "") or "").strip()
+
+    if sec_group and sec_group != "N/A" and plan_group_no == sec_group:
+        if not (prim_group and prim_group != "N/A" and plan_group_no == prim_group):
+            return "Secondary"
+
+    return "Primary"
+
 def build_patient_notes(denticon_data: dict, insurance_data: dict) -> dict:
     dent = denticon_data.get("denticon_data", denticon_data)
     ins  = insurance_data
@@ -1269,6 +1295,9 @@ def build_patient_notes(denticon_data: dict, insurance_data: dict) -> dict:
         ind_max_used = fmt_money(fin.get("annual_max",     {}).get("used", ""))
         ind_ded_used = fmt_money(fin.get("deductible_ind", {}).get("used", ""))
         ortho_used   = fmt_money(fin.get("ortho_lifetime", {}).get("used", ""))
+        ind_max_used = ind_max_used if ind_max_used not in ("N/A", "") else "0.00"
+        ind_ded_used = ind_ded_used if ind_ded_used not in ("N/A", "") else "0.00"
+        ortho_used   = ortho_used   if ortho_used   not in ("N/A", "") else "0.00"
 
     elif is_cigna:
         fin          = cigna_data.get("financials", {})
@@ -1734,15 +1763,17 @@ def build_patient_notes(denticon_data: dict, insurance_data: dict) -> dict:
             return "NH"
         parsed.sort(key=lambda x: x[0], reverse=True)
         return ", ".join(d for _, d in parsed)
-
+    primary_secondary = _resolve_primary_secondary(dent, plan)
+    
     return {
+        
         "patient_name":               patient_name,
         "appointment_date":           "",
         "verified_by":                "",
         "verification_date":          verification_date,
         "eligibility_status":         "Currently Eligible",
         "carrier":                    carrier,
-        "primary_secondary":          "Primary",
+        "primary_secondary":          primary_secondary,
         "plan_type":                  plan_type,
         "patient_assigned_to_office": "NA",
         "individual_maximum_used":    ind_max_used,
