@@ -223,12 +223,21 @@
     }
 
     function parseCardAmounts(container) {
-        if (!container) return { remaining: "N/A", used: "N/A", total: "N/A" };
+        if (!container) return { remaining: "N/A", used: "N/A", total: "N/A", applies_to: "N/A" };
         const text = container.innerText || "";
+        // The card also names the service categories the maximum applies to:
+        //   "Annual  for Diagnostic, Preventive, Restorative, Endodontics,
+        //    Prosthodontics, Oral Surgery, Adjunctive, Implant Services  $ ..."
+        // Whether Preventive appears in that list is what decides
+        // "Preventative Included in Yearly Max?" on the breakdown sheet, so the
+        // list is captured verbatim rather than interpreted here.
+        const flat = text.replace(/\s+/g, ' ');
+        const categories = flat.match(/for\s+(.+?)\s*\$/i);
         return {
             remaining: text.match(/\$\s*[\d,]+\.?\d*\s*remaining/i)?.[0]?.replace(/\s+/g, ' ').trim() || "N/A",
             used: text.match(/\$\s*[\d,]+\.?\d*\s*(?:used|paid)\s*to\s*date/i)?.[0]?.replace(/\s+/g, ' ').trim() || "N/A",
-            total: text.match(/\$\s*[\d,]+\.?\d*\s*total/i)?.[0]?.replace(/\s+/g, ' ').trim() || "N/A"
+            total: text.match(/\$\s*[\d,]+\.?\d*\s*total/i)?.[0]?.replace(/\s+/g, ' ').trim() || "N/A",
+            applies_to: categories ? categories[1].trim() : "N/A"
         };
     }
 
@@ -240,11 +249,11 @@
         let ortho_lifetime;
 
         if (!lifetimeCard) {
-            ortho_lifetime = { remaining: "0.0", used: "0.0", total: "0.0" };
+            ortho_lifetime = { remaining: "0.0", used: "0.0", total: "0.0", applies_to: "N/A" };
         } else {
             const lifetimeText = lifetimeCard.innerText || "";
             if (/no lifetime benefit maximum/i.test(lifetimeText)) {
-                ortho_lifetime = { remaining: "0.0", used: "0.0", total: "0.0" };
+                ortho_lifetime = { remaining: "0.0", used: "0.0", total: "0.0", applies_to: "N/A" };
             } else {
                 ortho_lifetime = parseCardAmounts(lifetimeCard);
             }
@@ -253,7 +262,7 @@
         const famCard = findCardByLabel("Family");
         const deductible_fam = famCard
             ? parseCardAmounts(famCard)
-            : { remaining: "N/A", used: "N/A", total: "N/A" };
+            : { remaining: "N/A", used: "N/A", total: "N/A", applies_to: "N/A" };
 
         return {
             annual_max:     parseCardAmounts(annualCard),

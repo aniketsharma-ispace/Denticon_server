@@ -120,6 +120,8 @@ EXPECTED_FIELDS = {
     # Clauses
     "missing_tooth":    "No",
     "prev_in_max":      "Yes",
+    "posterior_composite_downgrade": "No",
+    "porcelain_posterior_downgrade": "Yes",
     # Coverage by CDT code — the Percentage column, never Frequency/Age/History
     "d0220": "100%",   # row: D0220 PAs / No Frequency / 100%
     "d0120": "100%",   # row: D0120 Periodic Exam / 2X1Year / 100% / 01/28/2026
@@ -238,6 +240,8 @@ EXPECTED_2 = {
     "ortho_max": "2000", "ortho_max_paid": "543.20",
     "ortho_ded": "0", "ortho_ded_paid": "0",
     "missing_tooth": "No", "prev_in_max": "Yes",
+    "posterior_composite_downgrade": "Yes",   # sheet answers the two
+    "porcelain_posterior_downgrade": "No",    # alternate-benefit questions
     # The eight rows whose Frequency cell wrapped — each must be the
     # Percentage, never the wrapped fragment and never the Age Limit.
     "d0220": "100%",   # "No" + "Frequency" / 100%
@@ -321,13 +325,24 @@ else:
 
         check("[2] whole sheet agrees with the portal",
               res["summary"]["mismatches"], 0)
-        # Only genuine gaps remain: a real restriction the portal states and the
-        # sheet does not. Empty Frequency/Age cells that merely mean "no limit"
-        # are agreement, not gaps, and must not be counted here.
-        check("[2] only genuine sheet gaps are reported blank",
+        # Nothing is reported blank any more. The three rows that used to be
+        # (D1110 age, D3310 frequency, D9230 frequency) are columns MetLife does
+        # not supply for those codes, so they are no longer generated at all.
+        check("[2] nothing reported blank on the sheet",
               sorted(r["key"] for sec in res["sections"] for r in sec["rows"]
-                     if r["status"] == "missing_in_sabrina"),
-              ["d1110__age", "d3310__freq", "d9230__freq"])
+                     if r["status"] == "missing_in_sabrina"), [])
+
+        # The two alternate-benefit questions now compare.
+        check("[2] posterior composites question compares",
+              (rows["posterior_composite_downgrade"]["portal"],
+               rows["posterior_composite_downgrade"]["status"]), ("Yes", "match"))
+        check("[2] posterior crowns question compares",
+              (rows["porcelain_posterior_downgrade"]["portal"],
+               rows["porcelain_posterior_downgrade"]["status"]), ("No", "match"))
+
+        # Same carrier stated two ways is not a mismatch.
+        check("[2] insurance name matches on the carrier",
+              rows["ins_name"]["status"], "match")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -422,17 +437,93 @@ check("blank age does NOT excuse an age floor (14-99)",
 check("blank age does NOT excuse a real ceiling (0-14)",
       sc._blank_means_no_limit("agelimit", "0-14"), False)
 
-# Sabrina puts the D4341 quadrant count in the Age Limit column, not an age.
-_d4341_age = next(f for f in sc._SPEC if f["key"] == "d4341__age")
-check("D4341 age column flagged uncomparable",
-      bool(_d4341_age.get("uncomparable")), True)
-
-# The generated rows cover every CDT code, three aspects each.
-_cdt = [f for f in sc._SPEC if f["section"] == "Coverage by CDT Code"]
+# Only the codes MetLife actually supplies each column for are compared.
+# Anything else produced "blank on the sheet" flags for cells the sheet is right
+# to leave empty.
 _derived = [f for f in sc._SPEC if f.get("derived")]
-check("three generated rows per CDT code", len(_derived), len(_cdt) * 3)
+_by_aspect = {a: sorted(f["row_key"] for f in _derived if f["aspect"] == a)
+              for a in ("freq", "age", "hist")}
+
+check("age limit compared only for D1206/D1208/D1351/D1510/D8080",
+      _by_aspect["age"], ["d1206", "d1208", "d1351", "d1510", "ortho_coverage"])
+check("history compared only for the twelve listed codes",
+      _by_aspect["hist"],
+      ["d0120", "d0140", "d0210", "d0274", "d0330", "d1110",
+       "d1206", "d1208", "d1351", "d1510", "d4341", "d4910"])
+_cdt_keys = {f["key"] for f in sc._SPEC if f["section"] == "Coverage by CDT Code"}
+check("frequency skipped for D3310/D7140/D7210/D9230/D9243/D8080/D8090",
+      sorted(_cdt_keys - set(_by_aspect["freq"])),
+      ["d3310", "d7140", "d7210", "d8090", "d9230", "d9243", "ortho_coverage"])
+# D4341 carries history but NOT an age limit — its Age Limit column holds the
+# quadrant count, which has no portal counterpart.
+check("D4341 has a history row", "d4341" in _by_aspect["hist"], True)
+check("D4341 has no age row", "d4341" in _by_aspect["age"], False)
 check("generated rows stay out of the label matcher",
       any(sc._norm_label(f["label"]) in sc._ALL_LABELS for f in _derived), False)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  1d. MetLife observations (Material/JSON Requirment.pdf)
+# ══════════════════════════════════════════════════════════════════════════════
+
+print("── 1d. METLIFE OBSERVATIONS ──")
+
+# OBS: the sheet names the plan, the portal names the payer + claims address.
+# Same insurer, so the same value.
+check("carrier: 'Metlife PDP+' vs the portal's payer string",
+      sc._compare("carrier", "Metlife PDP+",
+                  "(IN) MetLife(TX)- PO Box 981282- 79998")[0], True)
+check("carrier: the match is explained",
+      "same carrier" in sc._compare("carrier", "Metlife PDP+",
+                                    "(IN) MetLife(TX)- PO Box 981282- 79998")[1], True)
+check("carrier: a genuinely different insurer is caught",
+      sc._compare("carrier", "Metlife PDP+", "Cigna Dental PPO")[0], False)
+check("carrier: Delta Dental variants agree",
+      sc._compare("carrier", "Delta Dental PPO", "DELTA DENTAL OF WISCONSIN")[0], True)
+check("carrier: United Concordia is not confused with Concordia Plan Services",
+      sc._carrier_brand("United Concordia Dental"), "united concordia")
+check("carrier: unknown brands fall back to text rules",
+      sc._compare("carrier", "Acme Dental Trust", "Acme Dental Trust")[0], True)
+
+# OBS: the missing-tooth answer is INVERTED and taken from the FIRST sentence.
+from new_plan import _missing_tooth_clause as _mtc
+_BOTH = ("Are plan benefits available for teeth lost prior to effective date: {} "
+         "Are plan benefits available for congenital teeth lost prior to "
+         "effective date: {}")
+check("missing tooth: first sentence Yes -> clause does NOT apply",
+      _mtc(_BOTH.format("Yes", "Yes")), "No")
+check("missing tooth: first sentence No -> clause DOES apply",
+      _mtc(_BOTH.format("No", "Yes")), "Yes")
+check("missing tooth: the congenital answer never decides it",
+      _mtc(_BOTH.format("Yes", "No")), "No")
+
+# OBS: preventive counts toward the yearly maximum when the maximum's category
+# list names it.
+def _annual(applies_to):
+    return {"metlife_data": {"financials": {"annual_max": {"applies_to": applies_to}}}}
+
+check("yearly max: category list naming Preventive -> Yes",
+      sc._portal_prev_in_max({}, _annual(
+          "Diagnostic, Preventive, Restorative, Endodontics, Prosthodontics, "
+          "Oral Surgery, Adjunctive, Implant Services")), "Yes")
+check("yearly max: category list without Preventive -> No",
+      sc._portal_prev_in_max({}, _annual(
+          "Restorative, Endodontics, Prosthodontics, Oral Surgery")), "No")
+check("yearly max: an export that never captured the list stays silent",
+      sc._portal_prev_in_max({}, {"metlife_data": {"financials": {"annual_max": {}}}}), None)
+check("yearly max: 'N/A' is treated as not captured",
+      sc._portal_prev_in_max({}, _annual("N/A")), None)
+
+# OBS: both alternate-benefit questions are compared fields now.
+_keys = {f["key"] for f in sc._SPEC}
+check("posterior composites question is a compared field",
+      "posterior_composite_downgrade" in _keys, True)
+check("posterior crowns question is a compared field",
+      "porcelain_posterior_downgrade" in _keys, True)
+check("neither question is still listed as non-compared furniture",
+      any(sc._norm_label(lbl) in sc._OTHER_SHEET_LABELS for lbl in
+          ("Are Posterior Composites Downgraded To Amalgam?",
+           "Are Posterior Crowns Downgraded?")), False)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

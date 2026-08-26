@@ -93,7 +93,10 @@ _SPEC: list[dict] = [
      "after": "Subscriber Name"},
 
     # ── Insurance ────────────────────────────────────────────────────────────
-    {"key": "ins_name",     "label": "Insurance Name",    "kind": "text",    "section": "Insurance", "portal": "ins_name",
+    # Compared on the CARRIER, not the whole string: the sheet names the plan
+    # ("Metlife PDP+") while the portal names the payer and its claims address
+    # ("(IN) MetLife(TX)- PO Box 981282- 79998"). Same insurer, so same value.
+    {"key": "ins_name",     "label": "Insurance Name",    "kind": "carrier", "section": "Insurance", "portal": "ins_name",
      "aliases": ["Insurance Carrier", "Carrier Name"]},
     {"key": "group_name",   "label": "Group Name",        "kind": "text",    "section": "Insurance", "portal": "group_name",
      "aliases": ["Employer Group", "Employer Name"]},
@@ -161,8 +164,22 @@ _SPEC: list[dict] = [
     # ── Clauses ──────────────────────────────────────────────────────────────
     {"key": "missing_tooth",  "label": "Does Missing Tooth Clause Apply?",     "kind": "yesno", "section": "Clauses", "portal": "missing_tooth",
      "aliases": ["Missing Tooth Clause", "Does Missing Tooth Clause Apply"]},
-    {"key": "prev_in_max",    "label": "Preventative Included in Yearly Max?", "kind": "yesno", "section": "Clauses", "portal": None,
+    {"key": "prev_in_max",    "label": "Preventative Included in Yearly Max?", "kind": "yesno", "section": "Clauses", "portal": "_prev_in_max",
      "aliases": ["Preventive Included in Yearly Max", "Preventative Included in Yearly Max"]},
+
+    # OBS 4/5 — the two alternate-benefit questions. The portal states both in a
+    # single "Alternate Benefits" provision and `new_plan` already splits them
+    # into these two answers, so the sheet's Yes/No compares directly.
+    {"key": "posterior_composite_downgrade",
+     "label": "Are Posterior Composites Downgraded To Amalgam?", "kind": "yesno",
+     "section": "Clauses", "portal": "posterior_composite_downgrade",
+     "aliases": ["Are Posterior Composites Downgraded to Amalgam",
+                 "Posterior Composites Downgraded To Amalgam"]},
+    {"key": "porcelain_posterior_downgrade",
+     "label": "Are Posterior Crowns Downgraded?", "kind": "yesno",
+     "section": "Clauses", "portal": "porcelain_posterior_downgrade",
+     "aliases": ["Are Posterior Crowns Downgraded",
+                 "Are Porcelain Crowns Downgraded"]},
 
     # ── Coverage by CDT code ─────────────────────────────────────────────────
     # Each row compares a coverage percentage. Where Sabrina's label names one
@@ -249,11 +266,27 @@ _BENEFIT_ASPECTS = (
 
 _ASPECT_SECTION = "Coverage Detail — Frequency / Age / History"
 
-# Sabrina puts the D4341 quadrant count in the Age Limit column rather than an
-# age, so that one cell has no portal counterpart and must not be compared.
-_AGE_COLUMN_EXCEPTIONS = {
-    "d4341": "Sabrina uses this column for the D4341 quadrant count, not an age",
+# Which codes actually carry each column, per the MetLife observations.
+#
+# Age Limit and History are only meaningful for a handful of procedures, and
+# Frequency is not expected for a few. Generating rows for the rest produced ~70
+# "blank on the sheet" flags that were nothing of the kind — the sheet is right
+# to leave those cells empty. Note D4341 is in the history list but NOT the age
+# list: Sabrina puts the quadrant count in its Age Limit column, not an age.
+_AGE_LIMIT_CODES = {"D1206", "D1208", "D1351", "D1510", "D8080"}
+_HISTORY_CODES = {
+    "D0120", "D0140", "D0210", "D0274", "D0330", "D1110",
+    "D1206", "D1208", "D1351", "D1510", "D4341", "D4910",
 }
+_NO_FREQUENCY_CODES = {"D3310", "D7140", "D7210", "D9230", "D9243", "D8080", "D8090"}
+
+
+def _aspect_applies(aspect: str, code: str) -> bool:
+    if aspect == "age":
+        return code in _AGE_LIMIT_CODES
+    if aspect == "hist":
+        return code in _HISTORY_CODES
+    return code not in _NO_FREQUENCY_CODES        # frequency
 
 
 def _build_aspect_spec() -> list[dict]:
@@ -265,8 +298,11 @@ def _build_aspect_spec() -> list[dict]:
         if not (isinstance(src, tuple) and src and src[0] == "code"):
             continue
         codes = src[1:]
+        primary = codes[0].upper()
         for suffix, title, kind, portal_field in _BENEFIT_ASPECTS:
-            entry = {
+            if not _aspect_applies(suffix, primary):
+                continue
+            out.append({
                 "key":     f'{field["key"]}__{suffix}',
                 "label":   f'{field["label"]} · {title}',
                 "kind":    kind,
@@ -275,10 +311,7 @@ def _build_aspect_spec() -> list[dict]:
                 "derived": True,
                 "row_key": field["key"],
                 "aspect":  suffix,
-            }
-            if suffix == "age" and field["key"] in _AGE_COLUMN_EXCEPTIONS:
-                entry["uncomparable"] = _AGE_COLUMN_EXCEPTIONS[field["key"]]
-            out.append(entry)
+            })
     return out
 
 
@@ -353,9 +386,7 @@ _OTHER_SHEET_LABELS = {_norm_label(s) for s in (
     "Applies To", "Period", "Ortho Maximum Covered", "Ortho Payment Timing",
     "Are Major Services Paid on Prep or Seat date?", "Pre-Authorize over",
     "Dependent Age Limit",
-    # Benefit Details question rows
-    "Are Posterior Composites Downgraded To Amalgam?",
-    "Are Posterior Crowns Downgraded?",
+    # Benefit Details question rows that this audit does not compare
     "When Is First Perio Maintenance Allowed After SRP ?",
     # Section + table headers
     "Demographics", "Office Information", "Patient/Subscriber Information",
@@ -1090,6 +1121,31 @@ def _norm_text(v) -> str | None:
     return s or None
 
 
+# Carrier brands, so "Metlife PDP+" and "(IN) MetLife(TX)- PO Box 981282- 79998"
+# are recognized as the same insurer. Longest first so "united concordia" wins
+# over "concordia" and "delta dental" over "delta".
+_CARRIER_BRANDS = (
+    "united concordia", "delta dental", "blue cross", "blue shield",
+    "mutual of omaha", "physicians mutual", "sun life", "guardian",
+    "metlife", "cigna", "aetna", "dentaquest", "ameritas", "principal",
+    "humana", "anthem", "careington", "solstice", "dominion", "liberty",
+    "geha", "tricare", "unum", "lincoln", "dnoa", "concordia", "renaissance",
+    "assurant", "premera", "regence", "wellpoint",
+)
+
+
+def _carrier_brand(v) -> str | None:
+    """The carrier brand named in a value, if any."""
+    if _blank(v):
+        return None
+    s = re.sub(r"[^a-z ]", " ", str(v).lower())
+    s = re.sub(r"\s+", " ", s)
+    for brand in _CARRIER_BRANDS:
+        if brand in s:
+            return brand
+    return None
+
+
 _NAME_SUFFIXES = {"JR", "SR", "II", "III", "IV", "MD", "DDS", "DMD"}
 
 
@@ -1233,6 +1289,17 @@ def _compare(kind: str, sab, por) -> tuple[bool | None, str]:
         if da and db and da.lstrip("0") == db.lstrip("0"):
             return True, "digits match; formatting differs"
         return False, ""
+
+    if kind == "carrier":
+        # Same insurer is the same value, however each system decorates it.
+        ba, bb = _carrier_brand(sab), _carrier_brand(por)
+        if ba and bb:
+            if ba == bb:
+                same = _norm_text(sab) == _norm_text(por)
+                return True, "" if same else "same carrier, stated differently"
+            return False, f"different carriers ({ba} vs {bb})"
+        # Neither side names a brand we know — fall back to plain text rules.
+        return _compare("text", sab, por)
 
     if kind == "name":
         a, b = _norm_name(sab), _norm_name(por)
@@ -1394,6 +1461,29 @@ def _portal_cob(bd: dict, portal_raw: dict) -> str | None:
     return None
 
 
+def _portal_prev_in_max(bd: dict, portal_raw: dict) -> str | None:
+    """
+    Whether preventive services count toward the yearly maximum.
+
+    The portal states it as the category list printed under the Annual maximum —
+    "for Diagnostic, Preventive, Restorative, Endodontics, Prosthodontics, Oral
+    Surgery, Adjunctive, Implant Services". Preventive appearing in that list
+    means it draws down the maximum.
+
+    Captured by the extension as financials.annual_max.applies_to; exports made
+    before that was added simply have nothing here, and the row stays unstated
+    rather than guessed at.
+    """
+    ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
+    financials = ml.get("financials") or {}
+    annual = financials.get("annual_max") or {}
+    applies = annual.get("applies_to") if isinstance(annual, dict) else None
+    if _blank(applies):
+        return None
+    text = str(applies).lower()
+    return "Yes" if ("preventive" in text or "preventative" in text) else "No"
+
+
 def _portal_oon_benefits(bd: dict, portal_raw: dict) -> str | None:
     """
     Whether the plan pays anything out of network.
@@ -1451,6 +1541,7 @@ def _portal_oon_benefits(bd: dict, portal_raw: dict) -> str | None:
 # call them uniformly, even where one of the two arguments isn't needed.
 _DERIVED = {
     "_cob": _portal_cob,
+    "_prev_in_max": _portal_prev_in_max,
     "_in_network": _portal_in_network,
     "_oon_benefits": _portal_oon_benefits,
     "_yearly_max_paid": _portal_yearly_max_paid,
