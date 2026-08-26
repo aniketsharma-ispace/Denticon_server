@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "Insurance Auditor Pro",
-    "version": "1.29",
+    "version": "1.30",
     "permissions": [
         "storage",
         "activeTab",
