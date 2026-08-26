@@ -26,22 +26,113 @@ function simulateMouseAt(x, y) {
     });
 }
 
-// Wait a random 10–13 s while continuously "moving the cursor" around the
-// visible page so slow/lazy-rendered tab content has time (and hover events)
-// to fully populate before we scrape it.
-async function waitWithMouseMovement(minMs = 2000, maxMs = 3000) {
-    const total = minMs + Math.random() * (maxMs - minMs);
+// Every modal tab used to get a flat 2–3 s sleep, so a single plan cost
+// ~10 s across its three tabs plus the close delay — regardless of how fast
+// the page actually rendered. Instead of sleeping blind, poll the DOM ten
+// times a second (still jiggling the "cursor" so hover/lazy-render logic
+// fires) and carry on the moment the tab's content is BOTH present and
+// unchanged across consecutive polls. Fast tabs cost a few hundred ms; slow
+// ones still get up to TAB_WAIT_MAX_MS before we scrape whatever is there.
+const TAB_WAIT_MAX_MS  = 3000;   // hard ceiling per tab
+const TAB_POLL_MS      = 100;    // how often we re-check the DOM
+const TAB_STABLE_POLLS = 2;      // identical polls needed to call it settled
+const TAB_WAIT_MIN_MS  = 250;    // never return before this much render time
+
+// Each signature function returns a string that changes whenever its tab's
+// rendered content changes, or "" while the tab is still empty. textContent
+// (not innerText) keeps polling cheap — it doesn't force a layout pass.
+
+function labelTextLength(scope) {
+    let len = 0;
+    scope.querySelectorAll('.label-inner, .label-inner-value')
+         .forEach(el => { len += (el.textContent || "").length; });
+    return len;
+}
+
+// baselineLabelCount is the .label-inner count taken right BEFORE the plan was
+// clicked: the page underneath the modal has label rows of its own, so without
+// that baseline the signature would look "settled" on the pre-click DOM and we
+// would scrape the previous view's fields.
+function planTabSignature(baselineLabelCount = 0) {
+    const modal = document.querySelector('.insurance-details-modal');
+    if (modal) {
+        const labels = modal.querySelectorAll('.label-inner');
+        if (labels.length < 5) return "";
+        return `plan:modal:${labels.length}:${labelTextLength(modal)}`;
+    }
+    const labels = document.querySelectorAll('.label-inner');
+    if (labels.length < 5 || labels.length <= baselineLabelCount) return "";
+    return `plan:doc:${labels.length}:${labelTextLength(document)}`;
+}
+
+function benTabSignature() {
+    const modal = document.querySelector('.insurance-details-modal');
+    const container = modal || document.body;
+    const text = container.textContent || "";
+    if (/Deductible Information|Maximum Information|Ortho Max|Plan Notes/i.test(text)) {
+        return `ben:${text.length}`;
+    }
+    // No section headings: only call that "rendered" when we are scoped to the
+    // modal itself, since a plan can legitimately carry none of them. Scoped to
+    // the whole page we cannot tell the difference, so keep waiting.
+    if (modal && text.trim().length > 200) return `ben:empty:${text.length}`;
+    return "";
+}
+
+function coverageTabSignature() {
+    const table = document.querySelector('.coverage-table-content table');
+    if (!table) return "";
+    const rows = table.querySelectorAll('tbody > tr.main-row');
+    // Deliberately not settling on a zero-row table — rows can arrive after the
+    // table shell mounts. A genuinely empty one just rides out the timeout and
+    // still scrapes correctly as [].
+    if (rows.length === 0) return "";
+    return `cov:${rows.length}:${(table.textContent || "").length}`;
+}
+
+// Wait until signatureFn() reports content that is present and stable, keeping
+// simulated cursor movement going throughout. Resolves early the moment the
+// tab settles; returns false at maxMs so a genuinely slow tab is scraped
+// anyway rather than skipped.
+async function waitForTabContent(signatureFn, maxMs = TAB_WAIT_MAX_MS) {
     const start = Date.now();
-    console.log(`[V22] Waiting ${(total / 1000).toFixed(1)}s with simulated mouse movement...`);
     let x = Math.floor(window.innerWidth / 2);
     let y = Math.floor(window.innerHeight / 2);
-    while (Date.now() - start < total) {
+    let lastSig = "";
+    let stable  = 0;
+
+    while (Date.now() - start < maxMs) {
         // Drift the cursor in small random steps, clamped to the viewport
         x = Math.min(Math.max(x + Math.floor(Math.random() * 200) - 100, 5), window.innerWidth - 5);
         y = Math.min(Math.max(y + Math.floor(Math.random() * 200) - 100, 5), window.innerHeight - 5);
         simulateMouseAt(x, y);
-        await sleep(200 + Math.random() * 300);
+
+        const sig = signatureFn();
+        if (sig && sig === lastSig) {
+            stable++;
+            if (stable >= TAB_STABLE_POLLS && Date.now() - start >= TAB_WAIT_MIN_MS) {
+                console.log(`[V22] Tab settled in ${Date.now() - start}ms — ${sig}`);
+                return true;
+            }
+        } else {
+            stable  = 0;
+            lastSig = sig;
+        }
+        await sleep(TAB_POLL_MS);
     }
+
+    console.warn(`[V22] Tab still unsettled after ${maxMs}ms — scraping what rendered.`);
+    return false;
+}
+
+// Same cheap polling for plain conditions (no cursor simulation needed).
+async function waitUntil(conditionFn, maxMs, pollMs = TAB_POLL_MS) {
+    const start = Date.now();
+    while (Date.now() - start < maxMs) {
+        if (conditionFn()) return true;
+        await sleep(pollMs);
+    }
+    return false;
 }
 
 function findElementByText(text) {
@@ -527,13 +618,10 @@ async function deepCrawlInsurance() {
     }
 
     // ── Step 4: Wait for plan list ──
-    let planLinks = [];
-    for (let i = 0; i < 8; i++) {
-        await sleep(1500);
-        planLinks = getPlanLinks();
-        if (planLinks.length > 0) break;
-        console.log(`[V22] Waiting for plans... (${i + 1}/8)`);
-    }
+    // Poll instead of sleeping in 1.5 s chunks — the table usually lands in a
+    // few hundred ms, and this starts the audit the moment it does.
+    await waitUntil(() => getPlanLinks().length > 0, 12000);
+    const planLinks = getPlanLinks();
 
     if (planLinks.length === 0) {
         alert("Plan list did not load.\n\nWorkaround: Click Q SEARCH manually, wait for the table, then click Crawl again.");
@@ -549,20 +637,24 @@ async function deepCrawlInsurance() {
 
         const planId = clean(currentLinks[i].innerText);
         console.log(`[V22] Auditing plan ${i + 1}/${planLinks.length} — ID: ${planId}`);
+
+        // Snapshot the pre-click label count so planTabSignature can tell the
+        // plan modal's own fields apart from the page already on screen.
+        const baselineLabels = document.querySelectorAll('.label-inner').length;
         currentLinks[i].click();
 
-        // Give each tab 10–13 s to fully render, jiggling the cursor the
-        // whole time so hover/lazy-loaded content actually populates.
-        await waitWithMouseMovement();
+        // Each tab is scraped as soon as its content has rendered and stopped
+        // changing (see waitForTabContent) instead of after a fixed sleep.
+        await waitForTabContent(() => planTabSignature(baselineLabels));
 
         const plan = scrapePlanTab();
 
         const benTab = findElementByText("BEN");
-        if (benTab) { benTab.click(); await waitWithMouseMovement(); }
+        if (benTab) { benTab.click(); await waitForTabContent(benTabSignature); }
         const ben = scrapeBenTab();
 
         const covTab = findElementByText("COVERAGE AND LIMITATIONS");
-        if (covTab) { covTab.click(); await waitWithMouseMovement(); }
+        if (covTab) { covTab.click(); await waitForTabContent(coverageTabSignature); }
         const cov = scrapeCoverageTab();
 
         allPlanAudits.push({ ins_plan_id: planId, plan_details: plan, benefits: ben, coverage: cov });
@@ -570,7 +662,15 @@ async function deepCrawlInsurance() {
         const cancelBtn = document.getElementById('btnCancel') ||
                           findElementByText("CANCEL") ||
                           findElementByText("CLOSE");
-        if (cancelBtn) { cancelBtn.click(); await sleep(2000); }
+        if (cancelBtn) {
+            cancelBtn.click();
+            // Move on as soon as the modal is gone and the result table is
+            // back, rather than always burning a flat 2 s.
+            await waitUntil(
+                () => !document.querySelector('.insurance-details-modal') && getPlanLinks().length > 0,
+                2000
+            );
+        }
     }
 
     // ── Step 6: Merge everything and download ──
