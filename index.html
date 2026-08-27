@@ -224,6 +224,15 @@
         .sab-section-count { font-size:0.6rem; color:#8b93a7; letter-spacing:0.05em; }
         .sab-clean { background:rgba(0,230,118,0.08); border:1px solid rgba(0,230,118,0.3); border-radius:10px; padding:16px 18px; color:#00e676; font-weight:600; font-size:0.9rem; margin-top:14px; }
         .sab-toggle { font-size:0.72rem; color:#00d2ff; cursor:pointer; text-decoration:underline; margin-top:18px; display:inline-block; }
+        .sab-grouped th:first-child { width:22%; }
+        .sab-cell { font-family:'SF Mono',Menlo,Consolas,monospace; font-size:0.72rem; line-height:1.45; vertical-align:top; }
+        .sab-cell-s { color:#e6edf3; }
+        .sab-cell-p { color:#8b93a7; }
+        .sab-cell.sab-bad .sab-cell-s { color:#ff8a80; font-weight:700; }
+        .sab-cell.sab-bad .sab-cell-p { color:#ffab91; }
+        .sab-na { color:#4b5263; text-align:center; font-family:inherit; }
+        .sab-legend { font-size:0.66rem; color:#8b93a7; margin:2px 0 8px; }
+        .sab-legend b { color:#c9d3e3; font-weight:600; }
         .sab-diag { font-size:0.68rem; color:#8b93a7; margin-top:16px; line-height:1.6; background:rgba(255,255,255,0.03); border-radius:8px; padding:12px 14px; }
 
         /* ── Insurance Override Modal ── */
@@ -972,6 +981,84 @@ function sabRow(r) {
     </tr>`;
 }
 
+/* The CDT rows arrive one per column (percentage / frequency / age / history)
+   but belong together: each code is shown as ONE line with a cell per column,
+   Sabrina's value above the portal's. Rows carry `group` so this renderer can
+   reassemble them; sections without it fall back to the plain table. */
+const SAB_ASPECT_COLS = [
+    ['pct',  'Percentage'],
+    ['freq', 'Frequency'],
+    ['age',  'Age Limit'],
+    ['hist', 'History'],
+];
+
+/* Worst-first, but a code whose comparable columns all agree reads as a match
+   even when the portal is silent on the rest. */
+const SAB_STATUS_RANK = [
+    'mismatch', 'missing_in_sabrina', 'not_comparable',
+    'match', 'not_in_portal', 'not_stated',
+];
+
+function sabWorstStatus(rows) {
+    for (const s of SAB_STATUS_RANK) {
+        if (rows.some(r => r.status === s)) return s;
+    }
+    return 'not_stated';
+}
+
+function sabAspectCell(row) {
+    if (!row) return '<td class="sab-cell sab-na" title="not compared for this code">·</td>';
+    const bad = row.status === 'mismatch';
+    const show = v => (v === null || v === undefined || v === '') ? '—' : escHtml(v);
+    const st = SAB_STATUS[row.status] || SAB_STATUS.not_stated;
+    return `<td class="sab-cell${bad ? ' sab-bad' : ''}" title="${escHtml(row.label)} — ${st.label}${row.note ? ': ' + escHtml(row.note) : ''}">
+        <div class="sab-cell-s">${show(row.sabrina)}</div>
+        <div class="sab-cell-p">${show(row.portal)}</div>
+    </td>`;
+}
+
+function sabGroupedTable(rows) {
+    const order = [];
+    const groups = new Map();
+    for (const r of rows) {
+        const g = r.group || r.key;
+        if (!groups.has(g)) {
+            groups.set(g, { label: r.group_label || r.label, cells: {} });
+            order.push(g);
+        }
+        groups.get(g).cells[r.aspect || 'pct'] = r;
+    }
+
+    const head = `<thead><tr><th>Field</th>`
+        + SAB_ASPECT_COLS.map(([, t]) => `<th>${t}</th>`).join('')
+        + `<th>Status</th></tr></thead>`;
+
+    const body = order.map(key => {
+        const grp = groups.get(key);
+        const cells = Object.values(grp.cells);
+        const worst = sabWorstStatus(cells);
+        const st = SAB_STATUS[worst] || SAB_STATUS.not_stated;
+        const bad = cells.some(r => r.status === 'mismatch');
+        const crit = cells.some(r => r.status === 'mismatch' && r.critical);
+        return `<tr class="${crit ? 'sab-row-crit' : (bad ? 'sab-row-bad' : '')}">
+            <td class="sab-field">${bad && crit ? '<span class="sab-crit-dot">▸</span>' : ''}${escHtml(grp.label)}</td>
+            ${SAB_ASPECT_COLS.map(([a]) => sabAspectCell(grp.cells[a])).join('')}
+            <td><span class="sab-chip ${st.cls}">${st.label}</span></td>
+        </tr>`;
+    }).join('');
+
+    return `<div class="sab-legend">Each row is one code — <b>upper value</b> from the Sabrina PDF,
+            <b>lower value</b> from the insurance portal. <b>·</b> means that column is not compared
+            for this code.</div>
+        <table class="sab-table sab-grouped">${head}<tbody>${body}</tbody></table>`;
+}
+
+function sabSectionTable(sec) {
+    return sec.rows.some(r => r.group)
+        ? sabGroupedTable(sec.rows)
+        : `<table class="sab-table">${SAB_THEAD}<tbody>${sec.rows.map(sabRow).join('')}</tbody></table>`;
+}
+
 async function runSabrinaCompare() {
     if (!portalData) { alert('Load the insurance portal export (JSON or PDF) first.'); return; }
 
@@ -1026,10 +1113,15 @@ function renderSabrina(result) {
            <table class="sab-table">${SAB_THEAD}<tbody>${mism.map(sabRow).join('')}</tbody></table>`
         : `<div class="sab-clean">✓ Every field the portal states agrees with the Sabrina PDF.</div>`;
 
-    const allBlock = (result.sections || []).map(sec => `
+    const allBlock = (result.sections || []).map(sec => {
+        const groups = new Set(sec.rows.filter(r => r.group).map(r => r.group));
+        const count = groups.size || sec.rows.length;
+        const unit = groups.size ? 'codes' : '';
+        return `
         <div class="sab-section-title">${escHtml(sec.section)}
-            <span class="sab-section-count">${sec.rows.length}</span><span class="divider"></span></div>
-        <table class="sab-table">${SAB_THEAD}<tbody>${sec.rows.map(sabRow).join('')}</tbody></table>`).join('');
+            <span class="sab-section-count">${count}${unit ? ' ' + unit : ''}</span><span class="divider"></span></div>
+        ${sabSectionTable(sec)}`;
+    }).join('');
 
     const notFound = result.diagnostics?.labels_not_found || [];
     const diag = notFound.length

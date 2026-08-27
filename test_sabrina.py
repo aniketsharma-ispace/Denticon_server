@@ -323,6 +323,30 @@ else:
             check(f"[2] {key} honestly reported as absent",
                   rows[key]["status"], "not_in_portal")
 
+        # The CDT rows must arrive groupable: one group per code, each carrying
+        # its aspect so the UI can render a single line per code.
+        cdt = next(s for s in res["sections"] if s["section"] == "Coverage by CDT Code")
+        groups = {}
+        for row in cdt["rows"]:
+            groups.setdefault(row["group"], set()).add(row["aspect"])
+        check("[2] one group per CDT code", len(groups), 41)
+        check("[2] every CDT row carries group + aspect",
+              all(r.get("group") and r.get("aspect") for r in cdt["rows"]), True)
+        check("[2] every group has a percentage cell",
+              all("pct" in a for a in groups.values()), True)
+        check("[2] D0120 groups percentage, frequency and history together",
+              groups["d0120"], {"pct", "freq", "hist"})
+        check("[2] D1206 groups all four columns",
+              groups["d1206"], {"pct", "freq", "age", "hist"})
+        check("[2] D3310 has no frequency cell",
+              groups["d3310"], {"pct"})
+        check("[2] group labels drop the aspect suffix",
+              {r["group_label"] for r in cdt["rows"] if r["group"] == "d0120"},
+              {"D0120 Periodic Exam"})
+        check("[2] non-CDT sections are not grouped",
+              any(r.get("group") for s in res["sections"]
+                  for r in s["rows"] if s["section"] != "Coverage by CDT Code"), False)
+
         check("[2] whole sheet agrees with the portal",
               res["summary"]["mismatches"], 0)
         # Nothing is reported blank any more. The three rows that used to be
@@ -450,7 +474,8 @@ check("history compared only for the twelve listed codes",
       _by_aspect["hist"],
       ["d0120", "d0140", "d0210", "d0274", "d0330", "d1110",
        "d1206", "d1208", "d1351", "d1510", "d4341", "d4910"])
-_cdt_keys = {f["key"] for f in sc._SPEC if f["section"] == "Coverage by CDT Code"}
+_cdt_keys = {f["key"] for f in sc._SPEC
+             if f["section"] == "Coverage by CDT Code" and not f.get("derived")}
 check("frequency skipped for D3310/D7140/D7210/D9230/D9243/D8080/D8090",
       sorted(_cdt_keys - set(_by_aspect["freq"])),
       ["d3310", "d7140", "d7210", "d8090", "d9230", "d9243", "ortho_coverage"])
@@ -524,6 +549,76 @@ check("neither question is still listed as non-compared furniture",
       any(sc._norm_label(lbl) in sc._OTHER_SHEET_LABELS for lbl in
           ("Are Posterior Composites Downgraded To Amalgam?",
            "Are Posterior Crowns Downgraded?")), False)
+
+
+# ── In Network must consider BOTH networks, badge first ─────────────────────
+#
+# The fee-schedule name must never decide it: for MetLife the breakdown always
+# reports "METLIFE PPO", which would read as in-network even for a provider the
+# portal explicitly marks out-of-network.
+_FEE = {"fee_schedule": "METLIFE PPO"}
+
+
+def _prov(status):
+    return {"metlife_data": {"provider_info": {"provider_network_status": status}}}
+
+
+def _svcs(*rows):
+    return {"metlife_data": {"covered_services": list(rows)}}
+
+
+# Out-of-network coverage counts as Yes, so the question is "does the plan pay
+# under either network?" — the provider's own badge does not decide it.
+check("network: in-network coverage present",
+      sc._portal_in_network({}, _svcs(
+          {"category": "PREVENTIVE", "in_network": "100%", "out_of_network": "Not Covered"})),
+      "Yes")
+check("network: ONLY out-of-network pays -> still Yes",
+      sc._portal_in_network({}, _svcs(
+          {"category": "PREVENTIVE", "in_network": "Not Covered", "out_of_network": "80%"})),
+      "Yes")
+check("network: an out-of-network provider whose plan pays OON -> Yes",
+      sc._portal_in_network({}, {"metlife_data": {
+          "provider_info": {"provider_network_status": "Out-of-Network"},
+          "covered_services": [{"category": "PREVENTIVE", "in_network": "Not Covered",
+                                "out_of_network": "80%"}]}}), "Yes")
+check("network: neither network pays -> No",
+      sc._portal_in_network({}, _svcs(
+          {"category": "PREVENTIVE", "in_network": "Not Covered", "out_of_network": "Not Covered"},
+          {"category": "MAJOR", "in_network": "Not Covered", "out_of_network": "Not Covered"})),
+      "No")
+check("network: coverage anywhere beats a not-covered category",
+      sc._portal_in_network({}, _svcs(
+          {"category": "PREVENTIVE", "in_network": "Not Covered", "out_of_network": "Not Covered"},
+          {"category": "MAJOR", "in_network": "50%", "out_of_network": "50%"})), "Yes")
+# Without a coverage table, a named network arrangement still shows the plan pays.
+check("network: no coverage table, plan is a PPO",
+      sc._portal_in_network(_FEE, _prov("In-Network")), "Yes")
+check("network: no coverage table, only an out-of-network badge -> unanswered",
+      sc._portal_in_network({}, _prov("Out-of-Network")), None)
+check("network: nothing stated anywhere",
+      sc._portal_in_network({}, {"metlife_data": {}}), None)
+check("network: a 0% out-of-network benefit is not coverage",
+      sc._network_pays("0% Deductible Applies : No"), False)
+check("network: 'Not Covered' is not coverage", sc._network_pays("Not Covered"), False)
+check("network: '80%' is coverage", sc._network_pays("80% Deductible Applies : Yes"), True)
+
+# Sabrina writes "In"/"Out"; both must compare against the portal verdict.
+check("network: sheet 'In' vs portal Yes", sc._compare("yesno", "In", "Yes")[0], True)
+check("network: sheet 'Out' vs portal No", sc._compare("yesno", "Out", "No")[0], True)
+check("network: sheet 'Out' vs portal Yes is a real conflict",
+      sc._compare("yesno", "Out", "Yes")[0], False)
+
+
+# ── every CDT code is one row, with a cell per column ──────────────────────
+_cdt_spec = [f for f in sc._SPEC if f["section"] == "Coverage by CDT Code"]
+check("all four columns live in one section",
+      {f["section"] for f in sc._SPEC if f.get("derived")}, {"Coverage by CDT Code"})
+check("every CDT row is tagged with its group",
+      all(f.get("group") for f in _cdt_spec if f.get("derived")), True)
+check("percentage rows anchor their group",
+      all(f.get("aspect") in ("pct", "freq", "age", "hist")
+          for f in _cdt_spec if f.get("aspect")), True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

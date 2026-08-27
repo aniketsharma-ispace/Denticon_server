@@ -264,7 +264,10 @@ _BENEFIT_ASPECTS = (
     ("hist", "History",   "history",   "late_date_of_service"),
 )
 
-_ASPECT_SECTION = "Coverage Detail — Frequency / Age / History"
+# All four columns of a code belong to ONE row in the UI, so the generated
+# rows live in the same section as their percentage and carry the grouping tags
+# the renderer needs.
+_ASPECT_SECTION = "Coverage by CDT Code"
 
 # Which codes actually carry each column, per the MetLife observations.
 #
@@ -311,6 +314,8 @@ def _build_aspect_spec() -> list[dict]:
                 "derived": True,
                 "row_key": field["key"],
                 "aspect":  suffix,
+                "group":   field["key"],
+                "group_label": field["label"],
             })
     return out
 
@@ -1371,6 +1376,14 @@ def _pct_from_procs(procs: dict, codes: tuple[str, ...]) -> str | None:
     return None
 
 
+def _coalesce_keys(obj: dict, *keys):
+    """First key present on `obj` with a non-blank value."""
+    for key in keys:
+        if key in obj and not _blank(obj[key]):
+            return obj[key]
+    return None
+
+
 def _procfield_from_procs(procs: dict, field: str, codes: tuple[str, ...]) -> str | None:
     """A named field off the first CDT code the portal actually reports."""
     for code in codes:
@@ -1385,22 +1398,70 @@ def _procfield_from_procs(procs: dict, field: str, codes: tuple[str, ...]) -> st
 
 def _portal_in_network(bd: dict, portal_raw: dict) -> str | None:
     """
-    Derive In-Network YES/NO from whatever the portal states — the breakdown's
-    network_status / fee_schedule / plan_type, else the raw provider block.
+    Whether the plan pays under a network at all — checking IN and OUT.
+
+    Per the MetLife observation, out-of-network coverage counts: if the plan is
+    covered out of network the field is Yes. So this answers "does the plan pay
+    under either network?", NOT "is this particular provider in network?" — a
+    provider outside the network still has coverage when the plan pays OON.
+    The provider's IN-NETWORK / OUT-OF-NETWORK badge therefore does not decide
+    it, and neither does the fee-schedule name (for MetLife the breakdown always
+    reports "METLIFE PPO").
+
+    The per-category coverage rows are the only thing that actually answers it,
+    because they state a benefit for each network:
+
+        {"category": "PREVENTIVE",
+         "in_network": "100% …", "out_of_network": "100% …"}
+
+    Either column paying above 0% anywhere means Yes. Rows present but paying
+    under neither network mean No.
     """
     ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
+
+    services = ml.get("covered_services")
+    if isinstance(services, list) and services:
+        stated = False
+        for row in services:
+            if not isinstance(row, dict):
+                continue
+            in_net = _coalesce_keys(row, "in_network", "in_net", "par")
+            out_net = _coalesce_keys(row, "out_of_network", "out_network", "oon",
+                                     "outofnetwork", "non_par")
+            if not _blank(in_net) or not _blank(out_net):
+                stated = True
+            if _network_pays(in_net) or _network_pays(out_net):
+                return "Yes"
+        if stated:
+            return "No"
+
+    # No coverage table. A named network arrangement (PPO / Premier / HMO /
+    # in-network) still shows the plan pays under a network. An out-of-network
+    # badge on its own does NOT settle it — it describes the provider, and
+    # nothing here says whether the plan pays out of network — so that stays
+    # unanswered rather than guessed either way.
     provider = ml.get("provider_info", {}) if isinstance(ml.get("provider_info"), dict) else {}
-    for cand in (bd.get("network_status"), bd.get("fee_schedule"),
-                 provider.get("provider_network_status"), bd.get("plan_type")):
+    for cand in (bd.get("network_status"), bd.get("fee_schedule"), bd.get("plan_type"),
+                 _coalesce_keys(provider, "provider_network_status", "network_status", "network")):
         if _blank(cand):
             continue
         s = str(cand).lower()
-        if "non-par" in s or "nonpar" in s or "out of network" in s or "out-of-network" in s:
-            return "No"
-        if ("ppo" in s or "premier" in s or "in network" in s or "in-network" in s
-                or "par" in s or "hmo" in s or "epo" in s):
+        if ("ppo" in s or "premier" in s or "hmo" in s or "epo" in s
+                or "in network" in s or "in-network" in s
+                or s.strip() in ("in", "par") or "participating" in s):
             return "Yes"
     return None
+
+
+def _network_pays(value) -> bool:
+    """Whether a coverage cell states a benefit above 0% for that network."""
+    if _blank(value):
+        return False
+    text = str(value).lower()
+    if "not covered" in text or "no coverage" in text:
+        return False
+    m = re.search(r"(\d+(?:\.\d+)?)\s*%", text)
+    return bool(m) and float(m.group(1)) > 0
 
 
 def _portal_yearly_max_paid(bd: dict, portal_raw: dict) -> str | None:
@@ -1433,14 +1494,6 @@ _COB_METHODS = (
     ("traditional", "Standard"),
     ("full cob",   "Standard"),
 )
-
-
-def _coalesce_keys(obj: dict, *keys):
-    """First key present on `obj` with a non-blank value."""
-    for key in keys:
-        if key in obj and not _blank(obj[key]):
-            return obj[key]
-    return None
 
 
 def _portal_cob(bd: dict, portal_raw: dict) -> str | None:
@@ -1591,6 +1644,11 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
 
     for field in _SPEC:
         key = field["key"]
+        # A CDT percentage row anchors its code's group.
+        if field["section"] == "Coverage by CDT Code" and not field.get("derived"):
+            field.setdefault("group", key)
+            field.setdefault("group_label", field["label"])
+            field.setdefault("aspect", "pct")
         sab_raw = sab_fields.get(key)
         por_raw = _portal_value(field, bd, portal_raw)
 
@@ -1629,6 +1687,11 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             "label": field["label"],
             "section": field["section"],
             "kind": field["kind"],
+            # Set for the CDT rows so the UI can show one line per code with a
+            # cell per column instead of four separate rows.
+            "group": field.get("group"),
+            "group_label": field.get("group_label"),
+            "aspect": field.get("aspect"),
             "sabrina": None if sab_blank else str(sab_raw).strip(),
             "portal": None if por_blank else str(por_raw).strip(),
             "status": status,
