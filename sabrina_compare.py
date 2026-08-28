@@ -110,7 +110,7 @@ _SPEC: list[dict] = [
     # In-network status: the portal states it as a network/fee-schedule string
     # ("PPO", "Premier", "Non-Par", "In Network"), so it is normalized to YES/NO
     # by `_portal_in_network` rather than read straight off a field.
-    {"key": "in_network",   "label": "In Network",   "kind": "yesno", "section": "Insurance", "portal": "_in_network",
+    {"key": "in_network",   "label": "In Network",   "kind": "network", "section": "Insurance", "portal": "_in_network",
      "aliases": ["In-Network", "In Network?", "Participating"]},
     {"key": "oon_benefits", "label": "OON Benefits", "kind": "yesno", "section": "Insurance", "portal": "_oon_benefits",
      "aliases": ["OON Benefit", "Out of Network Benefits", "Out-of-Network Benefits"]},
@@ -1110,6 +1110,21 @@ def _num_history(v) -> str | None:
     return _num_date(v)
 
 
+def _norm_network(v) -> str | None:
+    """A network type — IN or OUT — from either system's wording."""
+    if _blank(v):
+        return None
+    s = re.sub(r"\s+", " ", str(v).strip().lower())
+    if ("out of network" in s or "out-of-network" in s or "oon" in s
+            or "non-par" in s or "nonpar" in s or s == "out"):
+        return "OUT"
+    if ("in network" in s or "in-network" in s or s in ("in", "par")
+            or "participating" in s or "ppo" in s or "premier" in s
+            or "hmo" in s or "epo" in s):
+        return "IN"
+    return {"YES": "IN", "NO": "OUT"}.get(_num_yesno(v))
+
+
 def _norm_id(v) -> str | None:
     """IDs compare on alphanumerics only — '12345-01' vs '1234501'."""
     if _blank(v):
@@ -1295,6 +1310,12 @@ def _compare(kind: str, sab, por) -> tuple[bool | None, str]:
             return True, "digits match; formatting differs"
         return False, ""
 
+    if kind == "network":
+        a, b = _norm_network(sab), _norm_network(por)
+        if a is None or b is None:
+            return None, ""
+        return a == b, ""
+
     if kind == "carrier":
         # Same insurer is the same value, however each system decorates it.
         ba, bb = _carrier_brand(sab), _carrier_brand(por)
@@ -1396,32 +1417,12 @@ def _procfield_from_procs(procs: dict, field: str, codes: tuple[str, ...]) -> st
     return None
 
 
-def _portal_in_network(bd: dict, portal_raw: dict) -> str | None:
-    """
-    Whether the plan pays under a network at all — checking IN and OUT.
-
-    Per the MetLife observation, out-of-network coverage counts: if the plan is
-    covered out of network the field is Yes. So this answers "does the plan pay
-    under either network?", NOT "is this particular provider in network?" — a
-    provider outside the network still has coverage when the plan pays OON.
-    The provider's IN-NETWORK / OUT-OF-NETWORK badge therefore does not decide
-    it, and neither does the fee-schedule name (for MetLife the breakdown always
-    reports "METLIFE PPO").
-
-    The per-category coverage rows are the only thing that actually answers it,
-    because they state a benefit for each network:
-
-        {"category": "PREVENTIVE",
-         "in_network": "100% …", "out_of_network": "100% …"}
-
-    Either column paying above 0% anywhere means Yes. Rows present but paying
-    under neither network mean No.
-    """
+def _network_coverage(portal_raw: dict) -> tuple[bool, bool, bool]:
+    """(pays in network, pays out of network, stated at all) per the coverage rows."""
     ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
-
+    pays_in = pays_out = stated = False
     services = ml.get("covered_services")
-    if isinstance(services, list) and services:
-        stated = False
+    if isinstance(services, list):
         for row in services:
             if not isinstance(row, dict):
                 continue
@@ -1430,26 +1431,52 @@ def _portal_in_network(bd: dict, portal_raw: dict) -> str | None:
                                      "outofnetwork", "non_par")
             if not _blank(in_net) or not _blank(out_net):
                 stated = True
-            if _network_pays(in_net) or _network_pays(out_net):
-                return "Yes"
-        if stated:
-            return "No"
+            if _network_pays(in_net):
+                pays_in = True
+            if _network_pays(out_net):
+                pays_out = True
+    return pays_in, pays_out, stated
 
-    # No coverage table. A named network arrangement (PPO / Premier / HMO /
-    # in-network) still shows the plan pays under a network. An out-of-network
-    # badge on its own does NOT settle it — it describes the provider, and
-    # nothing here says whether the plan pays out of network — so that stays
-    # unanswered rather than guessed either way.
-    provider = ml.get("provider_info", {}) if isinstance(ml.get("provider_info"), dict) else {}
-    for cand in (bd.get("network_status"), bd.get("fee_schedule"), bd.get("plan_type"),
-                 _coalesce_keys(provider, "provider_network_status", "network_status", "network")):
-        if _blank(cand):
-            continue
-        s = str(cand).lower()
-        if ("ppo" in s or "premier" in s or "hmo" in s or "epo" in s
-                or "in network" in s or "in-network" in s
-                or s.strip() in ("in", "par") or "participating" in s):
-            return "Yes"
+
+def _portal_in_network(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """
+    The network type, confirmed against what the plan actually pays under.
+
+    The portal does NOT reliably state whether this particular office is in or
+    out of network — `provider_info.provider_network_status` is scraped by
+    matching the first element whose text is exactly "IN-NETWORK" or
+    "OUT-OF-NETWORK", and the plan-details page renders both of those as
+    coverage-panel headings, so it reads "In-Network" for every patient. It is
+    deliberately not used here.
+
+    What the portal does state is the benefit under each network, per category.
+    So the check is whether the network the sheet claims is one this plan pays
+    under: a sheet saying "Out" against a plan that pays out of network agrees,
+    and a sheet saying "Out" against a plan that only pays in network does not.
+    Where the plan pays under both — the common case — either claim is valid and
+    this correctly reports agreement.
+    """
+    pays_in, pays_out, stated = _network_coverage(portal_raw)
+
+    if stated:
+        claimed = _norm_network(sab_raw)
+        if claimed == "OUT":
+            return "Out" if pays_out else ("In" if pays_in else None)
+        if claimed == "IN":
+            return "In" if pays_in else ("Out" if pays_out else None)
+        # The sheet says nothing — report whichever network the plan pays under.
+        if pays_in:
+            return "In"
+        if pays_out:
+            return "Out"
+        return None
+
+    # No coverage table. A named network arrangement (PPO / Premier / HMO) still
+    # shows the plan operates in network; nothing else here settles it.
+    for cand in (bd.get("network_status"), bd.get("fee_schedule"), bd.get("plan_type")):
+        verdict = _norm_network(cand)
+        if verdict:
+            return "In" if verdict == "IN" else "Out"
     return None
 
 
@@ -1464,7 +1491,7 @@ def _network_pays(value) -> bool:
     return bool(m) and float(m.group(1)) > 0
 
 
-def _portal_yearly_max_paid(bd: dict, portal_raw: dict) -> str | None:
+def _portal_yearly_max_paid(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
     Amount applied to the yearly max. Portals report the REMAINING balance, so
     paid-to-date = total − remaining.
@@ -1496,7 +1523,7 @@ _COB_METHODS = (
 )
 
 
-def _portal_cob(bd: dict, portal_raw: dict) -> str | None:
+def _portal_cob(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """Coordination-of-benefits method as stated in the portal's provisions."""
     ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
     for prov in (ml.get("provisions") or []):
@@ -1514,7 +1541,7 @@ def _portal_cob(bd: dict, portal_raw: dict) -> str | None:
     return None
 
 
-def _portal_prev_in_max(bd: dict, portal_raw: dict) -> str | None:
+def _portal_prev_in_max(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
     Whether preventive services count toward the yearly maximum.
 
@@ -1537,7 +1564,7 @@ def _portal_prev_in_max(bd: dict, portal_raw: dict) -> str | None:
     return "Yes" if ("preventive" in text or "preventative" in text) else "No"
 
 
-def _portal_oon_benefits(bd: dict, portal_raw: dict) -> str | None:
+def _portal_oon_benefits(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
     Whether the plan pays anything out of network.
 
@@ -1601,7 +1628,7 @@ _DERIVED = {
 }
 
 
-def _portal_value(field: dict, bd: dict, portal_raw: dict) -> str | None:
+def _portal_value(field: dict, bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """Resolve one spec'd field's value on the portal side."""
     src = field.get("portal")
     if src is None:
@@ -1611,7 +1638,7 @@ def _portal_value(field: dict, bd: dict, portal_raw: dict) -> str | None:
     if isinstance(src, tuple) and src and src[0] == "codefield":
         return _procfield_from_procs(bd.get("procs", {}), src[1], src[2:])
     if isinstance(src, str) and src in _DERIVED:
-        return _DERIVED[src](bd, portal_raw)
+        return _DERIVED[src](bd, portal_raw, sab_raw)
     val = bd.get(src) if isinstance(src, str) else None
     return None if _blank(val) else str(val)
 
@@ -1650,7 +1677,7 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             field.setdefault("group_label", field["label"])
             field.setdefault("aspect", "pct")
         sab_raw = sab_fields.get(key)
-        por_raw = _portal_value(field, bd, portal_raw)
+        por_raw = _portal_value(field, bd, portal_raw, sab_raw)
 
         sab_blank = _blank(sab_raw)
         por_blank = _blank(por_raw)

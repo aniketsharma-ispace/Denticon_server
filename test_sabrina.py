@@ -34,6 +34,8 @@ SABRINA_PDF_2 = os.path.join(BASE, "Material", "Comparison", "Metlife - 81986.pd
 PORTAL_JSON_2 = os.path.join(BASE, "Material", "Comparison",
                              "tudor_piroteala_metlife_audit (1).json")
 DD_PORTAL_DIR = os.path.join(BASE, "Material", "Comparison", "DD INS")
+SABRINA_PDF_3 = os.path.join(BASE, "Material", "Smile", "Gore1.pdf")
+PORTAL_JSON_3 = os.path.join(BASE, "Material", "Smile", "tiffany_gore_metlife_audit.json")
 
 _passed = _failed = _skipped = 0
 
@@ -567,47 +569,63 @@ def _svcs(*rows):
     return {"metlife_data": {"covered_services": list(rows)}}
 
 
-# Out-of-network coverage counts as Yes, so the question is "does the plan pay
-# under either network?" — the provider's own badge does not decide it.
-check("network: in-network coverage present",
-      sc._portal_in_network({}, _svcs(
-          {"category": "PREVENTIVE", "in_network": "100%", "out_of_network": "Not Covered"})),
-      "Yes")
-check("network: ONLY out-of-network pays -> still Yes",
-      sc._portal_in_network({}, _svcs(
-          {"category": "PREVENTIVE", "in_network": "Not Covered", "out_of_network": "80%"})),
-      "Yes")
-check("network: an out-of-network provider whose plan pays OON -> Yes",
+# In Network is a NETWORK TYPE, checked against what the plan actually pays
+# under. The portal cannot say which network THIS office is in — the scraped
+# provider badge matches the first "IN-NETWORK"/"OUT-OF-NETWORK" element on the
+# page, which is a coverage-panel heading, so it reads In-Network for everyone.
+# What the portal does state is the benefit per network, so the check is whether
+# the network the sheet claims is one the plan pays under.
+_ONLY_IN = _svcs({"category": "PREVENTIVE", "in_network": "100%",
+                  "out_of_network": "Not Covered"})
+_ONLY_OUT = _svcs({"category": "PREVENTIVE", "in_network": "Not Covered",
+                   "out_of_network": "80%"})
+_BOTH = _svcs({"category": "PREVENTIVE", "in_network": "100%",
+               "out_of_network": "100%"})
+_NEITHER = _svcs({"category": "PREVENTIVE", "in_network": "Not Covered",
+                  "out_of_network": "Not Covered"})
+
+# The reported case: the sheet says Out, the plan pays out of network -> MATCH.
+check("network: sheet 'Out' against a plan paying both networks",
+      sc._portal_in_network({}, _BOTH, "Out"), "Out")
+check("network: that comparison is a match",
+      sc._compare("network", "Out", sc._portal_in_network({}, _BOTH, "Out"))[0], True)
+check("network: sheet 'In' against a plan paying both networks",
+      sc._portal_in_network({}, _BOTH, "In"), "In")
+check("network: sheet 'Out' where only out-of-network pays",
+      sc._portal_in_network({}, _ONLY_OUT, "Out"), "Out")
+
+# ...and it still catches a claim the plan does not support.
+check("network: sheet 'Out' but the plan pays in-network only -> conflict",
+      sc._compare("network", "Out", sc._portal_in_network({}, _ONLY_IN, "Out"))[0], False)
+check("network: sheet 'In' but the plan pays out-of-network only -> conflict",
+      sc._compare("network", "In", sc._portal_in_network({}, _ONLY_OUT, "In"))[0], False)
+check("network: neither network pays -> unanswered",
+      sc._portal_in_network({}, _NEITHER, "In"), None)
+
+# The fee-schedule name must never decide it (MetLife always reports "PPO"),
+# but with no coverage table at all it is the only signal left.
+check("network: sheet silent, plan pays in network",
+      sc._portal_in_network({}, _ONLY_IN), "In")
+check("network: no coverage table, falls back to the plan wording",
+      sc._portal_in_network(_FEE, {"metlife_data": {}}), "In")
+check("network: the scraped provider badge is ignored",
       sc._portal_in_network({}, {"metlife_data": {
-          "provider_info": {"provider_network_status": "Out-of-Network"},
+          "provider_info": {"provider_network_status": "In-Network"},
           "covered_services": [{"category": "PREVENTIVE", "in_network": "Not Covered",
-                                "out_of_network": "80%"}]}}), "Yes")
-check("network: neither network pays -> No",
-      sc._portal_in_network({}, _svcs(
-          {"category": "PREVENTIVE", "in_network": "Not Covered", "out_of_network": "Not Covered"},
-          {"category": "MAJOR", "in_network": "Not Covered", "out_of_network": "Not Covered"})),
-      "No")
-check("network: coverage anywhere beats a not-covered category",
-      sc._portal_in_network({}, _svcs(
-          {"category": "PREVENTIVE", "in_network": "Not Covered", "out_of_network": "Not Covered"},
-          {"category": "MAJOR", "in_network": "50%", "out_of_network": "50%"})), "Yes")
-# Without a coverage table, a named network arrangement still shows the plan pays.
-check("network: no coverage table, plan is a PPO",
-      sc._portal_in_network(_FEE, _prov("In-Network")), "Yes")
-check("network: no coverage table, only an out-of-network badge -> unanswered",
-      sc._portal_in_network({}, _prov("Out-of-Network")), None)
+                                "out_of_network": "80%"}]}}, "Out"), "Out")
 check("network: nothing stated anywhere",
       sc._portal_in_network({}, {"metlife_data": {}}), None)
+
+# Network-type normalization across both vocabularies.
+for raw, want in [("In", "IN"), ("Out", "OUT"), ("In-Network", "IN"),
+                  ("Out-of-Network", "OUT"), ("Yes", "IN"), ("No", "OUT"),
+                  ("METLIFE PPO", "IN"), ("Non-Par", "OUT"), ("", None)]:
+    check(f"network normalize {raw!r}", sc._norm_network(raw), want)
+
 check("network: a 0% out-of-network benefit is not coverage",
       sc._network_pays("0% Deductible Applies : No"), False)
 check("network: 'Not Covered' is not coverage", sc._network_pays("Not Covered"), False)
 check("network: '80%' is coverage", sc._network_pays("80% Deductible Applies : Yes"), True)
-
-# Sabrina writes "In"/"Out"; both must compare against the portal verdict.
-check("network: sheet 'In' vs portal Yes", sc._compare("yesno", "In", "Yes")[0], True)
-check("network: sheet 'Out' vs portal No", sc._compare("yesno", "Out", "No")[0], True)
-check("network: sheet 'Out' vs portal Yes is a real conflict",
-      sc._compare("yesno", "Out", "Yes")[0], False)
 
 
 # ── every CDT code is one row, with a cell per column ──────────────────────
@@ -619,6 +637,63 @@ check("every CDT row is tagged with its group",
 check("percentage rows anchor their group",
       all(f.get("aspect") in ("pct", "freq", "age", "hist")
           for f in _cdt_spec if f.get("aspect")), True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  1e. THIRD REAL EXPORT — an out-of-network office (Material/Smile)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# This sheet says In Network = "Out" (its fee schedule is "GA General UCR", the
+# out-of-network fee basis). The plan pays identically under both networks, so
+# the claim is supported and the row must read MATCH — it was reported as a
+# MISMATCH against a portal side that always answered "Yes".
+#
+# The same pairing also carries two genuine data errors, which must still be
+# reported: D0330 Pano at 80% against the portal's 100%, and D0140's frequency
+# recorded as 2X12Months against the portal's 1 TIME IN 12 MONTHS.
+
+print("── 1e. THIRD REAL EXPORT (Tiffany Gore, out-of-network) ──")
+if not (os.path.exists(SABRINA_PDF_3) and os.path.exists(PORTAL_JSON_3)):
+    skip("third Sabrina pairing", "Material/Smile files not present")
+else:
+    import json as _json3
+    with open(SABRINA_PDF_3, "rb") as fh:
+        parsed3 = sc.parse_sabrina_pdf(fh.read())
+    with open(PORTAL_JSON_3, encoding="utf-8") as fh:
+        portal3 = _json3.load(fh)
+
+    check("[3] detected as a Sabrina sheet", sc.is_sabrina_pdf(parsed3["text"]), True)
+    check("[3] all labels found", parsed3["labels_not_found"], [])
+    f3 = parsed3["fields"]
+    check("[3] the sheet says the office is out of network", f3["in_network"], "Out")
+    check("[3] and that it has OON benefits", f3["oon_benefits"], "Yes")
+    check("[3] insurance name carries the plan suffix", f3["ins_name"], "Metlife PDP+")
+
+    res3 = sc.compare_sabrina_to_portal(parsed3, portal3)
+    rows3 = {r["key"]: r for s in res3["sections"] for r in s["rows"]}
+
+    check("[3] 'Out' now MATCHES the portal",
+          (rows3["in_network"]["portal"], rows3["in_network"]["status"]), ("Out", "match"))
+    check("[3] OON benefits match", rows3["oon_benefits"]["status"], "match")
+    check("[3] carrier matches despite the plan suffix",
+          rows3["ins_name"]["status"], "match")
+    check("[3] group number came through this export",
+          (rows3["group_number"]["portal"], rows3["group_number"]["status"]),
+          ("261127", "match"))
+
+    # The two real errors must survive all the noise reduction.
+    check("[3] the genuine mismatches are reported",
+          sorted(r["key"] for r in res3["mismatches"]), ["d0140__freq", "d0330"])
+    check("[3] D0330 percentage disagreement",
+          (rows3["d0330"]["sabrina"], rows3["d0330"]["portal"]), ("80%", "100%"))
+    check("[3] D0140 frequency disagreement",
+          (rows3["d0140__freq"]["sabrina"], rows3["d0140__freq"]["portal"]),
+          ("2X12Months", "1 TIME IN 12 MONTHS"))
+    # D0120 states the same 2-per-12-months and DOES match, which is what makes
+    # D0140 look like a copied-down value rather than a parsing artefact.
+    check("[3] D0120 frequency matches", rows3["d0120__freq"]["status"], "match")
+    check("[3] nothing reported blank on the sheet",
+          res3["summary"]["missing_in_sabrina"], 0)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

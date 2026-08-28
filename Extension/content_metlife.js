@@ -189,6 +189,12 @@
     }
 
     function scrapeProviderInfo() {
+        // NOTE: this matches the FIRST element whose text is exactly
+        // "IN-NETWORK" / "OUT-OF-NETWORK", and the plan-details page renders
+        // both of those as coverage-panel headings, so it reports
+        // "In-Network" for essentially every patient. It is not a reliable
+        // statement of THIS office's network status; the Sabrina audit
+        // ignores it and derives the network from the per-category benefits.
         const networkBadge = Array.from(document.querySelectorAll("*")).find(el =>
             /^(in-network|out-of-network)$/i.test((el.innerText || "").trim())
         );
@@ -223,22 +229,48 @@
     }
 
     function parseCardAmounts(container) {
-        if (!container) return { remaining: "N/A", used: "N/A", total: "N/A", applies_to: "N/A" };
+        if (!container) return { remaining: "N/A", used: "N/A", total: "N/A" };
         const text = container.innerText || "";
-        // The card also names the service categories the maximum applies to:
-        //   "Annual  for Diagnostic, Preventive, Restorative, Endodontics,
-        //    Prosthodontics, Oral Surgery, Adjunctive, Implant Services  $ ..."
-        // Whether Preventive appears in that list is what decides
-        // "Preventative Included in Yearly Max?" on the breakdown sheet, so the
-        // list is captured verbatim rather than interpreted here.
-        const flat = text.replace(/\s+/g, ' ');
-        const categories = flat.match(/for\s+(.+?)\s*\$/i);
         return {
-            remaining: text.match(/\$\s*[\d,]+\.?\d*\s*remaining/i)?.[0]?.replace(/\s+/g, ' ').trim() || "N/A",
-            used: text.match(/\$\s*[\d,]+\.?\d*\s*(?:used|paid)\s*to\s*date/i)?.[0]?.replace(/\s+/g, ' ').trim() || "N/A",
-            total: text.match(/\$\s*[\d,]+\.?\d*\s*total/i)?.[0]?.replace(/\s+/g, ' ').trim() || "N/A",
-            applies_to: categories ? categories[1].trim() : "N/A"
+            remaining: text.match(/[$]\s*[\d,]+\.?\d*\s*remaining/i)?.[0]?.replace(/\s+/g, ' ').trim() || "N/A",
+            used: text.match(/[$]\s*[\d,]+\.?\d*\s*(?:used|paid)\s*to\s*date/i)?.[0]?.replace(/\s+/g, ' ').trim() || "N/A",
+            total: text.match(/[$]\s*[\d,]+\.?\d*\s*total/i)?.[0]?.replace(/\s+/g, ' ').trim() || "N/A"
         };
+    }
+
+    // The Benefit Maximums screen prints the service categories that the
+    // annual maximum applies to:
+    //
+    //   Annual
+    //   for Diagnostic, Preventive, Restorative, Endodontics, Prosthodontics,
+    //   Oral Surgery, Adjunctive, Implant Services      $ 0.00 remaining ...
+    //
+    // Whether Preventive appears in that list is what answers "Preventative
+    // Included in Yearly Max?" on the breakdown sheet, so the list is captured
+    // verbatim and interpreted downstream.
+    //
+    // Tried against the card first and then the whole page, because the
+    // categories and the amounts are not always inside the same element. The
+    // character class stops at the first "$", so the dollar figures can never
+    // be swallowed into the list.
+    function scrapeMaximumCategories(annualCard) {
+        const LIST = /\bfor\s+([A-Za-z][A-Za-z ,/&'()-]{15,}?)\s*[$]/i;
+
+        if (annualCard) {
+            const hit = (annualCard.innerText || "").replace(/\s+/g, ' ').match(LIST);
+            if (hit) return hit[1].trim();
+        }
+
+        const body = (document.body?.innerText || "").replace(/\s+/g, ' ');
+        const afterAnnual = body.match(/\bAnnual\s+for\s+([A-Za-z][A-Za-z ,/&'()-]{15,}?)\s*[$]/i);
+        if (afterAnnual) return afterAnnual[1].trim();
+
+        const at = body.search(/Benefit\s+Maximums/i);
+        if (at >= 0) {
+            const hit = body.slice(at, at + 800).match(LIST);
+            if (hit) return hit[1].trim();
+        }
+        return "N/A";
     }
 
     function scrapeFinancials() {
@@ -249,11 +281,11 @@
         let ortho_lifetime;
 
         if (!lifetimeCard) {
-            ortho_lifetime = { remaining: "0.0", used: "0.0", total: "0.0", applies_to: "N/A" };
+            ortho_lifetime = { remaining: "0.0", used: "0.0", total: "0.0" };
         } else {
             const lifetimeText = lifetimeCard.innerText || "";
             if (/no lifetime benefit maximum/i.test(lifetimeText)) {
-                ortho_lifetime = { remaining: "0.0", used: "0.0", total: "0.0", applies_to: "N/A" };
+                ortho_lifetime = { remaining: "0.0", used: "0.0", total: "0.0" };
             } else {
                 ortho_lifetime = parseCardAmounts(lifetimeCard);
             }
@@ -262,10 +294,11 @@
         const famCard = findCardByLabel("Family");
         const deductible_fam = famCard
             ? parseCardAmounts(famCard)
-            : { remaining: "N/A", used: "N/A", total: "N/A", applies_to: "N/A" };
+            : { remaining: "N/A", used: "N/A", total: "N/A" };
 
         return {
-            annual_max:     parseCardAmounts(annualCard),
+            annual_max:     Object.assign(parseCardAmounts(annualCard),
+                                          { applies_to: scrapeMaximumCategories(annualCard) }),
             ortho_lifetime,
             deductible_ind: parseCardAmounts(findCardByLabel("Individual")),
             deductible_fam,
