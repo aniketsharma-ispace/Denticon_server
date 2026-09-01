@@ -48,7 +48,7 @@
     // Chrome, Edge (including stricter managed setups), and Firefox.
     // ══════════════════════════════════════════════════════════════════════════
 
-    // 65 codes across 8 batches — chunked into groups of 10 at runtime (site hard limit)
+    // 61 codes across 7 batches — chunked into groups of 10 at runtime (site hard limit)
     const BATCH_1 = ["D1110", "D4910", "D4355", "D1206", "D1208", "D0274", "D0210", "D0120", "D0150"];
     const BATCH_2 = ["D2331", "D2140", "D2740", "D1351", "D1510", "D8080", "D0180", "D0140", "D0240"];
     const BATCH_3 = ["D0330", "D0220", "D0230", "D0364", "D0431", "D1120", "D2991", "D2950", "D2620"];
@@ -56,10 +56,6 @@
     const BATCH_5 = ["D4346", "D4381", "D4260", "D4249", "D3310", "D3330", "D7140", "D7210", "D7240"];
     const BATCH_6 = ["D7953", "D6010", "D6056", "D2332", "D6245", "D5860", "D5740", "D5982", "D9430"];
     const BATCH_7 = ["D9239", "D3347", "D7259", "D6065", "D6194", "D8010", "D8090", "D9230"];
-    // Codes the Sabrina breakdown sheet audits that no other batch requested —
-    // without them the portal is never asked, and the comparison can only
-    // report "not stated" for rows the sheet does fill in.
-    const BATCH_8 = ["D2980", "D5212", "D5899", "D5995"];
 
     async function scrapeSubscriberFromDropdown() {
         try {
@@ -189,12 +185,6 @@
     }
 
     function scrapeProviderInfo() {
-        // NOTE: this matches the FIRST element whose text is exactly
-        // "IN-NETWORK" / "OUT-OF-NETWORK", and the plan-details page renders
-        // both of those as coverage-panel headings, so it reports
-        // "In-Network" for essentially every patient. It is not a reliable
-        // statement of THIS office's network status; the Sabrina audit
-        // ignores it and derives the network from the per-category benefits.
         const networkBadge = Array.from(document.querySelectorAll("*")).find(el =>
             /^(in-network|out-of-network)$/i.test((el.innerText || "").trim())
         );
@@ -232,45 +222,16 @@
         if (!container) return { remaining: "N/A", used: "N/A", total: "N/A" };
         const text = container.innerText || "";
         return {
-            remaining: text.match(/[$]\s*[\d,]+\.?\d*\s*remaining/i)?.[0]?.replace(/\s+/g, ' ').trim() || "N/A",
-            used: text.match(/[$]\s*[\d,]+\.?\d*\s*(?:used|paid)\s*to\s*date/i)?.[0]?.replace(/\s+/g, ' ').trim() || "N/A",
-            total: text.match(/[$]\s*[\d,]+\.?\d*\s*total/i)?.[0]?.replace(/\s+/g, ' ').trim() || "N/A"
+            remaining: text.match(/\$\s*[\d,]+\.?\d*\s*remaining/i)?.[0]?.replace(/\s+/g, ' ').trim() || "N/A",
+            used: text.match(/\$\s*[\d,]+\.?\d*\s*(?:used|paid)\s*to\s*date/i)?.[0]?.replace(/\s+/g, ' ').trim() || "N/A",
+            total: text.match(/\$\s*[\d,]+\.?\d*\s*total/i)?.[0]?.replace(/\s+/g, ' ').trim() || "N/A"
         };
     }
 
-    // The Benefit Maximums screen prints the service categories that the
-    // annual maximum applies to:
-    //
-    //   Annual
-    //   for Diagnostic, Preventive, Restorative, Endodontics, Prosthodontics,
-    //   Oral Surgery, Adjunctive, Implant Services      $ 0.00 remaining ...
-    //
-    // Whether Preventive appears in that list is what answers "Preventative
-    // Included in Yearly Max?" on the breakdown sheet, so the list is captured
-    // verbatim and interpreted downstream.
-    //
-    // Tried against the card first and then the whole page, because the
-    // categories and the amounts are not always inside the same element. The
-    // character class stops at the first "$", so the dollar figures can never
-    // be swallowed into the list.
-    function scrapeMaximumCategories(annualCard) {
-        const LIST = /\bfor\s+([A-Za-z][A-Za-z ,/&'()-]{15,}?)\s*[$]/i;
-
-        if (annualCard) {
-            const hit = (annualCard.innerText || "").replace(/\s+/g, ' ').match(LIST);
-            if (hit) return hit[1].trim();
-        }
-
-        const body = (document.body?.innerText || "").replace(/\s+/g, ' ');
-        const afterAnnual = body.match(/\bAnnual\s+for\s+([A-Za-z][A-Za-z ,/&'()-]{15,}?)\s*[$]/i);
-        if (afterAnnual) return afterAnnual[1].trim();
-
-        const at = body.search(/Benefit\s+Maximums/i);
-        if (at >= 0) {
-            const hit = body.slice(at, at + 800).match(LIST);
-            if (hit) return hit[1].trim();
-        }
-        return "N/A";
+    function parseCardDescription(card) {
+        if (!card) return "";
+        const descEl = card.querySelector('[id^="section-description-"]');
+        return descEl ? descEl.innerText.trim() : "";
     }
 
     function scrapeFinancials() {
@@ -297,8 +258,10 @@
             : { remaining: "N/A", used: "N/A", total: "N/A" };
 
         return {
-            annual_max:     Object.assign(parseCardAmounts(annualCard),
-                                          { applies_to: scrapeMaximumCategories(annualCard) }),
+            annual_max: {
+                ...parseCardAmounts(annualCard),
+                description: parseCardDescription(annualCard),
+            },
             ortho_lifetime,
             deductible_ind: parseCardAmounts(findCardByLabel("Individual")),
             deductible_fam,
@@ -637,7 +600,7 @@
         const allCodes = [...new Set([
             ...BATCH_1, ...BATCH_2, ...BATCH_3,
             ...BATCH_4, ...BATCH_5, ...BATCH_6,
-            ...BATCH_7, ...BATCH_8, ...extraList
+            ...BATCH_7, ...extraList
         ])];
 
         const CHUNK_SIZE = 10;
