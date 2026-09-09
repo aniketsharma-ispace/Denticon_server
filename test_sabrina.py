@@ -697,6 +697,99 @@ else:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  1f. Apt 92763 (Smile Partners / MetLife) — two mapping bugs
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Reported: the bot took the patient's EFFECTIVE DATE as the plan start month
+# (September) for a plan the portal plainly labels CALENDAR YEAR, and it read a
+# TMJ lifetime maximum ($1,000) as the orthodontic lifetime max against a sheet
+# that correctly said 0. TMJ is a separate class, outside Eligibility &
+# Benefits verification.
+
+print("── 1f. APT 92763 MAPPING BUGS ──")
+
+from new_plan import _get_plan_year_start as _pys
+
+_BENEFIT_PERIOD = {
+    "rule": "Benefit Period",
+    "value": "CALENDAR YEAR Start Date: 01/01/2026 End Date: 12/31/2026",
+}
+
+# The Benefit Period provision is authoritative and must win over the
+# effective date, which only says when this member joined.
+check("plan year: CALENDAR YEAR provision beats a September effective date",
+      _pys({}, "09/08/2026", [_BENEFIT_PERIOD]), "January")
+check("plan year: an explicit mid-year start date is still honoured",
+      _pys({}, "01/01/2026", [{"rule": "Benefit Period",
+                               "value": "CONTRACT YEAR Start Date: 09/01/2026 "
+                                        "End Date: 08/31/2027"}]), "September")
+check("plan year: 'CALENDAR YEAR' with no start date",
+      _pys({}, "09/08/2026", [{"rule": "Benefit Period", "value": "CALENDAR YEAR"}]),
+      "January")
+check("plan year: no provision falls back to the effective date",
+      _pys({}, "09/08/2026", []), "September")
+check("plan year: the D2740 calendar-year hint still applies",
+      _pys({"D2740": {"frequency_limit": "1 TIME IN 1 CALENDAR YEAR"}}, "09/08/2026", []),
+      "January")
+check("plan year: an unparseable effective date degrades quietly",
+      _pys({}, "", []), "\u2014")
+
+# A lifetime maximum belonging to another class is not the ortho maximum.
+def _lifetime(category, total, ortho_covered):
+    return {"metlife_data": {
+        "financials": {"ortho_lifetime": dict(
+            {"total": total, "used": "$ 0.00 used to date", "remaining": total},
+            **({"category": category} if category is not None else {}))},
+        "covered_services": [{
+            "category": "ORTHODONTICS",
+            "in_network": "50%" if ortho_covered else "Not Covered",
+            "out_of_network": "50%" if ortho_covered else "Not Covered"}],
+        "provisions": [_BENEFIT_PERIOD],
+    }}
+
+_tmj = _lifetime("TMJ", "$ 1000.00 total", ortho_covered=False)
+_bd_tmj = sc._portal_breakdown(_tmj)
+check("ortho max: the raw breakdown does pick up the TMJ figure",
+      _bd_tmj.get("ortho_max"), "1,000.00")
+check("ortho max: a TMJ lifetime maximum is not reported as ortho",
+      sc._portal_ortho_max(_bd_tmj, _tmj), "0.00")
+check("ortho used: guarded the same way",
+      sc._portal_ortho_used(_bd_tmj, _tmj), "0.00")
+check("ortho max: so a sheet saying 0 matches",
+      sc._compare("money", "0", sc._portal_ortho_max(_bd_tmj, _tmj))[0], True)
+
+_real = _lifetime("Orthodontia", "$ 1500.00 total", ortho_covered=True)
+_bd_real = sc._portal_breakdown(_real)
+check("ortho max: a genuine orthodontic maximum still comes through",
+      sc._portal_ortho_max(_bd_real, _real), "1,500.00")
+check("ortho max: and matches a sheet stating it",
+      sc._compare("money", "1500", sc._portal_ortho_max(_bd_real, _real))[0], True)
+
+_mixed = _lifetime("TMJ", "$ 1000.00 total", ortho_covered=True)
+check("ortho max: ortho covered but the card is TMJ -> still not ortho",
+      sc._portal_ortho_max(sc._portal_breakdown(_mixed), _mixed), "0.00")
+
+_old = _lifetime(None, "$ 1000.00 total", ortho_covered=False)
+check("ortho max: an export with no category, ortho not covered -> guarded",
+      sc._portal_ortho_max(sc._portal_breakdown(_old), _old), "0.00")
+
+_no_ortho_row = {"metlife_data": {"financials": {
+    "ortho_lifetime": {"total": "$ 2000.00 total", "used": "$ 0.00 used to date"}}}}
+check("ortho max: nothing said about orthodontics -> the figure stands",
+      sc._portal_ortho_max(sc._portal_breakdown(_no_ortho_row), _no_ortho_row), "2,000.00")
+
+check("ortho: TMJ is recognized as another class",
+      sc._lifetime_belongs_elsewhere(_tmj), "TMJ")
+check("ortho: Orthodontia is not another class",
+      sc._lifetime_belongs_elsewhere(_real), None)
+check("ortho coverage: 'Not Covered' both networks",
+      sc._ortho_is_covered(_tmj), False)
+check("ortho coverage: covered", sc._ortho_is_covered(_real), True)
+check("ortho coverage: no orthodontics row at all",
+      sc._ortho_is_covered(_no_ortho_row), None)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  2. DETECTION
 # ══════════════════════════════════════════════════════════════════════════════
 

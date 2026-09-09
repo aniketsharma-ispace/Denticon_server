@@ -237,18 +237,38 @@
     function scrapeFinancials() {
         const annualCard = findCardByLabel("Annual");
 
-        // ── Lifetime: check for "no lifetime" message first ──
+        // ── Lifetime maximum ──
+        // The Lifetime card carries a Category selector, and the category is
+        // NOT always orthodontics — on some plans the only lifetime maximum
+        // belongs to TMJ, a separate class that Eligibility & Benefits
+        // verification does not cover. Reading the card blindly reported a TMJ
+        // maximum as the orthodontic lifetime max ($1000 against a sheet that
+        // correctly said 0). The amounts are only taken when the category is
+        // orthodontic, or when no category is named at all; the category is
+        // recorded either way so downstream can see what the figure belongs to.
         const lifetimeCard = findCardByLabel("Lifetime");
         let ortho_lifetime;
 
         if (!lifetimeCard) {
-            ortho_lifetime = { remaining: "0.0", used: "0.0", total: "0.0" };
+            ortho_lifetime = { remaining: "0.0", used: "0.0", total: "0.0", category: "N/A" };
         } else {
             const lifetimeText = lifetimeCard.innerText || "";
-            if (/no lifetime benefit maximum/i.test(lifetimeText)) {
-                ortho_lifetime = { remaining: "0.0", used: "0.0", total: "0.0" };
+            const flatLifetime = lifetimeText.replace(/\s+/g, ' ');
+            const categoryMatch = flatLifetime.match(/Category\s+([A-Za-z][A-Za-z0-9 /&()-]{1,40}?)\s*(?:[$]|$)/i);
+            const category = categoryMatch ? categoryMatch[1].trim() : "";
+            const isOrtho = /orthodont/i.test(category) || /^ortho\b/i.test(category);
+            const otherClass = category
+                ? !isOrtho
+                : /\bTMJ\b|temporomandibular/i.test(flatLifetime);
+
+            if (/no lifetime benefit maximum/i.test(lifetimeText) || otherClass) {
+                ortho_lifetime = {
+                    remaining: "0.0", used: "0.0", total: "0.0",
+                    category: category || "N/A"
+                };
             } else {
-                ortho_lifetime = parseCardAmounts(lifetimeCard);
+                ortho_lifetime = Object.assign(parseCardAmounts(lifetimeCard),
+                                               { category: category || "N/A" });
             }
         }
         // ── Family deductible (may not exist for all plans) ──

@@ -152,9 +152,9 @@ _SPEC: list[dict] = [
      "aliases": ["Major %", "Major"]},
 
     # ── Orthodontics ─────────────────────────────────────────────────────────
-    {"key": "ortho_max",      "label": "Ortho Maximum$",                       "kind": "money", "section": "Orthodontics", "portal": "ortho_max",
+    {"key": "ortho_max",      "label": "Ortho Maximum$",                       "kind": "money", "section": "Orthodontics", "portal": "_ortho_max",
      "aliases": ["Ortho Max", "Orthodontic Maximum", "Ortho Lifetime Maximum"]},
-    {"key": "ortho_max_paid", "label": "Orthodontics Used Amount $",            "kind": "money", "section": "Orthodontics", "portal": "ortho_max_paid",
+    {"key": "ortho_max_paid", "label": "Orthodontics Used Amount $",            "kind": "money", "section": "Orthodontics", "portal": "_ortho_used",
      "aliases": ["Ortho Used", "Orthodontics Used Amount"]},
     {"key": "ortho_ded",      "label": "Orthodontics Deductible Amount$",       "kind": "money", "section": "Orthodontics", "portal": "ortho_ded",
      "aliases": ["Ortho Deductible", "Orthodontics Deductible Amount"]},
@@ -1541,6 +1541,66 @@ def _portal_cob(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     return None
 
 
+def _ortho_is_covered(portal_raw: dict) -> bool | None:
+    """Whether the portal states orthodontics is covered at all."""
+    ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
+    for row in (ml.get("covered_services") or []):
+        if not isinstance(row, dict):
+            continue
+        if "ORTHODONT" not in str(row.get("category", "")).upper():
+            continue
+        cells = " ".join(str(row.get(k, "")) for k in
+                         ("in_network", "out_of_network", "out_network")).lower()
+        if not cells.strip():
+            return None
+        return "not covered" not in cells
+    return None
+
+
+def _lifetime_belongs_elsewhere(portal_raw: dict) -> str | None:
+    """
+    The class a non-orthodontic lifetime maximum belongs to, if any.
+
+    MetLife's Lifetime card has a Category selector, and on some plans the only
+    lifetime maximum is TMJ — a separate class that this audit does not cover.
+    """
+    ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
+    lifetime = (ml.get("financials") or {}).get("ortho_lifetime")
+    if not isinstance(lifetime, dict):
+        return None
+    category = lifetime.get("category")
+    if _blank(category):
+        return None
+    text = str(category).strip()
+    return None if re.search(r"orthodont|^ortho\b", text, re.IGNORECASE) else text
+
+
+def _portal_ortho_max(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """
+    Orthodontic lifetime maximum, guarded against another class's figure.
+
+    Two ways a non-zero maximum here can be wrong: the portal's only lifetime
+    maximum belongs to a different class (TMJ), or the plan states orthodontics
+    is not covered at all — in which case there is no orthodontic maximum to
+    report and the sheet's 0 is correct.
+    """
+    other = _lifetime_belongs_elsewhere(portal_raw)
+    if other:
+        return "0.00"
+    if _ortho_is_covered(portal_raw) is False:
+        return "0.00"
+    value = bd.get("ortho_max")
+    return None if _blank(value) else str(value)
+
+
+def _portal_ortho_used(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """Ortho amount used, under the same guards as the maximum."""
+    if _lifetime_belongs_elsewhere(portal_raw) or _ortho_is_covered(portal_raw) is False:
+        return "0.00"
+    value = bd.get("ortho_max_paid")
+    return None if _blank(value) else str(value)
+
+
 def _portal_prev_in_max(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
     Whether preventive services count toward the yearly maximum.
@@ -1621,6 +1681,8 @@ def _portal_oon_benefits(bd: dict, portal_raw: dict, sab_raw=None) -> str | None
 # call them uniformly, even where one of the two arguments isn't needed.
 _DERIVED = {
     "_cob": _portal_cob,
+    "_ortho_max": _portal_ortho_max,
+    "_ortho_used": _portal_ortho_used,
     "_prev_in_max": _portal_prev_in_max,
     "_in_network": _portal_in_network,
     "_oon_benefits": _portal_oon_benefits,

@@ -641,14 +641,43 @@ def _build_insurance_address(carrier):
     return final or '—'
 
 
-def _get_plan_year_start(procs, eff_date):
+def _get_plan_year_start(procs, eff_date, provisions=None):
+    """
+    Month the plan/benefit year starts.
+
+    The portal states this outright in its "Benefit Period" provision —
+    "CALENDAR YEAR Start Date: 01/01/2026 End Date: 12/31/2026" — so that is
+    read first, and it is the only authoritative source.
+
+    The patient's effective date is a poor proxy and is now a last resort: for a
+    calendar-year plan whose member joined mid-year it reported the join month
+    (an effective date in September became "September" for a plan the portal
+    plainly labels CALENDAR YEAR).
+    """
+    for prov in provisions or []:
+        if not isinstance(prov, dict):
+            continue
+        if 'benefit period' not in str(prov.get('rule', '')).lower():
+            continue
+        value = str(prov.get('value', ''))
+        m = re.search(r'start\s*date\s*:?\s*(\d{1,2})\s*/\s*\d{1,2}\s*/\s*\d{2,4}',
+                      value, re.IGNORECASE)
+        if m:
+            month = int(m.group(1))
+            if 1 <= month <= 12:
+                return datetime(2000, month, 1).strftime('%B')
+        if 'calendar year' in value.lower():
+            return 'January'
+
+    # Indirect hint: a D2740 frequency counted per calendar year.
     d2740 = procs.get('D2740', {})
     freq = str(d2740.get('frequency_limit', '')).upper()
     if 'CALENDAR YEAR' in freq:
         return 'January'
+
     try:
         return datetime.strptime(eff_date, '%m/%d/%Y').strftime('%B')
-    except:
+    except Exception:
         return '—'
 
 
@@ -2908,7 +2937,7 @@ def _extract(portal_raw, denticon_raw):
                 or _g(ml_pln, 'network', default='')
             )
         ),
-        'plan_year_start': _get_plan_year_start(procs, _g(ml_pln, 'start_date')),
+        'plan_year_start': _get_plan_year_start(procs, _g(ml_pln, 'start_date'), provisions),
         'elig_notes': (
             'ins: metlife, benefits verified online'
             if (is_metlife or 'PDP' in str(_g(ml_pln, 'network')).upper())
