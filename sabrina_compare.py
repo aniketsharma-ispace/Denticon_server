@@ -141,7 +141,7 @@ _SPEC: list[dict] = [
     # ── Plan provisions ──────────────────────────────────────────────────────
     {"key": "waiting_period", "label": "Is there a Waiting Period",  "kind": "yesno", "section": "Plan Provisions", "portal": "waiting_period",
      "aliases": ["Waiting Period", "Is there a Waiting Period?"]},
-    {"key": "cob",            "label": "Coordination Of Benefits",   "kind": "text",  "section": "Plan Provisions", "portal": "_cob",
+    {"key": "cob",            "label": "Coordination Of Benefits",   "kind": "cob",   "section": "Plan Provisions", "portal": "_cob",
      "aliases": ["Coordination of Benefits", "COB"]},
 
     {"key": "pct_prev",  "label": "D0120 Preventative", "kind": "pct", "section": "Plan Provisions", "portal": "pct_prev",
@@ -1027,7 +1027,86 @@ _FREQ_PROSE_RE = re.compile(
     re.IGNORECASE)
 
 
-def _num_frequency(v) -> tuple | None:
+# A frequency can carry more than one clause, split by who it applies to:
+#   "2 EVERY 1 CALENDAR YEAR(S) FOR PARTICIPANT TO AGE 19,
+#    1 EVERY 1 CALENDAR YEAR(S) FOR ADULTS"
+# Each clause begins with its own count, which is what separates them from the
+# trailing conditions the portal also appends ("…, PERMANENT MOLARS ONLY").
+_FREQ_CLAUSE_SPLIT = re.compile(r",\s*(?=(?:\d+|once|twice)\b)", re.IGNORECASE)
+
+
+def _clause_age_range(clause: str) -> tuple[int, int] | None:
+    """The age band a frequency clause applies to, or None if unqualified."""
+    s = clause.lower()
+    m = re.search(r"(?:to|thru|through|under|up to)\s+age\s+(\d{1,3})", s)
+    if m:
+        return 0, int(m.group(1))
+    m = re.search(r"age\s+(\d{1,3})\s*(?:and\s*(?:over|older|above)|\+)", s)
+    if m:
+        return int(m.group(1)), 999
+    m = re.search(r"(?:over|above)\s+age\s+(\d{1,3})", s)
+    if m:
+        return int(m.group(1)) + 1, 999
+    if re.search(r"\badults?\b", s):
+        return 18, 999
+    if re.search(r"\b(?:child|children|dependent children)\b", s):
+        return 0, 18
+    return None
+
+
+def _select_frequency_clause(value: str, age: int | None) -> tuple[str, str]:
+    """
+    Pick the clause that governs, returning (clause, why).
+
+    With the patient's age known the matching band wins, and the narrowest band
+    wins when several match. Without an age the most restrictive clause governs
+    — fewest visits allowed — which is the safe reading of a plan stating more
+    than one rule.
+    """
+    clauses = [c.strip() for c in _FREQ_CLAUSE_SPLIT.split(str(value)) if c.strip()]
+    if len(clauses) < 2:
+        return str(value), ""
+
+    banded = [(c, _clause_age_range(c)) for c in clauses]
+
+    if age is not None:
+        hits = [(c, band) for c, band in banded
+                if band and band[0] <= age <= band[1]]
+        if hits:
+            clause, band = min(hits, key=lambda cb: cb[1][1] - cb[1][0])
+            return clause, f"patient is {age}; applied the clause for ages {band[0]}-{band[1]}"
+        unqualified = [c for c, band in banded if band is None]
+        if unqualified:
+            return unqualified[0], ""
+
+    rated = []
+    for clause, _band in banded:
+        parsed = _parse_single_frequency(clause)
+        if parsed and len(parsed) == 2 and isinstance(parsed[0], int):
+            count, span = parsed
+            months = 1 if span == "lifetime" else max(int(span), 1)
+            rated.append((count / months, clause))
+    if rated:
+        clause = min(rated)[1]
+        return clause, "plan states several limits; applied the most restrictive"
+    return clauses[0], ""
+
+
+def _num_frequency(v, age: int | None = None) -> tuple | None:
+    if _blank(v):
+        return None
+    chosen, _why = _select_frequency_clause(str(v), age)
+    return _parse_single_frequency(chosen)
+
+
+def _frequency_note(v, age: int | None = None) -> str:
+    """Why a particular clause was chosen, for the reviewer."""
+    if _blank(v):
+        return ""
+    return _select_frequency_clause(str(v), age)[1]
+
+
+def _parse_single_frequency(v) -> tuple | None:
     if _blank(v):
         return None
     s = re.sub(r"\s+", " ", str(v)).strip().lower().lstrip("*")
@@ -1209,7 +1288,7 @@ _PCT_TOLERANCE = 0.01
 _ADDR_OVERLAP = 0.7       # share of the smaller token set that must match
 
 
-def _compare(kind: str, sab, por) -> tuple[bool | None, str]:
+def _compare(kind: str, sab, por, ctx: dict | None = None) -> tuple[bool | None, str]:
     """
     Compare one field.
 
@@ -1248,14 +1327,25 @@ def _compare(kind: str, sab, por) -> tuple[bool | None, str]:
         return a == b, ""
 
     if kind == "frequency":
-        a, b = _num_frequency(sab), _num_frequency(por)
+        age = (ctx or {}).get("age")
+        a, b = _num_frequency(sab, age), _num_frequency(por, age)
         if a is None or b is None:
             return None, ""
+        note = _frequency_note(por, age) or _frequency_note(sab, age)
         if a == b:
-            return True, ""
+            return True, note
         # "1X60Months" and "1X5Years" are the same limit stated two ways; the
         # canonical form already reconciles those, so a difference here is real.
-        return False, ""
+        return False, note
+
+    if kind == "cob":
+        a, b = _num_cob(sab), _num_cob(por)
+        if a is None or b is None:
+            return None, "coordination method not recognized on one side"
+        if a[0] == b[0]:
+            same_words = _norm_text(sab) == _norm_text(por)
+            return True, "" if same_words else f"both state {a[1]}, worded differently"
+        return False, f"{a[1]} on the sheet, {b[1]} on the portal"
 
     if kind == "agelimit":
         a, b = _num_agelimit(sab), _num_agelimit(por)
@@ -1505,22 +1595,44 @@ def _portal_yearly_max_paid(bd: dict, portal_raw: dict, sab_raw=None) -> str | N
     return f"{max(total - remaining, 0.0):.2f}"
 
 
-# How a plan coordinates with other coverage. MetLife states it in a provision
-# ("… any other dental plan: Birthday rule, Regular COB") mixing the order-of-
-# benefits rule with the COB method; only the method is comparable, so the
-# recognized methods are mapped to the wording Sabrina uses.
+# How a plan coordinates with other coverage.
+#
+# The two systems word the same method differently — the sheet says
+# "Non-Duplicate", the portal says "Non-duplication of benefits applies" — so
+# both sides are reduced to a method before comparing. MetLife also mixes the
+# order-of-benefits rule into the same sentence ("Birthday rule, Non-duplication
+# of benefits applies."); only the method is comparable, and "Birthday rule" is
+# not one.
+#
+# Ranked least to most restrictive. Where a plan states more than one method the
+# MOST RESTRICTIVE governs, because that is the one that actually limits payment.
 _COB_METHODS = (
-    ("non-duplication", "Non-Duplication"),
-    ("nonduplication",  "Non-Duplication"),
-    ("non duplication", "Non-Duplication"),
-    ("maintenance of benefits", "Maintenance of Benefits"),
-    ("carve out",  "Carve Out"),
-    ("carve-out",  "Carve Out"),
-    ("regular cob", "Standard"),
-    ("standard cob", "Standard"),
-    ("traditional", "Standard"),
-    ("full cob",   "Standard"),
+    ("Standard", 1, ("regular cob", "standard cob", "traditional cob",
+                     "full cob", "traditional", "standard")),
+    ("Maintenance of Benefits", 2, ("maintenance of benefits", "mob")),
+    ("Non-Duplication", 3, ("non-duplication", "nonduplication", "non duplication",
+                            "non-duplicate", "nonduplicate", "non duplicate",
+                            "non-dup", "non dup")),
+    ("Carve Out", 4, ("carve out", "carve-out", "carveout")),
 )
+
+
+def _num_cob(v) -> tuple[int, str] | None:
+    """
+    The coordination method a value names, as (restrictiveness, label).
+
+    None when nothing recognizable is named, so an unfamiliar wording is
+    reported as not comparable rather than quietly passed or failed.
+    """
+    if _blank(v):
+        return None
+    s = re.sub(r"\s*-\s*", "-", re.sub(r"\s+", " ", str(v).lower()))
+    best = None
+    for label, rank, needles in _COB_METHODS:
+        if any(needle in s for needle in needles):
+            if best is None or rank > best[0]:
+                best = (rank, label)
+    return best
 
 
 def _portal_cob(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
@@ -1531,10 +1643,9 @@ def _portal_cob(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
             continue
         if "coordination of benefits" not in str(prov.get("rule", "")).lower():
             continue
-        value = str(prov.get("value", "")).lower()
-        for needle, method in _COB_METHODS:
-            if needle in value:
-                return method
+        method = _num_cob(prov.get("value"))
+        if method:
+            return method[1]
         # The provision exists but names no method we recognize — report the
         # raw text rather than silently claiming the portal said nothing.
         return str(prov.get("value", "")).strip() or None
@@ -1717,6 +1828,21 @@ STATUS_NOT_STATED = "not_stated"
 STATUS_NOT_COMPARABLE = "not_comparable"
 
 
+def _age_from_dob(dob) -> int | None:
+    """Patient age today, from the date of birth printed on the sheet."""
+    normalized = _num_date(dob)
+    if not normalized:
+        return None
+    import datetime
+    try:
+        born = datetime.datetime.strptime(normalized, "%m/%d/%Y").date()
+    except ValueError:
+        return None
+    today = datetime.date.today()
+    age = today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+    return age if 0 <= age <= 130 else None
+
+
 def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     """
     Audit a parsed Sabrina PDF against the insurance portal export.
@@ -1727,6 +1853,11 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     """
     sab_fields = sabrina_parsed.get("fields", {})
     bd = _portal_breakdown(portal_raw)
+
+    # Some portal rules are stated per age band ("… TO AGE 19, … FOR ADULTS"),
+    # so the patient's age decides which one governs. Taken as of today, which
+    # is right to within a day or two of the appointment.
+    ctx = {"age": _age_from_dob(sab_fields.get("patient_dob"))}
 
     sections: dict[str, list] = {}
     rows: list[dict] = []
@@ -1763,7 +1894,7 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             status = STATUS_NOT_COMPARABLE
             note = field["uncomparable"]
         else:
-            equal, cmp_note = _compare(field["kind"], sab_raw, por_raw)
+            equal, cmp_note = _compare(field["kind"], sab_raw, por_raw, ctx)
             note = cmp_note
             if equal is None:
                 status = STATUS_NOT_COMPARABLE

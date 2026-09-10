@@ -36,6 +36,9 @@ PORTAL_JSON_2 = os.path.join(BASE, "Material", "Comparison",
 DD_PORTAL_DIR = os.path.join(BASE, "Material", "Comparison", "DD INS")
 SABRINA_PDF_3 = os.path.join(BASE, "Material", "Smile", "Gore1.pdf")
 PORTAL_JSON_3 = os.path.join(BASE, "Material", "Smile", "tiffany_gore_metlife_audit.json")
+SABRINA_PDF_4 = os.path.join(BASE, "Material", "Smile", "91215.pdf")
+PORTAL_JSON_4 = os.path.join(BASE, "Material", "Smile",
+                             "amanda_j_wilson_metlife_audit.json")
 
 _passed = _failed = _skipped = 0
 
@@ -787,6 +790,122 @@ check("ortho coverage: 'Not Covered' both networks",
 check("ortho coverage: covered", sc._ortho_is_covered(_real), True)
 check("ortho coverage: no orthodontics row at all",
       sc._ortho_is_covered(_no_ortho_row), None)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  1g. Apt 91215 — one plan stating two rules
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Reported: Coordination of Benefits read as a conflict when both sides say the
+# same thing in different words — the sheet "Non-Duplicate", the portal
+# "Non-duplication of benefits applies." Where a plan genuinely states two
+# methods, the most restrictive governs.
+#
+# The same pairing also has an age-split frequency: D0274 is "2 EVERY 1 CALENDAR
+# YEAR(S) FOR PARTICIPANT TO AGE 19, 1 EVERY 1 CALENDAR YEAR(S) FOR ADULTS", and
+# the patient is 63, so the adult clause governs and the sheet's 1X1Year is right.
+
+print("── 1g. APT 91215 — TWO RULES ON ONE PLAN ──")
+
+# Same method, different wording, in both directions.
+for sab, por in [("Non-Duplicate", "Non-duplication of benefits applies."),
+                 ("Non - Duplicate", "Non-duplication of benefits applies."),
+                 ("Non-Dup", "Non-Duplication"),
+                 ("Standard", "Birthday rule, Regular COB"),
+                 ("Carve Out", "Carve-out applies"),
+                 ("Maintenance of Benefits", "MOB applies")]:
+    check(f"cob {sab!r} vs {por!r}", sc._compare("cob", sab, por)[0], True)
+
+check("cob: the match is explained",
+      "worded differently" in sc._compare("cob", "Non-Duplicate",
+                                          "Non-duplication of benefits applies.")[1], True)
+
+# Genuinely different methods must still be caught.
+check("cob: Standard against Non-Duplication is a real conflict",
+      sc._compare("cob", "Standard", "Non-duplication of benefits applies.")[0], False)
+check("cob: the conflict names both methods",
+      sc._compare("cob", "Standard", "Non-duplication applies")[1],
+      "Standard on the sheet, Non-Duplication on the portal")
+check("cob: an unrecognized wording is not comparable",
+      sc._compare("cob", "Non-Duplicate", "Birthday rule")[0], None)
+
+# Two methods on one plan -> the most restrictive governs.
+check("cob: Regular COB + Non-duplication -> Non-Duplication",
+      sc._num_cob("Regular COB, Non-duplication of benefits applies."),
+      (3, "Non-Duplication"))
+check("cob: Standard + carve-out -> Carve Out",
+      sc._num_cob("Standard COB and carve-out applies"), (4, "Carve Out"))
+check("cob: MOB + non-duplication -> Non-Duplication",
+      sc._num_cob("Maintenance of benefits, non-duplication applies"),
+      (3, "Non-Duplication"))
+check("cob: the order-of-benefits rule is not a method",
+      sc._num_cob("Birthday rule"), None)
+
+# Age-split frequency clauses.
+_SPLIT = ("2 EVERY 1 CALENDAR YEAR(S) FOR PARTICIPANT TO AGE 19, "
+          "1 EVERY 1 CALENDAR YEAR(S) FOR ADULTS")
+check("frequency: an adult gets the adult clause",
+      sc._num_frequency(_SPLIT, 63), (1, 12))
+check("frequency: a child gets the child clause",
+      sc._num_frequency(_SPLIT, 12), (2, 12))
+check("frequency: with no age, the most restrictive clause governs",
+      sc._num_frequency(_SPLIT, None), (1, 12))
+check("frequency: the chosen clause is explained",
+      sc._frequency_note(_SPLIT, 63), "patient is 63; applied the clause for ages 18-999")
+check("frequency: sheet 1X1Year matches for a 63-year-old",
+      sc._compare("frequency", "1X1Year", _SPLIT, {"age": 63})[0], True)
+check("frequency: sheet 2X1Year matches for a 12-year-old",
+      sc._compare("frequency", "2X1Year", _SPLIT, {"age": 12})[0], True)
+check("frequency: sheet 2X1Year for a 63-year-old is still a conflict",
+      sc._compare("frequency", "2X1Year", _SPLIT, {"age": 63})[0], False)
+check("frequency: 'age 19 and over' band",
+      sc._clause_age_range("1 EVERY 1 YEAR FOR AGE 19 AND OVER"), (19, 999))
+check("frequency: 'to age 14' band",
+      sc._clause_age_range("2 EVERY 1 YEAR TO AGE 14"), (0, 14))
+check("frequency: an unqualified clause has no band",
+      sc._clause_age_range("2 TIMES IN 1 CALENDAR YEAR"), None)
+
+# A trailing condition is not a second clause.
+check("frequency: trailing conditions are not treated as clauses",
+      sc._num_frequency("1 TIME IN 60 MONTHS, PERMANENT MOLARS ONLY, "
+                        "EXCLUDING WISDOM TEETH", 63), (1, 60))
+check("frequency: single-clause values are unaffected",
+      sc._compare("frequency", "2X1Year", "2 TIMES IN 1 CALENDAR YEAR")[0], True)
+
+check("age: computed from the sheet's date of birth",
+      isinstance(sc._age_from_dob("05/14/1963"), int), True)
+check("age: a blank date of birth gives no age", sc._age_from_dob(""), None)
+check("age: an unparseable date of birth gives no age", sc._age_from_dob("not a date"), None)
+
+# ── the real pairing ────────────────────────────────────────────────────────
+if not (os.path.exists(SABRINA_PDF_4) and os.path.exists(PORTAL_JSON_4)):
+    skip("Apt 91215 pairing", "Material/Smile files not present")
+else:
+    import json as _json4
+    with open(SABRINA_PDF_4, "rb") as fh:
+        parsed4 = sc.parse_sabrina_pdf(fh.read())
+    with open(PORTAL_JSON_4, encoding="utf-8") as fh:
+        portal4 = _json4.load(fh)
+
+    check("[4] all labels found", parsed4["labels_not_found"], [])
+    check("[4] the sheet says Non-Duplicate", parsed4["fields"]["cob"], "Non-Duplicate")
+    check("[4] the sheet says 1X1Year for D0274",
+          parsed4["benefit_rows"]["d0274"]["frequency"], "1X1Year")
+
+    res4 = sc.compare_sabrina_to_portal(parsed4, portal4)
+    rows4 = {r["key"]: r for s in res4["sections"] for r in s["rows"]}
+    check("[4] coordination of benefits now matches",
+          (rows4["cob"]["portal"], rows4["cob"]["status"]), ("Non-Duplication", "match"))
+    check("[4] the age-split bitewing frequency now matches",
+          rows4["d0274__freq"]["status"], "match")
+    check("[4] and says which clause was applied",
+          "patient is" in rows4["d0274__freq"]["note"], True)
+
+    # One genuine error remains: the sheet carries D1110's service date on the
+    # D4910 row (03/30/2023) where the portal has 04/14/26.
+    check("[4] the genuine history error is still reported",
+          sorted(r["key"] for r in res4["mismatches"]), ["d4910__hist"])
+    check("[4] D1110's own history matches", rows4["d1110__hist"]["status"], "match")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
