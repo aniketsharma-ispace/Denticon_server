@@ -156,9 +156,9 @@ _SPEC: list[dict] = [
      "aliases": ["Ortho Max", "Orthodontic Maximum", "Ortho Lifetime Maximum"]},
     {"key": "ortho_max_paid", "label": "Orthodontics Used Amount $",            "kind": "money", "section": "Orthodontics", "portal": "_ortho_used",
      "aliases": ["Ortho Used", "Orthodontics Used Amount"]},
-    {"key": "ortho_ded",      "label": "Orthodontics Deductible Amount$",       "kind": "money", "section": "Orthodontics", "portal": "ortho_ded",
+    {"key": "ortho_ded",      "label": "Orthodontics Deductible Amount$",       "kind": "money", "section": "Orthodontics", "portal": "_ortho_ded",
      "aliases": ["Ortho Deductible", "Orthodontics Deductible Amount"]},
-    {"key": "ortho_ded_paid", "label": "Orthodontics Deductible Met Amount $",  "kind": "money", "section": "Orthodontics", "portal": "ortho_ded_paid",
+    {"key": "ortho_ded_paid", "label": "Orthodontics Deductible Met Amount $",  "kind": "money", "section": "Orthodontics", "portal": "_ortho_ded_met",
      "aliases": ["Ortho Deductible Met", "Orthodontics Deductible Met Amount"]},
 
     # ── Clauses ──────────────────────────────────────────────────────────────
@@ -195,7 +195,10 @@ _SPEC: list[dict] = [
     {"key": "d0274", "label": "D0274 Bitewings",       "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0274", "D0272")},
 
     {"key": "d1110", "label": "D1110 Adult Prophy",     "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1110")},
-    {"key": "d1206", "label": "D1206 Fluoride Varnish", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1206")},
+    # Cigna states one fluoride age limit, on its "Topical Fluoride" (D1208)
+    # row, and it governs the varnish too — so D1208 stands in when D1206
+    # carries no age of its own.
+    {"key": "d1206", "label": "D1206 Fluoride Varnish", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1206", "D1208")},
     {"key": "d1208", "label": "D1208 Fluoride",         "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1208", "D1206")},
     {"key": "d1351", "label": "D1351 Sealants",         "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1351")},
     {"key": "d1510", "label": "D1510 Space Maintainer", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1510")},
@@ -278,7 +281,7 @@ _ASPECT_SECTION = "Coverage by CDT Code"
 # list: Sabrina puts the quadrant count in its Age Limit column, not an age.
 _AGE_LIMIT_CODES = {"D1206", "D1208", "D1351", "D1510", "D8080"}
 _HISTORY_CODES = {
-    "D0120", "D0140", "D0210", "D0274", "D0330", "D1110",
+    "D0120", "D0140", "D0150", "D0210", "D0274", "D0330", "D1110",
     "D1206", "D1208", "D1351", "D1510", "D4341", "D4910",
 }
 _NO_FREQUENCY_CODES = {"D3310", "D7140", "D7210", "D9230", "D9243", "D8080", "D8090"}
@@ -305,12 +308,17 @@ def _build_aspect_spec() -> list[dict]:
         for suffix, title, kind, portal_field in _BENEFIT_ASPECTS:
             if not _aspect_applies(suffix, primary):
                 continue
+            # The orthodontic age limit is a plan-level statement, not a
+            # per-procedure one, so that row reads it from the plan instead.
+            portal_source = ("codefield", portal_field) + codes
+            if suffix == "age" and primary == "D8080":
+                portal_source = "_ortho_age"
             out.append({
                 "key":     f'{field["key"]}__{suffix}',
                 "label":   f'{field["label"]} · {title}',
                 "kind":    kind,
                 "section": _ASPECT_SECTION,
-                "portal":  ("codefield", portal_field) + codes,
+                "portal":  portal_source,
                 "derived": True,
                 "row_key": field["key"],
                 "aspect":  suffix,
@@ -873,6 +881,20 @@ def _blank(v) -> bool:
     return v is None or str(v).strip().lower() in _BLANKS
 
 
+def _blank_for(kind: str, v) -> bool:
+    """
+    Blankness, judged for the kind of field being read.
+
+    "Not Applicable" means "nothing here" for most fields but is a real
+    statement for a frequency — Cigna writes it where a procedure carries no
+    frequency limit, which is what the sheet calls "No Frequency".
+    """
+    if kind == "frequency" and v is not None:
+        if str(v).strip().lower() in _FREQ_NO_LIMIT_WORDS:
+            return False
+    return _blank(v)
+
+
 def _num_money(v) -> float | None:
     if _blank(v):
         return None
@@ -1047,6 +1069,9 @@ def _clause_age_range(clause: str) -> tuple[int, int] | None:
     m = re.search(r"(?:over|above)\s+age\s+(\d{1,3})", s)
     if m:
         return int(m.group(1)) + 1, 999
+    m = re.search(r"exclude[sd]?\s+after\s+age\s+(\d{1,3})", s)
+    if m:
+        return 0, int(m.group(1))
     if re.search(r"\badults?\b", s):
         return 18, 999
     if re.search(r"\b(?:child|children|dependent children)\b", s):
@@ -1092,7 +1117,18 @@ def _select_frequency_clause(value: str, age: int | None) -> tuple[str, str]:
     return clauses[0], ""
 
 
+# Wordings that state "there is no frequency limit". These have to be tested
+# before the blank check, because "Not Applicable" — how Cigna words exactly
+# this — also appears in the blank-value vocabulary used everywhere else.
+_FREQ_NO_LIMIT_WORDS = {
+    "not applicable", "n/a", "na", "no frequency", "no limitation",
+    "no limitations", "unlimited", "none",
+}
+
+
 def _num_frequency(v, age: int | None = None) -> tuple | None:
+    if v is not None and str(v).strip().lower() in _FREQ_NO_LIMIT_WORDS:
+        return _FREQ_UNLIMITED
     if _blank(v):
         return None
     chosen, _why = _select_frequency_clause(str(v), age)
@@ -1110,9 +1146,15 @@ def _parse_single_frequency(v) -> tuple | None:
     if _blank(v):
         return None
     s = re.sub(r"\s+", " ", str(v)).strip().lower().lstrip("*")
-    if "not covered" in s or s in ("nc", "n/c"):
+    # Cigna words this "No benefits for this service"; the normalizer usually
+    # shortens it to "NOT COVERED", but accept both so either can be compared.
+    if ("not covered" in s or "no benefits" in s or "not a covered" in s
+            or s in ("nc", "n/c")):
         return _FREQ_NOT_COVERED
-    if "no limitation" in s or "no frequency" in s or "unlimited" in s:
+    # "Not Applicable" is how Cigna states a procedure with no frequency
+    # limit; the sheet writes "No Frequency" for the same thing.
+    if ("no limitation" in s or "no frequency" in s or "unlimited" in s
+            or s in ("not applicable", "n/a", "na")):
         return _FREQ_UNLIMITED
     if "lifetime" in s:
         m = re.match(r"(\d+)\s*x", s)
@@ -1146,6 +1188,10 @@ def _num_agelimit(v) -> int | None:
     m = re.fullmatch(r"\s*(\d{1,3})\s*", s)
     if m:
         return int(m.group(1))
+    # Cigna: "Exclude after age 18" is an upper bound of 18.
+    m = re.search(r"exclude[sd]?\s+after\s+age\s+(\d{1,3})", s, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
     if re.search(r"\d{1,3}\s*(?:and\s*(?:up|over|older)|\+)", s, re.IGNORECASE):
         return 99
     if "no age limit" in s.lower() or "none" in s.lower():
@@ -1177,6 +1223,10 @@ def _blank_means_no_limit(kind: str, portal_value) -> bool:
         ceiling = _num_agelimit(portal_value)
         return (ceiling is not None and ceiling >= 99
                 and _agelimit_lower(portal_value) in (0, None))
+    if kind == "history":
+        # An empty History cell says "never performed", which is exactly what
+        # the portal's "NH" / "No history on file" says.
+        return _num_history(portal_value) == "NONE"
     return False
 
 
@@ -1456,6 +1506,51 @@ def _compare(kind: str, sab, por, ctx: dict | None = None) -> tuple[bool | None,
 #  PORTAL SIDE
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _portal_normalized(portal_raw: dict) -> dict:
+    """
+    The portal export in the shape the derived readers expect.
+
+    Cigna and Aetna exports carry their own layout, and `new_plan` already
+    translates both into the standard contract — patient / plan_details /
+    financials / covered_services / provisions under `metlife_data`. The readers
+    below look for exactly that, so they run against the translation rather than
+    the raw export; without this every derived field reads "not on portal" for
+    those two carriers no matter what the portal actually said.
+
+    A MetLife export is already in the contract shape and passes through
+    untouched.
+    """
+    from new_plan import (_is_aetna_portal, _is_cigna_portal,
+                          _normalize_aetna_portal, _normalize_cigna_portal)
+
+    # The export may arrive bare or wrapped by the extension.
+    candidates = [portal_raw]
+    if isinstance(portal_raw, dict):
+        for key in ("cigna_data", "aetna_data", "portal_data"):
+            inner = portal_raw.get(key)
+            if isinstance(inner, dict):
+                candidates.append(inner)
+
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        try:
+            normalized = None
+            if _is_cigna_portal(candidate):
+                normalized = _normalize_cigna_portal(candidate)
+            elif _is_aetna_portal(candidate):
+                normalized = _normalize_aetna_portal(candidate)
+            if normalized is not None:
+                # A few answers live in carrier-specific corners of the export
+                # that the shared contract has no room for, so keep the
+                # original reachable rather than re-deriving it.
+                normalized.setdefault("_raw_export", candidate)
+                return normalized
+        except Exception:      # a malformed export must not sink the audit
+            continue
+    return portal_raw or {}
+
+
 def _portal_breakdown(portal_raw: dict) -> dict:
     """
     Normalize the insurance portal export (or parsed carrier PDF) into the
@@ -1496,14 +1591,25 @@ def _coalesce_keys(obj: dict, *keys):
 
 
 def _procfield_from_procs(procs: dict, field: str, codes: tuple[str, ...]) -> str | None:
-    """A named field off the first CDT code the portal actually reports."""
+    """
+    A named field off the first CDT code the portal actually reports.
+
+    The frequency field is exempt from the blank vocabulary: Cigna writes
+    "Not Applicable" to mean a procedure carries no frequency limit, which is a
+    real statement, while everywhere else that phrase means "nothing here".
+    """
     for code in codes:
         proc = (procs or {}).get(code.upper())
         if not proc:
             continue
         value = proc.get(field)
-        if not _blank(value):
-            return str(value)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        if field == "frequency_limit" or not _blank(text):
+            return text
     return None
 
 
@@ -1636,7 +1742,13 @@ def _num_cob(v) -> tuple[int, str] | None:
 
 
 def _portal_cob(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
-    """Coordination-of-benefits method as stated in the portal's provisions."""
+    """
+    Coordination-of-benefits method as stated in the portal's provisions.
+
+    Cigna publishes no such provision — its export carries an empty provisions
+    list — and the agreed reading for Cigna is the Standard method, so that is
+    returned rather than leaving the row unstated.
+    """
     ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
     for prov in (ml.get("provisions") or []):
         if not isinstance(prov, dict):
@@ -1649,6 +1761,9 @@ def _portal_cob(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
         # The provision exists but names no method we recognize — report the
         # raw text rather than silently claiming the portal said nothing.
         return str(prov.get("value", "")).strip() or None
+
+    if str((portal_raw or {}).get("_source_insurer", "")).lower() == "cigna":
+        return "Standard"
     return None
 
 
@@ -1686,6 +1801,45 @@ def _lifetime_belongs_elsewhere(portal_raw: dict) -> str | None:
     return None if re.search(r"orthodont|^ortho\b", text, re.IGNORECASE) else text
 
 
+def _portal_ortho_age(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """
+    Orthodontic age limit.
+
+    Cigna states it in the plan's age-limit table ("Ortho Age Limitation",
+    age "None" where there is no cap) rather than on the D8080 procedure
+    record, so the procedure lookup finds nothing.
+    """
+    raw = _cigna_export(portal_raw)
+    if raw:
+        for row in raw.get("age_limits") or []:
+            if not isinstance(row, dict):
+                continue
+            if "ortho" not in str(row.get("type", "")).lower():
+                continue
+            age = str(row.get("age", "")).strip()
+            if not age:
+                continue
+            return "99" if age.lower() in ("none", "no limit", "n/a") else age
+    procs = bd.get("procs", {})
+    return _procfield_from_procs(procs, "age_limit", ("D8080", "D8090", "D8010"))
+
+
+def _portal_ortho_ded(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """Orthodontic deductible, or 0 where the plan has no ortho deductible."""
+    value = bd.get("ortho_ded")
+    if not _blank(value):
+        return str(value)
+    return _cigna_ortho_deductible(portal_raw)
+
+
+def _portal_ortho_ded_met(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """Amount met against the orthodontic deductible, under the same rule."""
+    value = bd.get("ortho_ded_paid")
+    if not _blank(value):
+        return str(value)
+    return _cigna_ortho_deductible(portal_raw)
+
+
 def _portal_ortho_max(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
     Orthodontic lifetime maximum, guarded against another class's figure.
@@ -1712,6 +1866,36 @@ def _portal_ortho_used(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     return None if _blank(value) else str(value)
 
 
+def _cigna_export(portal_raw: dict) -> dict | None:
+    """The original Cigna export, when this portal came from Cigna."""
+    if str((portal_raw or {}).get("_source_insurer", "")).lower() != "cigna":
+        return None
+    raw = (portal_raw or {}).get("_raw_export")
+    return raw if isinstance(raw, dict) else None
+
+
+def _cigna_annual_max_classes(portal_raw: dict) -> str:
+    """
+    Class description of Cigna's general annual maximum.
+
+    Cigna names the service classes the maximum applies to on the record
+    itself — "Diagnostic and Preventive,Basic Restorative,Major Restorative,
+    Implants" — which is the same statement MetLife prints under the Annual
+    card and answers whether preventive draws the maximum down.
+    """
+    raw = _cigna_export(portal_raw)
+    if not raw:
+        return ""
+    from new_plan import _cigna_general_annual_record
+    records = ((raw.get("financials") or {}).get("maximum_records")) or []
+    network = (raw.get("plan_details") or {}).get("network") or {}
+    try:
+        record = _cigna_general_annual_record(records, network) or {}
+    except Exception:
+        return ""
+    return str(record.get("classDesc") or "")
+
+
 def _portal_prev_in_max(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
     Whether preventive services count toward the yearly maximum.
@@ -1730,9 +1914,63 @@ def _portal_prev_in_max(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     annual = financials.get("annual_max") or {}
     applies = annual.get("applies_to") if isinstance(annual, dict) else None
     if _blank(applies):
+        # Cigna states the same thing as the maximum's class description.
+        applies = _cigna_annual_max_classes(portal_raw)
+    if _blank(applies):
         return None
     text = str(applies).lower()
     return "Yes" if ("preventive" in text or "preventative" in text) else "No"
+
+
+def _cigna_oon_benefits(portal_raw: dict) -> str | None:
+    """
+    Whether Cigna pays out of network.
+
+    The coinsurance list carries a row per class per network, the
+    out-of-network one tagged OONET. A class the member does not pay 100% of
+    is a class the plan pays something towards out of network.
+    """
+    raw = _cigna_export(portal_raw)
+    if not raw:
+        return None
+    stated = False
+    for row in raw.get("coinsurance") or []:
+        if not isinstance(row, dict):
+            continue
+        network = str(_coalesce_keys(row, "network", "network_id") or "").upper()
+        if "OON" not in network:
+            continue
+        member = _num_pct(row.get("patient_pays"))
+        if member is None:
+            continue
+        stated = True
+        if member < 100:
+            return "Yes"
+    return "No" if stated else None
+
+
+def _cigna_ortho_deductible(portal_raw: dict) -> str | None:
+    """
+    Cigna's orthodontic deductible.
+
+    The export states which classes carry a deductible at all; when
+    orthodontics is not among them there is no ortho deductible, so the
+    sheet's 0 is right and the row should compare rather than read as unstated.
+    """
+    raw = _cigna_export(portal_raw)
+    if not raw:
+        return None
+    applicability = (raw.get("financials") or {}).get("deductible_applicability")
+    if not isinstance(applicability, dict):
+        return None
+    if applicability.get("orthodontic") is False:
+        return "0.00"
+    codes = applicability.get("class_codes")
+    descriptions = " ".join(str(d) for d in (applicability.get("class_descriptions") or []))
+    if isinstance(codes, list) and codes and "4" not in [str(c) for c in codes] \
+            and "ortho" not in descriptions.lower():
+        return "0.00"
+    return None
 
 
 def _portal_oon_benefits(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
@@ -1751,6 +1989,10 @@ def _portal_oon_benefits(bd: dict, portal_raw: dict, sab_raw=None) -> str | None
     back to the provision text — and an in-network fee schedule is never taken
     to imply OON coverage.
     """
+    cigna = _cigna_oon_benefits(portal_raw)
+    if cigna:
+        return cigna
+
     ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
 
     services = ml.get("covered_services")
@@ -1793,6 +2035,9 @@ def _portal_oon_benefits(bd: dict, portal_raw: dict, sab_raw=None) -> str | None
 _DERIVED = {
     "_cob": _portal_cob,
     "_ortho_max": _portal_ortho_max,
+    "_ortho_ded": _portal_ortho_ded,
+    "_ortho_age": _portal_ortho_age,
+    "_ortho_ded_met": _portal_ortho_ded_met,
     "_ortho_used": _portal_ortho_used,
     "_prev_in_max": _portal_prev_in_max,
     "_in_network": _portal_in_network,
@@ -1853,6 +2098,8 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     """
     sab_fields = sabrina_parsed.get("fields", {})
     bd = _portal_breakdown(portal_raw)
+    # Derived readers work off the translated export, not the raw one.
+    portal_norm = _portal_normalized(portal_raw)
 
     # Some portal rules are stated per age band ("… TO AGE 19, … FOR ADULTS"),
     # so the patient's age decides which one governs. Taken as of today, which
@@ -1870,10 +2117,10 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             field.setdefault("group_label", field["label"])
             field.setdefault("aspect", "pct")
         sab_raw = sab_fields.get(key)
-        por_raw = _portal_value(field, bd, portal_raw, sab_raw)
+        por_raw = _portal_value(field, bd, portal_norm, sab_raw)
 
-        sab_blank = _blank(sab_raw)
-        por_blank = _blank(por_raw)
+        sab_blank = _blank_for(field["kind"], sab_raw)
+        por_blank = _blank_for(field["kind"], por_raw)
         note = ""
 
         if sab_blank and por_blank:

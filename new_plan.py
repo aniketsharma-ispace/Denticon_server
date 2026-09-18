@@ -1892,14 +1892,36 @@ def _cigna_financial_desc_matches(record, desc_hint):
 
 
 def _cigna_general_annual_record(records, selected_network):
-    """Select the core dental maximum, excluding ortho/implant-only maxima."""
+    """
+    Select the core dental maximum, excluding ortho/implant-ONLY maxima.
+
+    A maximum is only excluded when it covers nothing but ortho/implant work.
+    Testing whether the class description merely MENTIONS them threw away the
+    real annual maximum on plans that bundle implants into it — e.g. classDesc
+    "Diagnostic and Preventive,Basic Restorative,Major Restorative,Implants",
+    which left Yearly Max and Paid to Date with no value at all. A maximum that
+    covers any general dental class (1 Diagnostic/Preventive, 2 Basic,
+    3 Major) is the general maximum however many other classes ride along.
+    """
+    def _general(record):
+        classes = _cigna_class_codes(record)
+        if classes:
+            return bool(classes & {'1', '2', '3'})
+        # No class codes to go on: fall back to the wording.
+        desc = str(record.get('classDesc', '')).lower()
+        if not desc:
+            return True
+        return not all(
+            ('ortho' in part or 'implant' in part or 'tmj' in part)
+            for part in (p.strip() for p in desc.split(',')) if part
+        )
+
     candidates = [
         record for record in _cigna_matching_records(records, selected_network)
         if 'maximum' in str(record.get('desc', '')).lower()
         and 'lifetime' not in str(record.get('desc', '')).lower()
         and str(record.get('covers', '')).upper() == 'IND'
-        and 'ortho' not in str(record.get('classDesc', '')).lower()
-        and 'implant' not in str(record.get('classDesc', '')).lower()
+        and _general(record)
     ]
     if not candidates:
         return {}

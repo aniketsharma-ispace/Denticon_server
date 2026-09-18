@@ -275,7 +275,11 @@ const PROCEDURE_CODES = [
     "D6245", "D6750",
     "D7259", "D7140", "D7210", "D7240", "D7953",
     "D8010", "D8080", "D8090",
-    "D9430", "D9110", "D9222", "D9230", "D9239", "D9243", "D9310", "D9944"
+    "D9430", "D9110", "D9222", "D9230", "D9239", "D9243", "D9310", "D9944",
+    // Codes the Sabrina breakdown sheet audits that were never requested, so
+    // the portal was never asked about them and the comparison could only
+    // report "not stated" for rows the sheet does fill in.
+    "D2160", "D2980", "D5212", "D5899", "D5995"
 ];
 
 const CIGNA_VALID_CONTEXT_VALUES = {
@@ -1286,10 +1290,22 @@ async function crawlProcedureCodesLegacy(baseData) {
         excluded_codes:    excludedCodes,
     };
 
+    // Cigna returns dependable per-code benefits only when ONE code is
+    // searched at a time. Entering ten together collapses the result rows, so
+    // codes come back sharing a benefit or missing from the table altogether —
+    // which is why the per-code Frequency / Percentage / Age Limit / History
+    // values could not be trusted for Cigna. One search per code is slower
+    // (roughly one submit per code instead of one per ten) but it is the only
+    // form in which the results map back to the code that produced them.
+    const CODES_PER_SEARCH = 1;
+
     const allCodes = [...STATIC_CODES, ...allowedAgeCodes, ...SPECIAL_CODES];
     const batches  = [];
-    for (let i = 0; i < allCodes.length; i += 10) batches.push(allCodes.slice(i, i + 10));
-    console.log(`Cigna: ${allCodes.length} codes → ${batches.length} batch(es):`, batches);
+    for (let i = 0; i < allCodes.length; i += CODES_PER_SEARCH) {
+        batches.push(allCodes.slice(i, i + CODES_PER_SEARCH));
+    }
+    console.log(`Cigna: ${allCodes.length} codes → ${batches.length} search(es), ` +
+                `${CODES_PER_SEARCH} code per search`);
 
     await ensureAccordionOpen("Procedure Code Search");
     await sleep(800);
@@ -1297,14 +1313,14 @@ async function crawlProcedureCodesLegacy(baseData) {
     const allResults = [];
 
     for (let b = 0; b < batches.length; b++) {
-        setStatus(`Batch ${b + 1}/${batches.length} — clearing old codes…`);
+        setStatus(`Code ${b + 1}/${batches.length} (${batches[b].join(', ')}) — clearing…`);
         await clearExistingCodes();
         await sleep(800);
 
         const ok = await enterBatch(batches[b]);
         if (!ok) continue;
 
-        setStatus(`Batch ${b + 1} submitted — locating result rows…`);
+        setStatus(`Code ${b + 1}/${batches.length} (${batches[b].join(', ')}) — reading results…`);
         const batchResults = await expandAndScrapeAllRows();
 
         batchResults.forEach(r => {

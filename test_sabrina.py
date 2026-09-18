@@ -39,6 +39,9 @@ PORTAL_JSON_3 = os.path.join(BASE, "Material", "Smile", "tiffany_gore_metlife_au
 SABRINA_PDF_4 = os.path.join(BASE, "Material", "Smile", "91215.pdf")
 PORTAL_JSON_4 = os.path.join(BASE, "Material", "Smile",
                              "amanda_j_wilson_metlife_audit.json")
+SABRINA_PDF_5 = os.path.join(BASE, "Material", "Smile", "Matthew Herzwurm.pdf")
+PORTAL_JSON_5 = os.path.join(BASE, "Material", "Smile",
+                             "cigna_Matthew_Herzwurm_2026-09-15.json")
 
 _passed = _failed = _skipped = 0
 
@@ -475,9 +478,11 @@ _by_aspect = {a: sorted(f["row_key"] for f in _derived if f["aspect"] == a)
 
 check("age limit compared only for D1206/D1208/D1351/D1510/D8080",
       _by_aspect["age"], ["d1206", "d1208", "d1351", "d1510", "ortho_coverage"])
-check("history compared only for the twelve listed codes",
+# Thirteen codes: the requirements matrix (Material/Smile/JSON Requirment.pdf)
+# adds D0150 to the History column alongside the twelve listed earlier.
+check("history compared only for the thirteen listed codes",
       _by_aspect["hist"],
-      ["d0120", "d0140", "d0210", "d0274", "d0330", "d1110",
+      ["d0120", "d0140", "d0150", "d0210", "d0274", "d0330", "d1110",
        "d1206", "d1208", "d1351", "d1510", "d4341", "d4910"])
 _cdt_keys = {f["key"] for f in sc._SPEC
              if f["section"] == "Coverage by CDT Code" and not f.get("derived")}
@@ -906,6 +911,126 @@ else:
     check("[4] the genuine history error is still reported",
           sorted(r["key"] for r in res4["mismatches"]), ["d4910__hist"])
     check("[4] D1110's own history matches", rows4["d1110__hist"]["status"], "match")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  1h. CIGNA — the first Cigna pairing
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# A Cigna export is shaped nothing like MetLife's; `new_plan` translates it into
+# the shared contract, and the audit runs its derived readers against that
+# translation. Before that, every derived field read "not on portal" for every
+# Cigna patient. Four separate faults were found on this one pairing:
+#
+#   · the general annual maximum was discarded because its class description
+#     mentions Implants (the exclusion is meant for implant-ONLY maxima), so
+#     Yearly Max and Paid to Date had no value at all
+#   · "Not Applicable" — Cigna's way of saying a procedure has no frequency
+#     limit — sat in the blank-value vocabulary and was thrown away, leaving 13
+#     Frequency rows unstated against a sheet that said "No Frequency"
+#   · OON Benefits is derivable from the OONET coinsurance rows
+#   · the orthodontic deductible is explicitly not a deductible class here, and
+#     the ortho age limit is a plan-level statement rather than a D8080 field
+
+print("── 1h. CIGNA PAIRING (Matthew Herzwurm) ──")
+
+# Unit-level: the pieces that were broken, independent of the fixture files.
+check("cigna: 'Not Applicable' means no frequency limit",
+      sc._num_frequency("Not Applicable"), ("unlimited",))
+check("cigna: and is not treated as a blank for a frequency",
+      sc._blank_for("frequency", "Not Applicable"), False)
+check("cigna: it still reads as blank for other kinds",
+      sc._blank_for("money", "Not Applicable"), True)
+check("cigna: 'No benefits for this service' is not-covered, not no-limit",
+      sc._num_frequency("No benefits for this service"), ("not covered",))
+check("cigna: 'Exclude after age 18' is an upper bound of 18",
+      sc._num_agelimit("Exclude after age 18"), 18)
+check("cigna: sheet 18 matches an 'Exclude after age 18' limit",
+      sc._compare("agelimit", "18", "Exclude after age 18")[0], True)
+
+# A multi-class annual maximum must survive the ortho/implant exclusion.
+from new_plan import _cigna_general_annual_record as _annual
+_NET = {"id": "P0010", "name": "TOTAL"}
+_MIXED = [{"desc": "Individual Calendar Year Maximum", "amount": "$2,000.00",
+           "met": "$222.20", "remaining": "$1,777.80", "covers": "IND",
+           "networkId": "P0010", "networkName": "TOTAL",
+           "classCode": "1,2,3,9",
+           "classDesc": "Diagnostic and Preventive,Basic Restorative,"
+                        "Major Restorative,Implants"}]
+check("cigna: a maximum covering implants alongside general classes is kept",
+      _annual(_MIXED, _NET).get("amount"), "$2,000.00")
+_ORTHO_ONLY = [{"desc": "Individual Calendar Year Maximum", "amount": "$1,000.00",
+                "covers": "IND", "networkId": "P0010", "networkName": "TOTAL",
+                "classCode": "4", "classDesc": "Orthodontics"}]
+check("cigna: an ortho-only maximum is still excluded",
+      _annual(_ORTHO_ONLY, _NET), {})
+_TMJ_ONLY = [{"desc": "Individual Calendar Year Maximum", "amount": "$1,000.00",
+              "covers": "IND", "networkId": "P0010", "networkName": "TOTAL",
+              "classCode": "5", "classDesc": "TMJ"}]
+check("cigna: a TMJ-only maximum is excluded too", _annual(_TMJ_ONLY, _NET), {})
+
+# ── the real pairing ───────────────────────────────────────────────────────
+if not (os.path.exists(SABRINA_PDF_5) and os.path.exists(PORTAL_JSON_5)):
+    skip("Cigna pairing", "Material/Smile Cigna files not present")
+else:
+    import json as _json5
+    with open(SABRINA_PDF_5, "rb") as fh:
+        parsed5 = sc.parse_sabrina_pdf(fh.read())
+    with open(PORTAL_JSON_5, encoding="utf-8") as fh:
+        portal5 = _json5.load(fh)
+
+    check("[5] the sheet parses whole", parsed5["labels_not_found"], [])
+    check("[5] it is a Cigna sheet", parsed5["fields"]["ins_name"], "Cigna DPPO")
+
+    check("[5] the export is recognized as Cigna",
+          sc._portal_normalized(portal5).get("_source_insurer"), "cigna")
+    check("[5] and is translated into the shared contract",
+          "metlife_data" in sc._portal_normalized(portal5), True)
+
+    res5 = sc.compare_sabrina_to_portal(parsed5, portal5)
+    rows5 = {r["key"]: r for s in res5["sections"] for r in s["rows"]}
+
+    # The financials that had no value at all before.
+    check("[5] yearly maximum now compares",
+          (rows5["yearly_max"]["portal"], rows5["yearly_max"]["status"]),
+          ("2,000.00", "match"))
+    check("[5] paid to date now compares",
+          (rows5["yearly_max_paid"]["portal"], rows5["yearly_max_paid"]["status"]),
+          ("222.20", "match"))
+    check("[5] individual deductible matches", rows5["indiv_ded"]["status"], "match")
+    check("[5] family deductible matches", rows5["family_ded"]["status"], "match")
+
+    # Derived readers that were dark for every Cigna patient.
+    check("[5] coordination of benefits defaults to Standard",
+          (rows5["cob"]["portal"], rows5["cob"]["status"]), ("Standard", "match"))
+    check("[5] OON benefits derived from the OONET rows",
+          (rows5["oon_benefits"]["portal"], rows5["oon_benefits"]["status"]),
+          ("Yes", "match"))
+    check("[5] preventive-in-maximum from the maximum's class list",
+          (rows5["prev_in_max"]["portal"], rows5["prev_in_max"]["status"]),
+          ("Yes", "match"))
+    check("[5] in network matches", rows5["in_network"]["status"], "match")
+    check("[5] ortho deductible is 0 where ortho is not a deductible class",
+          (rows5["ortho_ded"]["portal"], rows5["ortho_ded"]["status"]), ("0.00", "match"))
+    check("[5] ortho age limit read from the plan's age table",
+          rows5["ortho_coverage__age"]["status"], "match")
+
+    # The frequency rows that "Not Applicable" was hiding.
+    for key in ("d2391__freq", "d4341__freq", "d9310__freq", "d9110__freq"):
+        check(f"[5] {key} compares as no-limit", rows5[key]["status"], "match")
+
+    # Nothing should be reported as blank on the sheet.
+    check("[5] nothing reported blank on the sheet",
+          res5["summary"]["missing_in_sabrina"], 0)
+    # And the audit as a whole should be well above where it started (92.2%).
+    check_true("[5] match rate improved", res5["summary"]["match_rate"] >= 93.5,
+               f"rate={res5['summary']['match_rate']}")
+
+    # The codes Cigna was never asked about stay honestly unstated until the
+    # extension rebuild reaches the team.
+    for key in ("d2980", "d5212", "d5899", "d5995"):
+        check(f"[5] {key} still unstated (code not requested)",
+              rows5[key]["status"], "not_in_portal")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
