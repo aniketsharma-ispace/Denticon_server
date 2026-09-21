@@ -1022,15 +1022,206 @@ else:
     # Nothing should be reported as blank on the sheet.
     check("[5] nothing reported blank on the sheet",
           res5["summary"]["missing_in_sabrina"], 0)
-    # And the audit as a whole should be well above where it started (92.2%).
-    check_true("[5] match rate improved", res5["summary"]["match_rate"] >= 93.5,
+
+    # Rule 5 — the three preventive codes the portal calls "not covered" take
+    # their limits from Frequency & Limitations and the Preventive percentage.
+    for key in ("d1206", "d1208", "d1351"):
+        check(f"[5] {key} percentage matches", rows5[key]["status"], "match")
+        check(f"[5] {key} frequency matches", rows5[f"{key}__freq"]["status"], "match")
+        check(f"[5] {key} age limit matches", rows5[f"{key}__age"]["status"], "match")
+
+    # Rule 6 — D1510 is not covered here, so it is left unstated rather than
+    # reported as a 0% conflict against the sheet's 100%.
+    for key in ("d1510", "d1510__freq", "d1510__age"):
+        check(f"[5] {key} left unstated", rows5[key]["status"], "not_in_portal")
+
+    # D7140 is the one real disagreement left: Cigna's per-code lookup says the
+    # member pays 0% (plan 100%) where the sheet records 80%.
+    check("[5] D7140 is the only remaining mismatch",
+          sorted(r["key"] for r in res5["mismatches"]), ["d7140"])
+
+    # Started at 92.2% before any of this work.
+    check_true("[5] match rate", res5["summary"]["match_rate"] >= 99.0,
                f"rate={res5['summary']['match_rate']}")
+    check("[5] fields compared", res5["summary"]["compared"], 116)
 
     # The codes Cigna was never asked about stay honestly unstated until the
     # extension rebuild reaches the team.
     for key in ("d2980", "d5212", "d5899", "d5995"):
         check(f"[5] {key} still unstated (code not requested)",
               rows5[key]["status"], "not_in_portal")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  1i. CIGNA RULES — the seven-point specification
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Built on a payload reproducing the real Herzwurm export, so these hold even
+# when the sample files are not on disk.
+
+print("── 1i. CIGNA RULES ──")
+
+
+def _cigna_proc(code, covered, member="", freq=""):
+    return {"procedure_code": code, "covered": covered,
+            "benefit_status": "Covered" if covered else "Not a covered service",
+            "coinsurance_member_pct": member, "frequency_limit": freq,
+            "history_date": "No history on file"}
+
+
+def _cigna_payload(**over):
+    payload = {
+        "source": "Cigna Portal",
+        "summary": {"patient_id": "U1", "group_number": "3345921",
+                    "group_name": "ACME", "plan_type": "DENTAL PPO"},
+        "patient": {"name": "Sample Patient", "dob": "02/16/1995",
+                    "relationship": "Subscriber"},
+        "plan_details": {"account_name": "ACME", "account_number": "3345921",
+                         "plan_type": "DENTAL PPO", "subscriber": "Sample Patient",
+                         "network": {"id": "P0010", "name": "TOTAL"}},
+        "financials": {
+            "maximum_records": [
+                {"desc": "Individual Calendar Year Maximum", "amount": "$2,000.00",
+                 "met": "$222.20", "remaining": "$1,777.80", "covers": "IND",
+                 "networkId": "P0010", "networkName": "TOTAL", "classCode": "1,2,3,9",
+                 "classDesc": "Diagnostic and Preventive,Basic Restorative,"
+                              "Major Restorative,Implants"}],
+            "deductible_records": [],
+            "deductible_applicability": {"class_codes": ["2", "3", "5", "9"],
+                                         "orthodontic": False},
+        },
+        "coinsurance": [
+            {"network": "TOTAL", "network_id": "P0010",
+             "category": "Diagnostic and Preventive", "patient_pays": "0%"},
+            {"network": "OONET", "network_id": "OONET",
+             "category": "Diagnostic and Preventive", "patient_pays": "0%"},
+        ],
+        "frequencies": [
+            {"network": "TOTAL", "procedure_code": "D1208",
+             "procedure": "Topical Fluoride", "age_limitation": "Exclude after age 18",
+             "limit": "Once Per Calendar Year"},
+            {"network": "TOTAL", "procedure_code": "D1351",
+             "procedure": "Topical Sealant Application",
+             "age_limitation": "Exclude after age 13",
+             "limit": "Once Per 36 Consecutive Months"},
+        ],
+        "age_limits": [{"network": "TOTAL", "type": "Ortho Age Limitation **",
+                        "age": "None"}],
+        "notes": {"missing_tooth": "Does not apply"},
+        "procedures": {"results": [
+            _cigna_proc("D1206", False, "50%", "No benefits for this service"),
+            _cigna_proc("D1208", False, "50%", "No benefits for this service"),
+            _cigna_proc("D1351", False, "50%", "No benefits for this service"),
+            _cigna_proc("D1510", False, "50%", "No benefits for this service"),
+            _cigna_proc("D0120", True, "0%", "Twice Per Calendar Year"),
+        ]},
+    }
+    payload.update(over)
+    return payload
+
+
+_CG = _cigna_payload()
+_CG_NORM = sc._portal_normalized(_CG)
+_CG_BD = sc._portal_breakdown(_CG)
+
+
+def _cg_portal(key, aspect=None, bd=None, norm=None):
+    want = f"{key}__{aspect}" if aspect else key
+    field = next(f for f in sc._SPEC if f["key"] == want)
+    return sc._portal_value(field, bd or _CG_BD, norm or _CG_NORM, None)
+
+
+# Rule 1 — the network dropdown offering Out-of-Network is the answer.
+check("cigna rule 1: an Out-of-Network option means OON benefits",
+      sc._cigna_oon_benefits(_CG_NORM), "Yes")
+_no_oon = _cigna_payload(coinsurance=[
+    {"network": "TOTAL", "network_id": "P0010",
+     "category": "Diagnostic and Preventive", "patient_pays": "0%"}])
+check("cigna rule 1: no Out-of-Network option means none",
+      sc._cigna_oon_benefits(sc._portal_normalized(_no_oon)), "No")
+_oon_zero = _cigna_payload(coinsurance=[
+    {"network": "TOTAL", "network_id": "P0010",
+     "category": "Diagnostic and Preventive", "patient_pays": "0%"},
+    {"network": "OONET", "network_id": "OONET",
+     "category": "Diagnostic and Preventive", "patient_pays": "100%"}])
+check("cigna rule 1: the option existing decides it, not what it pays",
+      sc._cigna_oon_benefits(sc._portal_normalized(_oon_zero)), "Yes")
+
+# Rule 2 — the calendar-year maximum and its remaining amount.
+check("cigna rule 2: yearly maximum", _CG_BD.get("yearly_max"), "2,000.00")
+check("cigna rule 2: paid to date is total less remaining",
+      sc._portal_yearly_max_paid(_CG_BD, _CG_NORM), "222.20")
+
+# Rule 3 — no ortho deductible means 0.
+check("cigna rule 3: ortho deductible is 0 when ortho is not a deductible class",
+      sc._portal_ortho_ded(_CG_BD, _CG_NORM), "0.00")
+check("cigna rule 3: and the met amount likewise",
+      sc._portal_ortho_ded_met(_CG_BD, _CG_NORM), "0.00")
+
+# Rule 4 — Preventive named in Benefit Maximums.
+check("cigna rule 4: preventive named in the maximum's classes",
+      sc._portal_prev_in_max(_CG_BD, _CG_NORM), "Yes")
+_no_prev = _cigna_payload()
+_no_prev["financials"]["maximum_records"][0]["classDesc"] = \
+    "Basic Restorative,Major Restorative"
+check("cigna rule 4: and No when it is not",
+      sc._portal_prev_in_max(sc._portal_breakdown(_no_prev),
+                             sc._portal_normalized(_no_prev)), "No")
+
+# Rule 5 — D1206 / D1208 / D1351 fall back to Frequency & Limitations, with
+# the Preventive percentage.
+for code in ("d1206", "d1208", "d1351"):
+    check(f"cigna rule 5: {code} takes the preventive percentage",
+          _cg_portal(code), "100%")
+check("cigna rule 5: D1206 borrows the fluoride frequency row",
+      _cg_portal("d1206", "freq"), "Once Per Calendar Year")
+check("cigna rule 5: D1206 borrows its age limit too",
+      _cg_portal("d1206", "age"), "Exclude after age 18")
+check("cigna rule 5: D1351 uses its own row",
+      _cg_portal("d1351", "freq"), "Once Per 36 Consecutive Months")
+check("cigna rule 5: a sheet of 100% / 1X1Year / 18 matches D1206",
+      (sc._compare("pct", "100%", _cg_portal("d1206"))[0],
+       sc._compare("frequency", "1X1Year", _cg_portal("d1206", "freq"))[0],
+       sc._compare("agelimit", "18", _cg_portal("d1206", "age"))[0]),
+      (True, True, True))
+check("cigna rule 5: a sheet of 100% / 1X36Months / 13 matches D1351",
+      (sc._compare("pct", "100%", _cg_portal("d1351"))[0],
+       sc._compare("frequency", "1X36Months", _cg_portal("d1351", "freq"))[0],
+       sc._compare("agelimit", "13", _cg_portal("d1351", "age"))[0]),
+      (True, True, True))
+
+# Rule 6 — D1510 is left unstated when not covered; 99 when no age is given.
+check("cigna rule 6: D1510 not covered is left unstated",
+      (_cg_portal("d1510"), _cg_portal("d1510", "freq"), _cg_portal("d1510", "age")),
+      (None, None, None))
+_d1510_covered = _cigna_payload()
+_d1510_covered["procedures"]["results"] = [
+    _cigna_proc("D1510", True, "0%", "Once Per Lifetime")]
+_bd6 = sc._portal_breakdown(_d1510_covered)
+_nm6 = sc._portal_normalized(_d1510_covered)
+check("cigna rule 6: a covered D1510 reports its percentage",
+      _cg_portal("d1510", None, _bd6, _nm6), "100%")
+check("cigna rule 6: and its frequency",
+      _cg_portal("d1510", "freq", _bd6, _nm6), "Once Per Lifetime")
+check("cigna rule 6: an unstated age limit becomes 99",
+      _cg_portal("d1510", "age", _bd6, _nm6), "99")
+
+# Cigna's frequency wording, including spelled-out counts and "Consecutive".
+for sheet, portal in [("1X36Months", "Once Per 36 Consecutive Months"),
+                      ("1X60Months", "Once Per 60 Consecutive Months"),
+                      ("2X1Year", "Twice Per Calendar Year"),
+                      ("4X1Year", "Four Times Per Calendar Year"),
+                      ("3X1Year", "Three Times Per Calendar Year"),
+                      ("1XLifetime", "Once Per Lifetime")]:
+    check(f"cigna frequency {sheet!r} vs {portal!r}",
+          sc._compare("frequency", sheet, portal)[0], True)
+check("cigna frequency: a real difference still shows",
+      sc._compare("frequency", "2X1Year", "Once Per Calendar Year")[0], False)
+
+# Codes outside the rules are untouched.
+check("cigna: an ordinary code keeps its own percentage", _cg_portal("d0120"), "100%")
+check("cigna: and its own frequency",
+      _cg_portal("d0120", "freq"), "Twice Per Calendar Year")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

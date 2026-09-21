@@ -1043,9 +1043,18 @@ _FREQ_NOT_COVERED = ("not covered",)
 
 _FREQ_COMPACT_RE = re.compile(
     r"^(\d+)\s*x\s*(\d*)\s*(year|month|week|day|visit)s?$", re.IGNORECASE)
+# Cigna spells small counts out ("Twice Per Calendar Year", "Four Times Per
+# Calendar Year") as often as it uses digits.
+_FREQ_WORD_COUNTS = {
+    "once": 1, "twice": 2, "thrice": 3, "one": 1, "two": 2, "three": 3,
+    "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+
 _FREQ_PROSE_RE = re.compile(
-    r"^(?:(\d+)|once|twice)\s*(?:times?)?\s*(?:in|per|every)\s*(\d*)\s*"
-    r"(?:calendar\s*|contract\s*|plan\s*|benefit\s*)?(year|month|week|day)s?",
+    r"^(?:(\d+)|once|twice|thrice|one|two|three|four|five|six|seven|eight|nine|ten)"
+    r"\s*(?:times?)?\s*(?:in|per|every)\s*(\d*)\s*"
+    r"(?:calendar\s*|contract\s*|plan\s*|benefit\s*|consecutive\s*|"
+    r"rolling\s*|successive\s*)*(year|month|week|day)s?",
     re.IGNORECASE)
 
 
@@ -1163,7 +1172,11 @@ def _parse_single_frequency(v) -> tuple | None:
     if not m:
         m = _FREQ_PROSE_RE.match(s)
         if m:
-            count = int(m.group(1)) if m.group(1) else (2 if s.startswith("twice") else 1)
+            if m.group(1):
+                count = int(m.group(1))
+            else:
+                word = s.split()[0]
+                count = _FREQ_WORD_COUNTS.get(word, 1)
             span = int(m.group(2) or 1)
             unit = m.group(3).lower()
             return (count, span * 12 if unit == "year" else span)
@@ -1801,6 +1814,113 @@ def _lifetime_belongs_elsewhere(portal_raw: dict) -> str | None:
     return None if re.search(r"orthodont|^ortho\b", text, re.IGNORECASE) else text
 
 
+# Cigna reports these three as "not covered" on the per-code lookup even
+# though the plan covers them: the real limits live in Frequency & Limitations
+# and the percentage is the plan's Preventive percentage. D1206 has no row of
+# its own — Cigna states one fluoride limit, on the D1208 "Topical Fluoride"
+# row — so the codes are searched in order.
+_CIGNA_FL_CODES = {
+    "D1206": ("D1206", "D1208"),
+    "D1208": ("D1208", "D1206"),
+    "D1351": ("D1351",),
+}
+
+# D1510 is handled the other way: not covered means there is nothing to
+# compare, so the row is left unstated rather than reported as 0%.
+_CIGNA_BLANK_WHEN_NOT_COVERED = {"D1510"}
+
+
+def _cigna_procedure_not_covered(bd: dict, codes: tuple[str, ...]) -> bool:
+    """Whether the portal's per-code lookup reported no benefit for the code."""
+    procs = bd.get("procs") or {}
+    for code in codes:
+        proc = procs.get(str(code).upper())
+        if not proc:
+            continue
+        level = str(proc.get("benefit_level", "")).strip().upper()
+        freq = str(proc.get("frequency_limit", "")).lower()
+        if level in ("", "N/A", "NA"):
+            return "not covered" in freq or "no benefits" in freq
+        return False
+    return False
+
+
+def _cigna_fl_row(portal_raw: dict, codes: tuple[str, ...]) -> dict | None:
+    """The Frequency & Limitations row for the first of these codes."""
+    raw = _cigna_export(portal_raw)
+    if not raw:
+        return None
+    rows = raw.get("frequencies") or []
+    for code in codes:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("procedure_code", "")).strip().upper() == str(code).upper():
+                return row
+    return None
+
+
+def _cigna_preventive_pct(portal_raw: dict) -> str | None:
+    """The plan's in-network Preventive percentage, as the plan pays it."""
+    raw = _cigna_export(portal_raw)
+    if not raw:
+        return None
+    for row in raw.get("coinsurance") or []:
+        if not isinstance(row, dict):
+            continue
+        category = str(row.get("category", "")).lower()
+        if "preventive" not in category and "preventative" not in category:
+            continue
+        network = str(_coalesce_keys(row, "network", "network_id") or "").upper()
+        if "OON" in network:                      # in-network percentage
+            continue
+        member = _num_pct(row.get("patient_pays"))
+        if member is None:
+            continue
+        plan = 100 - member
+        return f"{plan:g}%"
+    return None
+
+
+def _cigna_code_override(field: dict, value, bd: dict, portal_raw: dict,
+                         codes: tuple[str, ...], what: str):
+    """
+    Correct a per-code value Cigna reports as not covered.
+
+    Returns (handled, value). `what` is "pct" or the procedure field being
+    read, so the same rule can answer the percentage, frequency and age rows of
+    one code consistently.
+    """
+    if not _cigna_export(portal_raw) or not codes:
+        return False, value
+    primary = str(codes[0]).upper()
+
+    if primary in _CIGNA_BLANK_WHEN_NOT_COVERED:
+        if _cigna_procedure_not_covered(bd, codes):
+            return True, None             # nothing to compare
+        if what == "age_limit" and _blank(value):
+            return True, "99"             # covered, but no age stated
+        return False, value
+
+    if primary not in _CIGNA_FL_CODES:
+        return False, value
+    if not _cigna_procedure_not_covered(bd, codes):
+        return False, value
+
+    lookup = _CIGNA_FL_CODES[primary]
+    if what == "pct":
+        return True, _cigna_preventive_pct(portal_raw)
+
+    row = _cigna_fl_row(portal_raw, lookup)
+    if not row:
+        return True, None
+    if what == "frequency_limit":
+        return True, row.get("limit") or None
+    if what == "age_limit":
+        return True, row.get("age_limitation") or None
+    return False, value
+
+
 def _portal_ortho_age(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
     Orthodontic age limit.
@@ -1924,29 +2044,29 @@ def _portal_prev_in_max(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
 
 def _cigna_oon_benefits(portal_raw: dict) -> str | None:
     """
-    Whether Cigna pays out of network.
+    Whether the plan has out-of-network benefits.
 
-    The coinsurance list carries a row per class per network, the
-    out-of-network one tagged OONET. A class the member does not pay 100% of
-    is a class the plan pays something towards out of network.
+    Cigna answers this with the network affiliation dropdown: a plan that
+    offers "Out-of-Network" alongside its in-network option has OON benefits,
+    and one that does not, does not. The export carries that as a set of
+    coinsurance rows tagged OONET, so the presence of any such row is the
+    dropdown option — the percentages on those rows are a separate question and
+    do not decide it.
     """
     raw = _cigna_export(portal_raw)
     if not raw:
         return None
-    stated = False
-    for row in raw.get("coinsurance") or []:
+    rows = raw.get("coinsurance") or []
+    if not rows:
+        return None
+    for row in rows:
         if not isinstance(row, dict):
             continue
-        network = str(_coalesce_keys(row, "network", "network_id") or "").upper()
-        if "OON" not in network:
-            continue
-        member = _num_pct(row.get("patient_pays"))
-        if member is None:
-            continue
-        stated = True
-        if member < 100:
+        network = " ".join(str(_coalesce_keys(row, "network", "network_id") or "")
+                           for _ in (0,)).upper()
+        if "OON" in network or "OUT-OF-NETWORK" in network or "OUT OF NETWORK" in network:
             return "Yes"
-    return "No" if stated else None
+    return "No"
 
 
 def _cigna_ortho_deductible(portal_raw: dict) -> str | None:
@@ -2052,9 +2172,15 @@ def _portal_value(field: dict, bd: dict, portal_raw: dict, sab_raw=None) -> str 
     if src is None:
         return None
     if isinstance(src, tuple) and src and src[0] == "code":
-        return _pct_from_procs(bd.get("procs", {}), src[1:])
+        value = _pct_from_procs(bd.get("procs", {}), src[1:])
+        handled, corrected = _cigna_code_override(
+            field, value, bd, portal_raw, src[1:], "pct")
+        return corrected if handled else value
     if isinstance(src, tuple) and src and src[0] == "codefield":
-        return _procfield_from_procs(bd.get("procs", {}), src[1], src[2:])
+        value = _procfield_from_procs(bd.get("procs", {}), src[1], src[2:])
+        handled, corrected = _cigna_code_override(
+            field, value, bd, portal_raw, src[2:], src[1])
+        return corrected if handled else value
     if isinstance(src, str) and src in _DERIVED:
         return _DERIVED[src](bd, portal_raw, sab_raw)
     val = bd.get(src) if isinstance(src, str) else None
