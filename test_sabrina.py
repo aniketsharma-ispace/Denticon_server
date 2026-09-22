@@ -42,6 +42,8 @@ PORTAL_JSON_4 = os.path.join(BASE, "Material", "Smile",
 SABRINA_PDF_5 = os.path.join(BASE, "Material", "Smile", "Matthew Herzwurm.pdf")
 PORTAL_JSON_5 = os.path.join(BASE, "Material", "Smile",
                              "cigna_Matthew_Herzwurm_2026-09-15.json")
+SABRINA_PDF_6 = os.path.join(BASE, "Material", "Smile", "Aaren.pdf")
+PORTAL_JSON_6 = os.path.join(BASE, "Material", "Smile", "aaren_boyd_metlife_audit.json")
 
 _passed = _failed = _skipped = 0
 
@@ -355,8 +357,14 @@ else:
               any(r.get("group") for s in res["sections"]
                   for r in s["rows"] if s["section"] != "Coverage by CDT Code"), False)
 
-        check("[2] whole sheet agrees with the portal",
-              res["summary"]["mismatches"], 0)
+        # One genuine finding, surfaced once the portal's "—" in Late Date Of
+        # Service is read as "never performed" rather than as an empty cell:
+        # the sheet carries the prophy date on the perio-maintenance row too.
+        # The same pattern appears on Amanda Wilson and Aaren Boyd.
+        check("[2] the copied perio date is the only disagreement",
+              sorted(r["key"] for r in res["mismatches"]), ["d4910__hist"])
+        check("[2] D1110 keeps its own date", rows["d1110__hist"]["status"], "match")
+        check("[2] and D0120 too", rows["d0120__hist"]["status"], "match")
         # Nothing is reported blank any more. The three rows that used to be
         # (D1110 age, D3310 frequency, D9230 frequency) are columns MetLife does
         # not supply for those codes, so they are no longer generated at all.
@@ -1222,6 +1230,90 @@ check("cigna frequency: a real difference still shows",
 check("cigna: an ordinary code keeps its own percentage", _cg_portal("d0120"), "100%")
 check("cigna: and its own frequency",
       _cg_portal("d0120", "freq"), "Twice Per Calendar Year")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  1j. METLIFE — Aaren Boyd
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Reported: D5212 and D2980 never reach the UI although the site covers both.
+# They are simply not requested — the scraper asks for 61 codes and neither is
+# among them (BATCH_8 restores them). Two audit-side gaps showed up alongside:
+#
+#   · the Benefit Maximums category line is captured as annual_max.description,
+#     but the audit only looked for `applies_to`, so "Preventative Included in
+#     Yearly Max?" read as unstated
+#   · the portal writes "—" in Late Date Of Service where a procedure has never
+#     been performed, which is what the sheet writes as "NH"; treating that as
+#     an empty cell left four history rows unstated
+
+print("── 1j. METLIFE PAIRING (Aaren Boyd) ──")
+
+# The Annual card's category line, however the scraper labelled it.
+_ANNUAL_DESC = {"metlife_data": {"financials": {"annual_max": {
+    "description": "for Diagnostic, Preventive, Restorative, Endodontics, "
+                   "Prosthodontics, Oral Surgery, Adjunctive, Implant Services"}}}}
+check("metlife: preventive read from annual_max.description",
+      sc._portal_prev_in_max({}, _ANNUAL_DESC), "Yes")
+_ANNUAL_OLD = {"metlife_data": {"financials": {"annual_max": {
+    "applies_to": "Diagnostic, Preventive, Restorative"}}}}
+check("metlife: the older applies_to spelling still works",
+      sc._portal_prev_in_max({}, _ANNUAL_OLD), "Yes")
+_ANNUAL_NO_PREV = {"metlife_data": {"financials": {"annual_max": {
+    "description": "for Basic Restorative, Major Restorative"}}}}
+check("metlife: and No when preventive is not named",
+      sc._portal_prev_in_max({}, _ANNUAL_NO_PREV), "No")
+
+# The portal's dash says "never performed".
+check("history: the portal dash means no history", sc._num_history("\u2014"), "NONE")
+check("history: sheet NH against the portal dash agrees",
+      sc._compare("history", "NH", "\u2014")[0], True)
+check("history: a sheet date against the portal dash is a finding",
+      sc._compare("history", "02/18/2026", "\u2014")[0], False)
+check("history: that finding is explained",
+      "no history" in sc._compare("history", "02/18/2026", "\u2014")[1], True)
+check("history: the dash is not blank for a history row",
+      sc._blank_for("history", "\u2014"), False)
+check("history: it is still blank for money",
+      sc._blank_for("money", "\u2014"), True)
+
+if not (os.path.exists(SABRINA_PDF_6) and os.path.exists(PORTAL_JSON_6)):
+    skip("Aaren Boyd pairing", "Material/Smile files not present")
+else:
+    import json as _json6
+    with open(SABRINA_PDF_6, "rb") as fh:
+        parsed6 = sc.parse_sabrina_pdf(fh.read())
+    with open(PORTAL_JSON_6, encoding="utf-8") as fh:
+        portal6 = _json6.load(fh)
+
+    check("[6] the sheet parses whole", parsed6["labels_not_found"], [])
+    check("[6] the sheet records D5212", parsed6["benefit_rows"]["d5212"]["percentage"], "50%")
+    check("[6] and D2980", parsed6["benefit_rows"]["d2980"]["percentage"], "50%")
+
+    res6 = sc.compare_sabrina_to_portal(parsed6, portal6)
+    rows6 = {r["key"]: r for s in res6["sections"] for r in s["rows"]}
+
+    check("[6] preventive-in-maximum now compares",
+          (rows6["prev_in_max"]["portal"], rows6["prev_in_max"]["status"]),
+          ("Yes", "match"))
+    for key in ("d1206__hist", "d1208__hist", "d1351__hist", "d4341__hist"):
+        check(f"[6] {key} agrees (NH against the portal dash)",
+              rows6[key]["status"], "match")
+
+    # The same copied perio date as Tudor and Amanda Wilson.
+    check("[6] the copied perio date is the only disagreement",
+          sorted(r["key"] for r in res6["mismatches"]), ["d4910__hist"])
+    check("[6] D1110 keeps its own date", rows6["d1110__hist"]["status"], "match")
+
+    # D5212/D2980 stay unstated until the extension rebuild reaches the team.
+    for key in ("d2980", "d5212", "d5899", "d5995"):
+        check(f"[6] {key} unstated until the code is requested",
+              rows6[key]["status"], "not_in_portal")
+
+    check("[6] nothing reported blank on the sheet",
+          res6["summary"]["missing_in_sabrina"], 0)
+    check_true("[6] match rate", res6["summary"]["match_rate"] >= 99.0,
+               f"rate={res6['summary']['match_rate']}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

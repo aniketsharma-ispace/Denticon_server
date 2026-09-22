@@ -892,6 +892,11 @@ def _blank_for(kind: str, v) -> bool:
     if kind == "frequency" and v is not None:
         if str(v).strip().lower() in _FREQ_NO_LIMIT_WORDS:
             return False
+    if kind == "history" and v is not None:
+        # "NH" and the portal's dash both say "never performed".
+        text = str(v).strip()
+        if text.lower() in _HISTORY_NONE or text in _HISTORY_DASHES:
+            return False
     return _blank(v)
 
 
@@ -1243,12 +1248,20 @@ def _blank_means_no_limit(kind: str, portal_value) -> bool:
     return False
 
 
+# The portal prints a dash in Late Date Of Service where a procedure has never
+# been performed — the same statement the sheet writes as "NH". It is only a
+# placeholder elsewhere, so it is read that way here and nowhere else.
+_HISTORY_DASHES = {"-", "--", "---", "\u2014", "\u2013"}
+
+
 def _num_history(v) -> str | None:
-    """Last date of service, or the sentinel NONE for Sabrina's "NH"."""
+    """Last date of service, or the sentinel NONE for "NH" and the portal dash."""
+    if v is not None:
+        text = str(v).strip()
+        if text.lower() in _HISTORY_NONE or text in _HISTORY_DASHES:
+            return "NONE"
     if _blank(v):
         return None
-    if str(v).strip().lower() in _HISTORY_NONE:
-        return "NONE"
     return _num_date(v)
 
 
@@ -1621,7 +1634,9 @@ def _procfield_from_procs(procs: dict, field: str, codes: tuple[str, ...]) -> st
         text = str(value).strip()
         if not text:
             continue
-        if field == "frequency_limit" or not _blank(text):
+        # A frequency of "Not Applicable" and a service date of "—" are both
+        # statements, though either reads as a blank anywhere else.
+        if field in ("frequency_limit", "late_date_of_service") or not _blank(text):
             return text
     return None
 
@@ -2032,7 +2047,11 @@ def _portal_prev_in_max(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
     financials = ml.get("financials") or {}
     annual = financials.get("annual_max") or {}
-    applies = annual.get("applies_to") if isinstance(annual, dict) else None
+    # The scraper records the Annual card's category line — "for Diagnostic,
+    # Preventive, Restorative, …" — as `description`; older builds used
+    # `applies_to`, so both are accepted.
+    applies = (_coalesce_keys(annual, "applies_to", "description")
+               if isinstance(annual, dict) else None)
     if _blank(applies):
         # Cigna states the same thing as the maximum's class description.
         applies = _cigna_annual_max_classes(portal_raw)
