@@ -1767,6 +1767,403 @@ def _apply_aetna_output_rules(data, normalized):
     return data
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  DELTA DENTAL — provider portal export
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Delta Dental publishes a tabbed export (overview / plan_provisions /
+# benefits_search / treatment_history) with its own vocabulary. Everything the
+# breakdown sheet audits is in there; it simply has to be translated into the
+# contract the rest of the pipeline speaks. Nothing here touches another
+# carrier's path.
+
+_DD_WORD_COUNTS = {
+    'once': 1, 'twice': 2, 'thrice': 3, 'one': 1, 'two': 2, 'three': 3,
+    'four': 4, 'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
+}
+
+# "Benefit is limited to any three oral evaluation procedures within a calendar
+# year" / "limited to once per quadrant within a 24 month period" / "limited to
+# either one (D0210) … or (D0330) … within a 3 year period".
+_DD_FREQ_RE = re.compile(
+    r'limited to\s+(?:either\s+)?(?:any\s+)?'
+    r'(once|twice|thrice|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\b'
+    r'.*?within\s+a\s+(?:(\d+)[\s-]*)?(calendar\s+year|month|year)',
+    re.IGNORECASE | re.DOTALL)
+
+
+def _is_dd_portal(raw):
+    """Recognize the Delta Dental provider-portal export."""
+    if not isinstance(raw, dict):
+        return False
+    source = str(raw.get('source', '')).lower()
+    tabs = raw.get('tabs')
+    if not isinstance(tabs, dict):
+        return False
+    return 'delta dental' in source or bool(
+        raw.get('primary_patient') and ('overview' in tabs or 'benefits_search' in tabs))
+
+
+def _dd_frequency(limitation):
+    """
+    Delta Dental's limitation prose as the compact form the sheet uses.
+
+    "limited to any three … within a calendar year" -> 3X1Year
+    "limited to once per quadrant within a 24 month period" -> 1X24Months
+    Text that states no countable limit ("Limitations apply", "Benefit is based
+    on professional determination") yields nothing rather than a guess.
+    """
+    text = re.sub(r'\s+', ' ', str(limitation or ''))
+    match = _DD_FREQ_RE.search(text)
+    if not match:
+        return ''
+    word = match.group(1).lower()
+    count = int(word) if word.isdigit() else _DD_WORD_COUNTS.get(word, 0)
+    if not count:
+        return ''
+    span = int(match.group(2)) if match.group(2) else 1
+    unit = match.group(3).lower()
+    if 'calendar year' in unit or unit == 'year':
+        return f'{count}X{span}Year' if span != 1 or 'calendar' in unit else f'{count}X1Year'
+    return f'{count}X{span}Months'
+
+
+def _dd_age_limit(text):
+    """
+    Delta Dental's age wording as a bound the audit can compare.
+
+    "None" is no age restriction; "Child up to and not including age 14" and
+    "12 years and older" both name the number the sheet records.
+    """
+    raw = str(text or '').strip()
+    if not raw or raw.lower() == 'n/a':
+        return ''
+    # Delta Dental writes "None" where there is no age restriction, which the
+    # breakdown sheet records as 99.
+    if raw.lower() == 'none':
+        return '99'
+    m = re.search(r'age\s+(\d{1,3})', raw, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r'(\d{1,3})\s*years?\s+and\s+(?:older|over|up)', raw, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r'(\d{1,3})', raw)
+    return m.group(1) if m else ''
+
+
+def _dd_static(patient, *labels):
+    """A labelled value out of the portal's static field block."""
+    fields = patient.get('static_fields') if isinstance(patient, dict) else None
+    if not isinstance(fields, dict):
+        return ''
+    lowered = {str(k).strip().lower(): v for k, v in fields.items()}
+    for label in labels:
+        value = lowered.get(label.strip().lower())
+        if value not in (None, '', 'N/A'):
+            return str(value).strip()
+    return ''
+
+
+def _dd_money(value):
+    """Delta Dental prints money already formatted; keep it as stated."""
+    text = str(value or '').strip()
+    return text if text and text.upper() != 'N/A' else ''
+
+
+def _dd_maximum(maximums, *, lifetime):
+    """
+    The annual or lifetime maximum record.
+
+    Delta Dental labels them "Calendar Individual Maximum …" and "Lifetime
+    Individual Maximum", each naming the treatment types it covers — which is
+    also what answers whether preventive draws the annual maximum down.
+    """
+    for record in maximums or []:
+        if not isinstance(record, dict):
+            continue
+        kind = str(record.get('type', '')).lower()
+        if lifetime and 'lifetime' in kind:
+            return record
+        if not lifetime and 'lifetime' not in kind and 'maximum' in kind:
+            return record
+    return {}
+
+
+def _normalize_dd_portal(raw):
+    """
+    Translate the Delta Dental export into the established Portal contract.
+
+    No Denticon values are introduced here; every field comes from the export.
+    """
+    tabs = raw.get('tabs') or {}
+    overview = tabs.get('overview') or {}
+    patient = raw.get('primary_patient') or {}
+    eligibility = raw.get('eligibility') or {}
+
+    # ── identity ───────────────────────────────────────────────────────────
+    # The portal appends programme tags to the name ("… SmileWay participant").
+    name = re.sub(r'\s+smileway\s+participant\s*$', '',
+                  str(patient.get('name') or ''), flags=re.IGNORECASE).strip()
+    dob = (eligibility.get('patient_dob') if eligibility.get('patient_dob') not in (None, '', 'N/A')
+           else _dd_static(patient, 'Date of birth'))
+    member_type = _dd_static(patient, 'Member type') or 'Subscriber'
+    member_id = (eligibility.get('member_id') if eligibility.get('member_id') not in (None, '', 'N/A')
+                 else _dd_static(patient, 'Member ID'))
+    group_number = (eligibility.get('group_number')
+                    if eligibility.get('group_number') not in (None, '', 'N/A')
+                    else _dd_static(patient, 'Group number'))
+
+    # "Member eligibility: 11/01/2024 - present"
+    coverage = _dd_static(patient, 'Member eligibility')
+    start_date = end_date = ''
+    if coverage:
+        parts = [p.strip() for p in re.split(r'\s*-\s*', coverage, maxsplit=1)]
+        start_date = parts[0] if parts else ''
+        end_date = _blank_present_end_date(parts[1]) if len(parts) > 1 else ''
+
+    # ── claims address and payer id ────────────────────────────────────────
+    address_lines = [str(x).strip() for x in (overview.get('claims_mailing_address') or [])]
+    payer_id = ''
+    address_parts = []
+    for line in address_lines:
+        m = re.search(r'payer\s*id\s*:?\s*(\S+)', line, re.IGNORECASE)
+        if m:
+            payer_id = m.group(1).strip()
+            continue
+        if line and 'delta dental' not in line.lower():
+            address_parts.append(line)
+
+    # ── maximums and deductibles ───────────────────────────────────────────
+    maximums = overview.get('maximums') or []
+    annual = _dd_maximum(maximums, lifetime=False)
+    lifetime = _dd_maximum(maximums, lifetime=True)
+
+    # The treatment types the annual maximum covers answer "Preventative
+    # Included in Yearly Max?" the same way MetLife's Annual card does.
+    annual_types = ', '.join(str(t) for t in (annual.get('treatment_types') or []))
+
+    deductibles = overview.get('deductibles') or []
+
+    def _deductible(kind):
+        for record in deductibles:
+            if not isinstance(record, dict):
+                continue
+            if kind in str(record.get('type', '')).lower():
+                return {'total': _dd_money(record.get('amount')),
+                        'used': _dd_money(record.get('used')),
+                        'remaining': _dd_money(record.get('remaining'))}
+        # An empty deductible table is the portal stating there is none.
+        if not deductibles:
+            return {'total': '$0.00', 'used': '$0.00', 'remaining': '$0.00'}
+        return {'total': '', 'used': '', 'remaining': ''}
+
+    # ── category coverage, in and out of network ───────────────────────────
+    covered_services = []
+    for row in overview.get('benefits_overview') or []:
+        if not isinstance(row, dict):
+            continue
+        treatment = str(row.get('treatment_type') or '').strip()
+        if not treatment:
+            continue
+        covered_services.append({
+            'category': treatment.upper(),
+            'in_network': str(row.get('contract_benefit_level') or '').strip(),
+            'out_of_network': str(row.get('non_delta_dental') or '').strip(),
+            'services': treatment,
+        })
+
+    # ── provisions ─────────────────────────────────────────────────────────
+    provisions = []
+    for row in tabs.get('plan_provisions') or []:
+        if not isinstance(row, dict) or not row.get('provision_name'):
+            continue
+        rule = str(row.get('provision_name'))
+        value = str(row.get('description') or '')
+        lowered = rule.lower()
+
+        # Published under the name the shared contract looks for.
+        if lowered.startswith('cob'):
+            rule = 'Coordination of Benefits Rule'
+
+        # Delta states the missing-tooth position in its own words; translated
+        # into the sentence the shared parser reads, keeping the original after
+        # it so nothing is lost.
+        if 'missing tooth' in lowered:
+            included = re.search(r'\bare included\b|\bis included\b', value, re.IGNORECASE)
+            excluded = re.search(r'\bnot included\b|\bare excluded\b|\bnot covered\b',
+                                 value, re.IGNORECASE)
+            if included and not excluded:
+                value = ('Are plan benefits available for teeth lost prior to '
+                         'effective date: Yes. ' + value)
+            elif excluded:
+                value = ('Are plan benefits available for teeth lost prior to '
+                         'effective date: No. ' + value)
+
+        provisions.append({'rule': rule, 'value': value})
+
+    # The accumulation period is printed on the annual maximum itself —
+    # "Calendar Individual Maximum Accumulation period for this program
+    # (1/1/2026 - 12/31/2026)" — and is the only statement of when the plan
+    # year turns over. Published as a Benefit Period provision so the shared
+    # reader prefers it over the member's effective date, which is merely when
+    # this member joined.
+    period = re.search(r'\((\d{1,2}/\d{1,2}/\d{2,4})\s*-\s*(\d{1,2}/\d{1,2}/\d{2,4})\)',
+                       str(annual.get('type') or ''))
+    if period:
+        kind = 'CALENDAR YEAR' if 'calendar' in str(annual.get('type') or '').lower() else 'PLAN YEAR'
+        provisions.append({
+            'rule': 'Benefit Period',
+            'value': f'{kind} Start Date: {period.group(1)} End Date: {period.group(2)}',
+        })
+
+    # ── service history, shared across codes ───────────────────────────────
+    # A Delta limitation covers a set of codes and names them: "Limitation may
+    # also apply to: D0210". A service date recorded against one of them counts
+    # against the whole set, which is why the sheet shows the panoramic date on
+    # the FMX row and the fluoride dates on both fluoride codes. The dates are
+    # therefore pooled per code before being published.
+    history_by_code = {}
+    for entry in (tabs.get('treatment_history') or {}).get('procedures') or []:
+        if not isinstance(entry, dict) or not entry.get('code'):
+            continue
+        owner = str(entry['code']).upper().strip()
+        for row in entry.get('rows') or []:
+            if not isinstance(row, dict):
+                continue
+            dates = [d for d in re.findall(r'\d{1,2}/\d{1,2}/\d{2,4}',
+                                           str(row.get('service_date') or ''))]
+            if not dates:
+                continue
+            shared = {owner}
+            also = str(row.get('limitation_may_also_apply_to') or '')
+            shared.update(re.findall(r'\bD\d{4}\b', also.upper()))
+            for code in shared:
+                history_by_code.setdefault(code, [])
+                for date in dates:
+                    if date not in history_by_code[code]:
+                        history_by_code[code].append(date)
+
+    # ── per-code benefits ──────────────────────────────────────────────────
+    procedures = []
+    for entry in tabs.get('benefits_search') or []:
+        if not isinstance(entry, dict) or not entry.get('code'):
+            continue
+        row = (entry.get('rows') or [{}])[0] or {}
+        code = str(entry.get('code')).upper().strip()
+        own = [d for d in re.findall(r'\d{1,2}/\d{1,2}/\d{2,4}',
+                                     str(row.get('service_date') or ''))]
+        pooled = list(own)
+        for date in history_by_code.get(code, []):
+            if date not in pooled:
+                pooled.append(date)
+        service_date = ', '.join(pooled)
+        procedures.append({
+            'procedure_code': str(entry.get('code')).upper().strip(),
+            'description': str(row.get('description') or ''),
+            'benefit_level': str(entry.get('benefit_level') or '').strip(),
+            'frequency_limit': _dd_frequency(row.get('limitation')),
+            'age_limit': _dd_age_limit(row.get('age_limits')),
+            # "None" is the portal stating the procedure has never been
+            # performed — the dash the rest of the pipeline reads as such.
+            'late_date_of_service': ('\u2014' if service_date.lower() in ('none', '')
+                                     else service_date),
+            'deductible': str(entry.get('deductible') or ''),
+            'limitation': str(row.get('limitation') or ''),
+        })
+
+    plan_name = str(patient.get('plan') or 'Delta Dental').strip()
+
+    return {
+        '_skip_llm': True,
+        '_source_insurer': 'delta dental',
+        'carrier_information': {
+            'name': plan_name or 'Delta Dental',
+            'payer_id': payer_id,
+            'address': ', '.join(address_parts),
+        },
+        'subscriber_info': {
+            'name': name if 'subscriber' in member_type.lower() else
+                    (eligibility.get('subscriber_name') or name),
+            'dob': dob if 'subscriber' in member_type.lower() else
+                   (eligibility.get('subscriber_dob') or dob),
+            'relation': member_type,
+        },
+        'metlife_data': {
+            'patient': {'name': name, 'dob': dob, 'relationship': member_type},
+            'plan_details': {
+                'start_date': start_date,
+                'end_date': end_date,
+                'subscriber_id': member_id,
+                'employer_group': str(patient.get('group') or eligibility.get('group_name') or ''),
+                'group_number': group_number,
+                'network': plan_name,
+                'plan_type': plan_name,
+            },
+            'financials': {
+                'annual_max': {
+                    'total': _dd_money(annual.get('amount')),
+                    'used': _dd_money(annual.get('used')),
+                    'remaining': _dd_money(annual.get('remaining')),
+                    'description': annual_types,
+                },
+                'deductible_ind': _deductible('individual'),
+                'deductible_fam': _deductible('family'),
+                'ortho_lifetime': {
+                    'total': _dd_money(lifetime.get('amount')),
+                    'used': _dd_money(lifetime.get('used')),
+                    'remaining': _dd_money(lifetime.get('remaining')),
+                    'category': ', '.join(str(t) for t in (lifetime.get('treatment_types') or [])),
+                },
+            },
+            'provider_info': {'provider_name': '', 'provider_network_status': ''},
+            'covered_services': covered_services,
+            'provisions': provisions,
+        },
+        'benefit_coverage': {'procedures': procedures},
+        '_dd_meta': {
+            'annual_treatment_types': annual.get('treatment_types') or [],
+            'lifetime_treatment_types': lifetime.get('treatment_types') or [],
+            'deductible_applicability': overview.get('deductible_applicability') or {},
+            'claims_address_lines': address_lines,
+            'procedure_count': len(procedures),
+        },
+    }
+
+
+def _apply_dd_output_rules(data, normalized):
+    """
+    Delta Dental corrections applied after the shared extraction.
+
+    The sheet's Preventative / Basic / Major rows name procedure codes (D0120,
+    D2160, D2740), and Delta publishes an exact percentage per code. The
+    category table gives ranges instead — "Restorative 60% - 80%" — from which
+    the shared extraction takes the lower end and reports 60% where the code
+    itself says 80%. The per-code value is the accurate one.
+    """
+    procedures = {
+        str(p.get('procedure_code', '')).upper(): p
+        for p in ((normalized.get('benefit_coverage') or {}).get('procedures') or [])
+    }
+
+    def _level(*codes):
+        for code in codes:
+            level = str((procedures.get(code) or {}).get('benefit_level') or '').strip()
+            if level and level.upper() not in ('N/A', 'NA'):
+                return level
+        return ''
+
+    for key, codes in (
+        ('pct_prev', ('D0120', 'D1110', 'D0150')),
+        ('pct_basic', ('D2160', 'D2140', 'D2331', 'D2391')),
+        ('pct_major', ('D2740', 'D6750', 'D5110')),
+    ):
+        level = _level(*codes)
+        if level:
+            data[key] = level
+    return data
+
+
 def _is_cigna_portal(raw):
     """Recognize the Cigna extension payload without affecting MetLife JSON."""
     if not isinstance(raw, dict):
@@ -2647,6 +3044,13 @@ def _extract(portal_raw, denticon_raw):
     if _is_cigna_portal(portal_raw):
         normalized = _normalize_cigna_portal(portal_raw)
         return _apply_cigna_output_rules(
+            _extract(normalized, denticon_raw),
+            normalized,
+        )
+
+    if _is_dd_portal(portal_raw):
+        normalized = _normalize_dd_portal(portal_raw)
+        return _apply_dd_output_rules(
             _extract(normalized, denticon_raw),
             normalized,
         )

@@ -43,6 +43,10 @@ SABRINA_PDF_5 = os.path.join(BASE, "Material", "Smile", "Matthew Herzwurm.pdf")
 PORTAL_JSON_5 = os.path.join(BASE, "Material", "Smile",
                              "cigna_Matthew_Herzwurm_2026-09-15.json")
 SABRINA_PDF_6 = os.path.join(BASE, "Material", "Smile", "Aaren.pdf")
+SABRINA_PDF_7 = os.path.join(BASE, "Material", "Smile", "Jason.pdf")
+PORTAL_JSON_7 = os.path.join(
+    BASE, "Material", "Smile",
+    "jason_knezevich_smileway_participant_Delta_Dental.json")
 PORTAL_JSON_6 = os.path.join(BASE, "Material", "Smile", "aaren_boyd_metlife_audit.json")
 
 _passed = _failed = _skipped = 0
@@ -1314,6 +1318,130 @@ else:
           res6["summary"]["missing_in_sabrina"], 0)
     check_true("[6] match rate", res6["summary"]["match_rate"] >= 99.0,
                f"rate={res6['summary']['match_rate']}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  1k. DELTA DENTAL — the first Delta Dental pairing
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Delta Dental's export is shaped nothing like MetLife's — tabs (overview /
+# plan_provisions / benefits_search / treatment_history), eligibility,
+# primary_patient — and there was no normalizer for it, so `_extract` fell
+# through to the MetLife-shaped generic path and read almost nothing: 120 of
+# 128 rows came back "not on portal" with only 5 compared.
+#
+# `_normalize_dd_portal` translates it into the shared contract. Everything
+# below is Delta-Dental-only; no other carrier's path was touched.
+
+print("── 1k. DELTA DENTAL PAIRING (Jason Knezevich) ──")
+
+from new_plan import (_dd_age_limit, _dd_frequency, _is_dd_portal,
+                      _normalize_dd_portal)
+
+# Delta states limits in prose; the sheet uses the compact form.
+for prose, compact in [
+        ("Benefit is limited to any three oral evaluation procedures within a "
+         "calendar year.", "3X1Year"),
+        ("Benefit is limited to one problem focused evaluation per provider "
+         "within a 12 month period", "1X12Months"),
+        ("Benefit is limited to once per quadrant within a 24 month period.", "1X24Months"),
+        ("Benefit is limited to two of either D4910 or D4346 within a calendar "
+         "year", "2X1Year"),
+]:
+    check(f"delta frequency {compact}", _dd_frequency(prose), compact)
+check("delta frequency: 'Limitations apply' states no countable limit",
+      _dd_frequency("Limitations apply"), "")
+check("delta frequency: professional determination states none",
+      _dd_frequency("Benefit is based on professional determination"), "")
+# The compact form Delta yields must compare equal to the sheet's wording.
+check("delta frequency: 5 year period matches the sheet's 1X5Years",
+      sc._compare("frequency",
+                  "1X5Years",
+                  _dd_frequency("Benefit is limited to one crown procedure per "
+                                "tooth within a 5 year period"))[0], True)
+
+check("delta age: 'None' is no restriction", _dd_age_limit("None"), "99")
+check("delta age: a child limit names its number",
+      _dd_age_limit("Child up to and not including age 14"), "14")
+check("delta age: '12 years and older'", _dd_age_limit("12 years and older"), "12")
+
+# History states several dates and is shared across codes.
+check("history: two lists sharing a date describe the same treatment",
+      sc._compare("history", "02/18/2026, 03/24/2026",
+                  "03/24/2026, 08/15/2025")[0], True)
+check("history: a single date still compares exactly",
+      sc._compare("history", "02/18/2026", "02/18/26")[0], True)
+check("history: genuinely different single dates still disagree",
+      sc._compare("history", "02/18/2026", "03/24/2026")[0], False)
+check("history: NH against a portal dash still agrees",
+      sc._compare("history", "NH", "\u2014")[0], True)
+
+if not (os.path.exists(SABRINA_PDF_7) and os.path.exists(PORTAL_JSON_7)):
+    skip("Delta Dental pairing", "Material/Smile Delta Dental files not present")
+else:
+    import json as _json7
+    with open(SABRINA_PDF_7, "rb") as fh:
+        parsed7 = sc.parse_sabrina_pdf(fh.read())
+    with open(PORTAL_JSON_7, encoding="utf-8") as fh:
+        portal7 = _json7.load(fh)
+
+    check("[7] the sheet parses whole", parsed7["labels_not_found"], [])
+    check("[7] the export is recognized as Delta Dental", _is_dd_portal(portal7), True)
+    check("[7] and is translated into the shared contract",
+          "metlife_data" in sc._portal_normalized(portal7), True)
+    check("[7] the audit sees it as Delta Dental",
+          sc._portal_normalized(portal7).get("_source_insurer"), "delta dental")
+
+    res7 = sc.compare_sabrina_to_portal(parsed7, portal7)
+    rows7 = {r["key"]: r for s in res7["sections"] for r in s["rows"]}
+
+    # Identity and insurance, none of which was readable before.
+    for key in ("patient_name", "patient_dob", "member_id", "group_name",
+                "group_number", "ins_address", "payor_id", "eff_date",
+                "ins_name", "in_network", "oon_benefits"):
+        check(f"[7] {key} compares", rows7[key]["status"], "match")
+
+    # The plan year comes from the maximum's accumulation period, not the
+    # member's effective date (which would have said November).
+    check("[7] plan year from the accumulation period",
+          (rows7["plan_year_start"]["portal"], rows7["plan_year_start"]["status"]),
+          ("January", "match"))
+
+    # Financials.
+    check("[7] yearly maximum", rows7["yearly_max"]["status"], "match")
+    check("[7] paid to date", rows7["yearly_max_paid"]["status"], "match")
+    check("[7] an empty deductible table means zero",
+          rows7["indiv_ded"]["status"], "match")
+    check("[7] ortho maximum from the lifetime record",
+          rows7["ortho_max"]["status"], "match")
+
+    # Provisions, in Delta's own wording.
+    check("[7] coordination of benefits", rows7["cob"]["status"], "match")
+    check("[7] missing tooth clause", rows7["missing_tooth"]["status"], "match")
+    check("[7] preventive is NOT in this plan's yearly maximum",
+          (rows7["prev_in_max"]["portal"], rows7["prev_in_max"]["status"]),
+          ("No", "match"))
+
+    # Category percentages come from the codes the sheet names, not from the
+    # category ranges ("Restorative 60% - 80%" would have reported 60%).
+    check("[7] basic percentage from the code, not the range",
+          (rows7["pct_basic"]["portal"], rows7["pct_basic"]["status"]), ("80%", "match"))
+    check("[7] major percentage", rows7["pct_major"]["status"], "match")
+    check("[7] preventive percentage", rows7["pct_prev"]["status"], "match")
+
+    # Service dates shared across a limitation set.
+    check("[7] the panoramic date reaches the FMX row",
+          rows7["d0210__hist"]["status"], "match")
+    check("[7] the fluoride dates reach both fluoride codes",
+          (rows7["d1206__hist"]["status"], rows7["d1208__hist"]["status"]),
+          ("match", "match"))
+
+    check("[7] nothing reported blank on the sheet",
+          res7["summary"]["missing_in_sabrina"], 0)
+    check("[7] no disagreements", res7["summary"]["mismatches"], 0)
+    check_true("[7] fields compared", res7["summary"]["compared"] >= 106,
+               f"compared={res7['summary']['compared']}")
+    check("[7] match rate", res7["summary"]["match_rate"], 100.0)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

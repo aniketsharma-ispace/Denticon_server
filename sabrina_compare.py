@@ -1254,6 +1254,27 @@ def _blank_means_no_limit(kind: str, portal_value) -> bool:
 _HISTORY_DASHES = {"-", "--", "---", "\u2014", "\u2013"}
 
 
+def _history_dates(v) -> frozenset | None:
+    """
+    Every service date a history value states.
+
+    A portal may list several ("03/24/2026, 08/15/2025") where the sheet lists
+    an overlapping set, so the comparison works on sets rather than on one date.
+    An empty set is the positive statement "never performed"; None means nothing
+    was stated at all.
+    """
+    if v is None:
+        return None
+    text = str(v).strip()
+    if not text:
+        return None
+    if text.lower() in _HISTORY_NONE or text in _HISTORY_DASHES:
+        return frozenset()
+    found = re.findall(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", text)
+    dates = {d for d in (_num_date(x) for x in found) if d}
+    return frozenset(dates) if dates else None
+
+
 def _num_history(v) -> str | None:
     """Last date of service, or the sentinel NONE for "NH" and the portal dash."""
     if v is not None:
@@ -1435,15 +1456,19 @@ def _compare(kind: str, sab, por, ctx: dict | None = None) -> tuple[bool | None,
         return False, ""
 
     if kind == "history":
-        a, b = _num_history(sab), _num_history(por)
+        a, b = _history_dates(sab), _history_dates(por)
         if a is None or b is None:
             return None, ""
         if a == b:
             return True, ""
-        if a == "NONE":
+        if not a:
             return False, "Sabrina shows no history but the portal has a service date"
-        if b == "NONE":
+        if not b:
             return False, "portal shows no history but Sabrina has a service date"
+        if a & b:
+            # Both describe the same treatment; one simply lists more of it.
+            missing = sorted(b - a) or sorted(a - b)
+            return True, f"service dates overlap; also on one side: {', '.join(missing)}"
         return False, ""
 
     if kind == "id":
@@ -1546,8 +1571,9 @@ def _portal_normalized(portal_raw: dict) -> dict:
     A MetLife export is already in the contract shape and passes through
     untouched.
     """
-    from new_plan import (_is_aetna_portal, _is_cigna_portal,
-                          _normalize_aetna_portal, _normalize_cigna_portal)
+    from new_plan import (_is_aetna_portal, _is_cigna_portal, _is_dd_portal,
+                          _normalize_aetna_portal, _normalize_cigna_portal,
+                          _normalize_dd_portal)
 
     # The export may arrive bare or wrapped by the extension.
     candidates = [portal_raw]
@@ -1566,6 +1592,8 @@ def _portal_normalized(portal_raw: dict) -> dict:
                 normalized = _normalize_cigna_portal(candidate)
             elif _is_aetna_portal(candidate):
                 normalized = _normalize_aetna_portal(candidate)
+            elif _is_dd_portal(candidate):
+                normalized = _normalize_dd_portal(candidate)
             if normalized is not None:
                 # A few answers live in carrier-specific corners of the export
                 # that the shared contract has no room for, so keep the
