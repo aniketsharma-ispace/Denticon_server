@@ -44,6 +44,9 @@ PORTAL_JSON_5 = os.path.join(BASE, "Material", "Smile",
                              "cigna_Matthew_Herzwurm_2026-09-15.json")
 SABRINA_PDF_6 = os.path.join(BASE, "Material", "Smile", "Aaren.pdf")
 SABRINA_PDF_7 = os.path.join(BASE, "Material", "Smile", "Jason.pdf")
+SABRINA_PDF_8 = os.path.join(BASE, "Material", "Smile", "Carlos Evans.pdf")
+PORTAL_JSON_8 = os.path.join(
+    BASE, "Material", "Smile", "carlos_evans_Delta_Dental.json")
 PORTAL_JSON_7 = os.path.join(
     BASE, "Material", "Smile",
     "jason_knezevich_smileway_participant_Delta_Dental.json")
@@ -1351,8 +1354,8 @@ for prose, compact in [
     check(f"delta frequency {compact}", _dd_frequency(prose), compact)
 check("delta frequency: 'Limitations apply' states no countable limit",
       _dd_frequency("Limitations apply"), "")
-check("delta frequency: professional determination states none",
-      _dd_frequency("Benefit is based on professional determination"), "")
+check("delta frequency: professional determination is the sheet's Pre-D",
+      _dd_frequency("Benefit is based on professional determination"), "Pre-D")
 # The compact form Delta yields must compare equal to the sheet's wording.
 check("delta frequency: 5 year period matches the sheet's 1X5Years",
       sc._compare("frequency",
@@ -1442,6 +1445,217 @@ else:
     check_true("[7] fields compared", res7["summary"]["compared"] >= 106,
                f"compared={res7['summary']['compared']}")
     check("[7] match rate", res7["summary"]["match_rate"], 100.0)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  1l. DELTA DENTAL — the Carlos Evans observations
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# A second Delta Dental plan, and one that exercises most of the carrier's
+# limitation vocabulary. Everything checked here is stated on the portal; the
+# rows Delta genuinely leaves unsaid stay unsaid.
+
+print("── 1l. DELTA DENTAL (Carlos Evans) ──")
+
+from new_plan import _dd_maximum, _dd_not_covered
+
+# The rest of Delta's limitation wording, each taken verbatim off a card.
+for prose, compact in [
+        ("Benefit is limited to once per lifetime Limitations apply", "1XLifetime"),
+        ("Benefit is limited to once per tooth per lifetime Limitations apply", "1XLifetime"),
+        ("For this program, this procedure has no frequency limitation "
+         "Limitations apply", "No Frequency"),
+        ("Benefit is limited to once per quadrant within two calendar years. "
+         "Requires radiographs and periodontal charting.", "1X2Years"),
+        ("Benefit is limited to one occlusal guard within 3 calendar years", "1X3Years"),
+        ("Benefit is limited to twice per tooth within a 5 year period", "2X5Years"),
+        ("Benefit is limited to once within a 5 year period", "1X5Years"),
+        ("Benefit is limited to once per date of service", "1X1Day"),
+        ("Benefit is limited to once per arch per date of service", "1X1Day"),
+        ("Benefit is limited to once within a 12 month period", "1X12Months"),
+        ("This procedure is not a benefit of most Delta Dental plans. "
+         "The fee is the patient's responsibility.", "NC"),
+        ("This procedure code could not be recognized.", "NC"),
+        ("Benefit is based on professional determination", "Pre-D"),
+        ("Limitations apply", ""),
+        ("Benefit is limited by other services performed on same date", ""),
+]:
+    check(f"delta frequency {compact or 'unstated'!r}", _dd_frequency(prose), compact)
+
+# The period belongs to the limit that states it. The labial-veneer note names
+# twelve months and five years in exclusions that describe other procedures
+# before stating the veneer's own limit.
+check("delta frequency: the period is read from the limit, not the exclusions",
+      _dd_frequency(
+          "Labial Veneer benefits are determined by clinical conditions and "
+          "subject to professional determination. Pre-Treatment Estimates are "
+          "encouraged in advance of treatment being performed. They are not a "
+          "benefit within 12 months of a basic restoration being placed on the "
+          "same tooth. Replacement of a Labial Veneer is limited to once per "
+          "tooth within a 5 year period. Limitations apply"),
+      "1X5Years")
+
+# A code is only called not covered where Delta withheld a benefit level too.
+check("delta: no benefit level and 'not a benefit' means not covered",
+      _dd_not_covered({"benefit_level": "N/A"},
+                      {"limitation": "This procedure is not a benefit of most "
+                                     "Delta Dental plans."}), True)
+check("delta: a covered code whose prose mentions an exclusion is still covered",
+      _dd_not_covered({"benefit_level": "60%"},
+                      {"limitation": "They are not a benefit within 12 months "
+                                     "of a basic restoration."}), False)
+
+# Two annual maximums: a narrow one and the one covering every service.
+check("delta: the annual maximum is the one covering all services",
+      _dd_maximum([
+          {"type": "Calendar Individual Maximum", "amount": "$1,250.00",
+           "treatment_types": ["Diagnostic"]},
+          {"type": "Calendar Individual Maximum", "amount": "$2,500.00",
+           "treatment_types": ["Diagnostic", "Preventive", "Restorative",
+                               "Endodontics", "Periodontics"]},
+      ], lifetime=False).get("amount"), "$2,500.00")
+check("delta: a single annual maximum is still that maximum",
+      _dd_maximum([{"type": "Calendar Individual Maximum", "amount": "$1,500.00"}],
+                  lifetime=False).get("amount"), "$1,500.00")
+
+# "Pre-D" is a frequency the sheet states, not an empty cell.
+check("sheet: Pre-D reads as a frequency",
+      sc._compare("frequency", "Pre-D",
+                  "Benefit is based on professional determination")[0], True)
+check("sheet: Pre-D is not the same as no limit at all",
+      sc._compare("frequency", "Pre-D", "No Frequency")[0], False)
+
+if not (os.path.exists(SABRINA_PDF_8) and os.path.exists(PORTAL_JSON_8)):
+    skip("Carlos Evans pairing", "Material/Smile Carlos Evans files not present")
+else:
+    import json as _json8
+    with open(SABRINA_PDF_8, "rb") as fh:
+        parsed8 = sc.parse_sabrina_pdf(fh.read())
+    with open(PORTAL_JSON_8, encoding="utf-8") as fh:
+        portal8 = _json8.load(fh)
+
+    check("[8] the sheet parses whole", parsed8["labels_not_found"], [])
+    # The Frequency cell for D0220 reads "Pre-D"; it was being dropped as page
+    # furniture and the column came through blank.
+    check("[8] the sheet's Pre-D cell is read",
+          parsed8["benefit_rows"]["d0220"]["frequency"], "Pre-D")
+
+    res8 = sc.compare_sabrina_to_portal(parsed8, portal8)
+    rows8 = {r["key"]: r for s in res8["sections"] for r in s["rows"]}
+
+    # The plan carries two annual maximums; the sheet's is the general one.
+    check("[8] the yearly maximum covers all services",
+          (rows8["yearly_max"]["portal"], rows8["yearly_max"]["status"]),
+          ("2,500.00", "match"))
+    # Preventive is among the treatment types that maximum covers.
+    check("[8] preventive draws down the yearly maximum",
+          (rows8["prev_in_max"]["portal"], rows8["prev_in_max"]["status"]),
+          ("Yes", "match"))
+    # "DPO" is the network, not the carrier.
+    check("[8] the carrier is named, not the network", rows8["ins_name"]["status"], "match")
+    # Major services are paid for, so posterior crowns are not downgraded.
+    check("[8] posterior crowns are not downgraded",
+          (rows8["porcelain_posterior_downgrade"]["portal"],
+           rows8["porcelain_posterior_downgrade"]["status"]), ("No", "match"))
+    # Codes Delta does not pay for read as such rather than as silence.
+    for key in ("d4381", "d9230"):
+        check(f"[8] {key} is stated as not covered", rows8[key]["status"], "match")
+    check("[8] D0220 compares as Pre-D",
+          (rows8["d0220__freq"]["portal"], rows8["d0220__freq"]["status"]),
+          ("Pre-D", "match"))
+    # A sample of the wordings that were previously unreadable.
+    for key in ("d1510__freq", "d2160__freq", "d2391__freq", "d4341__freq",
+                "d4355__freq", "d9110__freq", "d9944__freq", "d4381__freq"):
+        check(f"[8] {key} compares", rows8[key]["status"], "match")
+
+    check("[8] nothing reported blank on the sheet",
+          res8["summary"]["missing_in_sabrina"], 0)
+    check("[8] no disagreements", res8["summary"]["mismatches"], 0)
+    check_true("[8] fields compared", res8["summary"]["compared"] >= 115,
+               f"compared={res8['summary']['compared']}")
+    check("[8] match rate", res8["summary"]["match_rate"], 100.0)
+
+    # ── what the updated scraper adds ─────────────────────────────────────
+    # Five codes the sheet audits were never searched for, and the deductible
+    # and maximum footnotes were never read. With both in the export — the
+    # shape the updated content script produces — every row the sheet carries
+    # can be answered except the two still hidden behind a limitation link.
+    import copy as _copy8
+
+    def _dd_row(description, limitation):
+        return [{"description": description, "limitation": limitation,
+                 "service_date": "None", "age_limits": "None",
+                 "pre_approval": "None"}]
+
+    scraped8 = _copy8.deepcopy(portal8)
+    for _entry in scraped8["tabs"]["benefits_search"]:
+        # Carlos's cards carry footnote 1 alone: the deductible does not come
+        # out of the work, and the amount does count against the maximum.
+        _entry["applies_to_deductible"] = "No"
+        _entry["applies_to_maximum"] = "Yes"
+    scraped8["tabs"]["benefits_search"] += [
+        {"code": "D2160", "benefit_level": "80%", "deductible": "Applies",
+         "applies_to_deductible": "No", "applies_to_maximum": "Yes",
+         "rows": _dd_row("Amalgam - three surfaces",
+                         "For this program, this procedure has no frequency "
+                         "limitation Limitations apply")},
+        {"code": "D2980", "benefit_level": "50%", "deductible": "Applies",
+         "rows": _dd_row("Crown repair",
+                         "Benefit is limited to twice per tooth within a 5 year period")},
+        {"code": "D5212", "benefit_level": "50%", "deductible": "Applies",
+         "rows": _dd_row("Partial denture - mandibular",
+                         "Benefit is limited to once within a 5 year period")},
+        {"code": "D5899", "benefit_level": "N/A", "deductible": "Applies",
+         "rows": _dd_row("Unspecified removable prosthodontic procedure",
+                         "This procedure is not a benefit of most Delta Dental "
+                         "plans. The fee is the patient's responsibility.")},
+        {"code": "D5995", "benefit_level": "N/A", "deductible": "Applies",
+         "rows": _dd_row("Periodontal medicament carrier",
+                         "This procedure is not a benefit of most Delta Dental "
+                         "plans. The fee is the patient's responsibility.")},
+    ]
+
+    res8b = sc.compare_sabrina_to_portal(parsed8, scraped8)
+    rows8b = {r["key"]: r for s in res8b["sections"] for r in s["rows"]}
+
+    # The footnote under D0120 and D0220 answers both deductible questions.
+    check("[8] the deductible is not taken out of preventive work",
+          (rows8b["ded_prev"]["portal"], rows8b["ded_prev"]["status"]), ("No", "match"))
+    check("[8] nor out of diagnostic work",
+          (rows8b["ded_diag"]["portal"], rows8b["ded_diag"]["status"]), ("No", "match"))
+    # Both codes of the pair are paid for, so nothing is downgraded.
+    check("[8] posterior composites are not downgraded",
+          (rows8b["posterior_composite_downgrade"]["portal"],
+           rows8b["posterior_composite_downgrade"]["status"]), ("No", "match"))
+    for key in ("d2980__freq", "d5212__freq", "d5899__freq", "d5995__freq"):
+        check(f"[8] {key} compares", rows8b[key]["status"], "match")
+
+    check("[8] no disagreements once the export is complete",
+          res8b["summary"]["mismatches"], 0)
+    check_true("[8] all but the two hidden limitations compare",
+               res8b["summary"]["not_in_portal"] <= 2,
+               f"not_in_portal={res8b['summary']['not_in_portal']}")
+
+    # And the two that are hidden behind a link compare as soon as the link is
+    # opened and the sentence read.
+    for _entry in scraped8["tabs"]["benefits_search"]:
+        if _entry["code"] in ("D0150", "D9310"):
+            _entry["rows"][0]["limitation"] = (
+                "Benefit is limited to two of any oral evaluation procedure "
+                "within a calendar year")
+    res8c = sc.compare_sabrina_to_portal(parsed8, scraped8)
+    rows8c = {r["key"]: r for s in res8c["sections"] for r in s["rows"]}
+    check("[8] the opened limitation answers D0150",
+          (rows8c["d0150__freq"]["portal"], rows8c["d0150__freq"]["status"]),
+          ("2X1Year", "match"))
+    check("[8] and D9310",
+          (rows8c["d9310__freq"]["portal"], rows8c["d9310__freq"]["status"]),
+          ("2X1Year", "match"))
+    check("[8] nothing is then left unanswered",
+          res8c["summary"]["not_in_portal"], 0)
+    check("[8] and the whole sheet agrees with the portal",
+          (res8c["summary"]["mismatches"], res8c["summary"]["match_rate"]),
+          (0, 100.0))
 
 
 # ══════════════════════════════════════════════════════════════════════════════

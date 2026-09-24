@@ -10,6 +10,10 @@ const BATCH_3 = ["D3310", "D3330", "D3347", "D4260", "D4341", "D4355", "D4381", 
 const BATCH_4 = ["D5740", "D6010", "D6056", "D6065", "D6194", "D6245", "D7140", "D7240", "D7210", "D6750"];
 const BATCH_5 = ["D7259", "D8010", "D8080", "D8090", "D9110", "D9222", "D9230", "D9243", "D9310", "D4346"];
 const BATCH_6 = ["D9944", "D0364", "D0431", "D2391", "D2962", "D4249"];
+// Codes the breakdown sheet audits that no earlier batch asked for. Without
+// them the audit has nothing to compare the sheet's rows against and reports
+// them as never stated by the portal.
+const BATCH_7 = ["D2160", "D2980", "D5212", "D5899", "D5995"];
 console.log("Delta Dental scraper V2.0 initialized - Ready to audit benefits");
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -662,10 +666,140 @@ searchButton.click();
     const container = document.querySelector('.search-results-root');
     if (!container) return [];
 
-    return parseMultipleBenefitResults(container);
+    const footnotes = collectFootnoteDefinitions(container);
+    const expanded = await expandLimitationLinks(container);
+
+    return parseMultipleBenefitResults(container, footnotes, expanded);
 }
 
-function parseMultipleBenefitResults(container) {
+// ──────────────────────────────────────────────────────────────────────────
+// Footnotes
+//
+// Each result card prints "Contract benefit level percentage covered by Delta
+// Dental" followed by superscript numbers, and the numbers are footed out once
+// at the bottom of the page:
+//
+//     1 Amount does not apply to deductible
+//     2 Amount does not apply to maximum
+//
+// The card text alone never contains those sentences, so reading it always
+// concluded that both applied. Whether the deductible comes out of preventive
+// and diagnostic work, and whether preventive draws the annual maximum down,
+// are read off exactly these two footnotes.
+// ──────────────────────────────────────────────────────────────────────────
+
+function collectFootnoteDefinitions(container) {
+    const definitions = {};
+    const text = (container.innerText || "");
+    const re = /(?:^|\n)\s*(\d)\s*(Amount does not apply to [^\n]+)/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+        definitions[m[1]] = clean(m[2]);
+    }
+    return definitions;
+}
+
+function cardFootnoteMarkers(cardEl) {
+    if (!cardEl) return [];
+    const sups = Array.from(cardEl.querySelectorAll("sup"))
+        .map(el => clean(el.innerText))
+        .filter(t => /^\d$/.test(t));
+    if (sups.length) return Array.from(new Set(sups));
+    // Some builds render the markers as plain text rather than <sup>.
+    const m = (cardEl.innerText || "").match(/covered by Delta Dental\s*([\d\s]+)/);
+    if (!m) return [];
+    return Array.from(new Set(
+        m[1].trim().split(/\s+/).filter(t => /^\d$/.test(t))));
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// "Limitations apply"
+//
+// Where a code carries more than one limitation Delta shows a link reading
+// "Limitations apply" instead of the sentence, and the sentences only appear
+// once it is opened. A cell that reads exactly that and nothing else is the
+// portal withholding the limit, so each one is opened and read.
+//
+// Anything unexpected leaves the page as it was and the code keeps whatever
+// the cell already said, so a change to the portal can only cost this detail —
+// never the scrape.
+// ──────────────────────────────────────────────────────────────────────────
+
+function codeForElement(el, container) {
+    let node = el;
+    while (node && node !== container) {
+        const m = (node.innerText || "").match(/\b(D\d{3,4})\b/);
+        if (m) return m[1];
+        node = node.parentElement;
+    }
+    return null;
+}
+
+function readLimitationPanel(container) {
+    // The opened panel repeats the code as a heading and lists the limitations
+    // in a table whose first column is "Limitation".
+    const tables = Array.from(document.querySelectorAll("table"))
+        .filter(t => !container.contains(t));
+    const sentences = [];
+    tables.forEach(table => {
+        const headers = Array.from(table.querySelectorAll("thead th, thead td"))
+            .map(th => clean(th.innerText).toLowerCase());
+        if (!headers.length || headers[0] !== "limitation") return;
+        table.querySelectorAll("tbody tr").forEach(row => {
+            const first = row.querySelector("th, td");
+            const text = clean(first ? first.innerText : "");
+            if (text && !/^limitations apply$/i.test(text)) sentences.push(text);
+        });
+    });
+    return sentences;
+}
+
+function dismissLimitationPanel() {
+    const close = document.querySelector(
+        '[data-testid*="close"], [aria-label*="lose"], .modal-close, button.close');
+    if (close) {
+        close.click();
+        return;
+    }
+    document.body.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+}
+
+async function expandLimitationLinks(container) {
+    const expanded = new Map();
+    let cells;
+    try {
+        cells = Array.from(container.querySelectorAll("td, th"))
+            .filter(cell => /^limitations apply$/i.test(clean(cell.innerText)));
+    } catch (e) {
+        return expanded;
+    }
+
+    for (const cell of cells) {
+        try {
+            const code = codeForElement(cell, container);
+            if (!code || expanded.has(code)) continue;
+            const target = cell.querySelector("a, button") || cell;
+            target.click();
+            await sleep(1200);
+            const sentences = readLimitationPanel(container);
+            if (sentences.length) {
+                expanded.set(code, sentences.join(" "));
+                console.log(`Limitations for ${code}: ${sentences.join(" | ")}`);
+            }
+            dismissLimitationPanel();
+            await sleep(600);
+        } catch (e) {
+            console.warn("Could not open a limitation link:", e);
+            try { dismissLimitationPanel(); } catch (e2) { /* nothing to close */ }
+        }
+    }
+    return expanded;
+}
+
+function parseMultipleBenefitResults(container, footnotes, expanded) {
+    footnotes = footnotes || {};
+    expanded = expanded || new Map();
     const resultsByCode = new Map();
 
     const addResult = (parsed) => {
@@ -689,6 +823,9 @@ function parseMultipleBenefitResults(container) {
             if (parsed.deductible === "Does not apply") {
                 existing.deductible = "Does not apply";
             }
+            ["applies_to_deductible", "applies_to_maximum"].forEach(key => {
+                if (!existing[key] && parsed[key]) existing[key] = parsed[key];
+            });
         } else {
             resultsByCode.set(parsed.code, parsed);
         }
@@ -708,7 +845,7 @@ function parseMultipleBenefitResults(container) {
             const code = match[1];
 
             card.querySelectorAll("table").forEach(table => {
-                const parsed = parseTableContent(table, code, card);
+                const parsed = parseTableContent(table, code, card, footnotes, expanded);
                 addResult(parsed);
             });
         });
@@ -739,7 +876,7 @@ function parseMultipleBenefitResults(container) {
         const code = match[1];
 
         card.querySelectorAll("table").forEach(t => {
-            const parsed = parseTableContent(t, code, card);
+            const parsed = parseTableContent(t, code, card, footnotes, expanded);
             addResult(parsed);
         });
     });
@@ -747,16 +884,39 @@ function parseMultipleBenefitResults(container) {
     return Array.from(resultsByCode.values());
 }
 
-function parseTableContent(table, code, cardEl) {
+function parseTableContent(table, code, cardEl, footnotes, expanded) {
     // cardEl is the isolated card element for this code — use it for metadata
+    footnotes = footnotes || {};
+    expanded = expanded || new Map();
     const contextText = (cardEl || table).innerText || "";
 
     const pctMatch = contextText.match(/(\d+)%/);
     const benefit_level = pctMatch ? pctMatch[1] + "%" : "N/A";
 
-    const deductible = contextText.includes("Amount does not apply to deductible")
-        ? "Does not apply"
-        : "Applies";
+    // The card's superscripts, resolved against the page's footnote list.
+    const notes = cardFootnoteMarkers(cardEl)
+        .map(marker => (footnotes[marker] || "").toLowerCase());
+    const footnotesRead = Object.keys(footnotes).length > 0;
+    const notDeductible = notes.some(t => t.includes("deductible")) ||
+        contextText.includes("Amount does not apply to deductible");
+    const notMaximum = notes.some(t => t.includes("maximum"));
+
+    const deductible = notDeductible ? "Does not apply" : "Applies";
+    // Left empty where no footnote list was found at all, so that an export
+    // made by an older build reads as "the portal did not say" rather than as
+    // a confident "Yes".
+    const applies_to_deductible = footnotesRead ? (notDeductible ? "No" : "Yes") : "";
+    const applies_to_maximum = footnotesRead ? (notMaximum ? "No" : "Yes") : "";
+
+    // The sentence behind the "Limitations apply" link, where one was read.
+    const expandedLimitation = expanded.get(code) || "";
+    const withLimitation = (stated) => {
+        if (!expandedLimitation) return stated;
+        if (!stated || stated === "None" || /^limitations apply$/i.test(stated)) {
+            return expandedLimitation;
+        }
+        return stated;
+    };
 
     const headers = [];
     table.querySelectorAll("thead th, thead td").forEach(th => {
@@ -770,6 +930,8 @@ function parseTableContent(table, code, cardEl) {
             code,
             benefit_level,
             deductible,
+            applies_to_deductible,
+            applies_to_maximum,
             rows: [{
                 description: comment || "None",
                 limitation: "None",
@@ -795,7 +957,7 @@ function parseTableContent(table, code, cardEl) {
 
         rows.push({
             description,
-            limitation: get(0),
+            limitation: withLimitation(get(0)),
             service_date: get(1),
             age_limits: get(2),
             pre_approval: get(3)
@@ -808,11 +970,13 @@ function parseTableContent(table, code, cardEl) {
         code,
         benefit_level,
         deductible,
+        applies_to_deductible,
+        applies_to_maximum,
         rows
     };
 }
 async function scrapeBenefitsSearchTab() {
-    const batches = [BATCH_1, BATCH_2, BATCH_3, BATCH_4, BATCH_5, BATCH_6];
+    const batches = [BATCH_1, BATCH_2, BATCH_3, BATCH_4, BATCH_5, BATCH_6, BATCH_7];
     const allResults = [];
 
     for (let i = 0; i < batches.length; i++) {

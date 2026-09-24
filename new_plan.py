@@ -1804,28 +1804,97 @@ def _is_dd_portal(raw):
         raw.get('primary_patient') and ('overview' in tabs or 'benefits_search' in tabs))
 
 
+# How many times, out of "limited to (either) (any) <count>".
+_DD_COUNT_RE = re.compile(
+    r'limited to\s+(?:either\s+)?(?:any\s+)?'
+    r'(once|twice|thrice|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\b',
+    re.IGNORECASE)
+# Over what period: "within a calendar year", "within a 5 year period",
+# "within two calendar years", "within a 24 month period", "within 3 calendar
+# years". The count may be a digit or a word, and may be absent — "within a
+# calendar year" is one year.
+_DD_PERIOD_RE = re.compile(
+    r'within\s+(?:a\s+|an\s+)?'
+    r'(?:(one|two|three|four|five|six|seven|eight|nine|ten|\d+)[\s-]+)?'
+    r'(?:calendar\s+|consecutive\s+)?(year|month)s?',
+    re.IGNORECASE)
+# The two ways Delta says a procedure is not payable, plus the answer it gives
+# for a code its own catalogue does not carry.
+_DD_NOT_COVERED_RE = re.compile(
+    r'not a benefit|could not be recognized|not a covered benefit',
+    re.IGNORECASE)
+
+
 def _dd_frequency(limitation):
     """
     Delta Dental's limitation prose as the compact form the sheet uses.
 
-    "limited to any three … within a calendar year" -> 3X1Year
-    "limited to once per quadrant within a 24 month period" -> 1X24Months
-    Text that states no countable limit ("Limitations apply", "Benefit is based
-    on professional determination") yields nothing rather than a guess.
+    "limited to any three … within a calendar year"          -> 3X1Year
+    "limited to once per quadrant within a 24 month period"  -> 1X24Months
+    "limited to once per quadrant within two calendar years" -> 1X2Years
+    "limited to one occlusal guard within 3 calendar years"  -> 1X3Years
+    "limited to once per lifetime"                           -> 1XLifetime
+    "limited to once per date of service"                    -> 1X1Day
+    "this procedure has no frequency limitation"             -> No Frequency
+    "benefit is based on professional determination"         -> Pre-D
+    "not a benefit of most Delta Dental plans"               -> NC
+
+    A bare "Limitations apply" is the portal keeping the real sentence behind a
+    link rather than stating a limit, and yields nothing rather than a guess.
     """
-    text = re.sub(r'\s+', ' ', str(limitation or ''))
-    match = _DD_FREQ_RE.search(text)
-    if not match:
+    text = re.sub(r'\s+', ' ', str(limitation or '')).strip()
+    if not text:
         return ''
-    word = match.group(1).lower()
-    count = int(word) if word.isdigit() else _DD_WORD_COUNTS.get(word, 0)
+    low = text.lower()
+
+    if 'no frequency limitation' in low:
+        return 'No Frequency'
+
+    match = _DD_COUNT_RE.search(text)
+    word = match.group(1).lower() if match else ''
+    count = (int(word) if word.isdigit() else _DD_WORD_COUNTS.get(word, 0)) if word else 0
     if not count:
+        # No limit was stated, so the prose is free to be read for the two
+        # things Delta says instead. A stated limit outranks both: the labial
+        # veneer note, for one, says pre-treatment estimates are not a benefit
+        # in the middle of describing a procedure that is limited to once per
+        # tooth in five years.
+        if _DD_NOT_COVERED_RE.search(low):
+            return 'NC'
+        if 'professional determination' in low:
+            # A benefit decided case by case; the sheet writes "Pre-D".
+            return 'Pre-D'
         return ''
-    span = int(match.group(2)) if match.group(2) else 1
-    unit = match.group(3).lower()
-    if 'calendar year' in unit or unit == 'year':
-        return f'{count}X{span}Year' if span != 1 or 'calendar' in unit else f'{count}X1Year'
-    return f'{count}X{span}Months'
+
+    # Everything that qualifies the limit follows the count, and only that
+    # tail is read: the sentences before it describe other procedures and
+    # carry periods of their own.
+    tail = text[match.end():]
+
+    # "per lifetime" is a limit over the whole of the member's life and
+    # overrides any period that follows it.
+    if re.search(r'\blifetime\b', tail, re.IGNORECASE):
+        return f'{count}XLifetime'
+
+    period = _DD_PERIOD_RE.search(tail)
+    if period:
+        span_word = (period.group(1) or '').lower()
+        if not span_word:
+            span = 1
+        elif span_word.isdigit():
+            span = int(span_word)
+        else:
+            span = _DD_WORD_COUNTS.get(span_word, 0)
+        if not span:
+            return ''
+        if period.group(2).lower() == 'month':
+            return f'{count}X{span}Months'
+        return f'{count}X{span}Year' if span == 1 else f'{count}X{span}Years'
+
+    # "once per date of service" is a limit of one a day.
+    if re.search(r'per\s+(?:date of service|day|visit)', tail, re.IGNORECASE):
+        return f'{count}X1Day'
+    return ''
 
 
 def _dd_age_limit(text):
@@ -1850,6 +1919,44 @@ def _dd_age_limit(text):
         return m.group(1)
     m = re.search(r'(\d{1,3})', raw)
     return m.group(1) if m else ''
+
+
+def _dd_not_covered(entry, row):
+    """
+    Whether Delta states this procedure is not payable under the plan.
+
+    Two wordings mean it: "This procedure is not a benefit of most Delta Dental
+    plans. The fee is the patient's responsibility.", and — for a code the
+    plan's own catalogue does not carry — "This procedure code could not be
+    recognized." Either comes with no benefit level, which is what separates
+    them from a covered code whose limitation merely mentions an exclusion.
+    """
+    level = str((entry or {}).get('benefit_level') or '').strip().upper()
+    if level not in ('', 'N/A', 'NA'):
+        return False
+    text = f"{(row or {}).get('limitation') or ''} {(row or {}).get('description') or ''}"
+    return bool(_DD_NOT_COVERED_RE.search(text))
+
+
+def _dd_footnote(entry, which):
+    """
+    One of the footnotes Delta prints beneath a procedure-code card.
+
+    The card carries superscript markers next to "Contract benefit level
+    percentage covered by Delta Dental", and the page foots them out as
+    "1 Amount does not apply to deductible" / "2 Amount does not apply to
+    maximum". The scraper resolves the markers and publishes the answer as
+    `applies_to_deductible` / `applies_to_maximum`; an export made before that
+    was added carries neither, and the field stays unstated rather than
+    guessed at.
+    """
+    value = (entry or {}).get(f'applies_to_{which}')
+    text = str(value or '').strip().lower()
+    if text in ('yes', 'applies', 'true'):
+        return 'Yes'
+    if text in ('no', 'does not apply', 'false'):
+        return 'No'
+    return ''
 
 
 def _dd_static(patient, *labels):
@@ -1878,7 +1985,14 @@ def _dd_maximum(maximums, *, lifetime):
     Delta Dental labels them "Calendar Individual Maximum …" and "Lifetime
     Individual Maximum", each naming the treatment types it covers — which is
     also what answers whether preventive draws the annual maximum down.
+
+    A plan may carry more than one annual maximum: a narrow one covering a
+    single category (Diagnostic, $1,250) beside the general one covering every
+    service the plan pays for (eleven categories, $2,500). The sheet's "Yearly
+    Max" is the general one, so the record naming the most treatment types
+    wins; where there is only one maximum this is simply that maximum.
     """
+    candidates = []
     for record in maximums or []:
         if not isinstance(record, dict):
             continue
@@ -1886,8 +2000,10 @@ def _dd_maximum(maximums, *, lifetime):
         if lifetime and 'lifetime' in kind:
             return record
         if not lifetime and 'lifetime' not in kind and 'maximum' in kind:
-            return record
-    return {}
+            candidates.append(record)
+    if not candidates:
+        return {}
+    return max(candidates, key=lambda r: len(r.get('treatment_types') or []))
 
 
 def _normalize_dd_portal(raw):
@@ -1942,6 +2058,17 @@ def _normalize_dd_portal(raw):
     # The treatment types the annual maximum covers answer "Preventative
     # Included in Yearly Max?" the same way MetLife's Annual card does.
     annual_types = ', '.join(str(t) for t in (annual.get('treatment_types') or []))
+
+    # A procedure-code card may foot out an exception to that list — "Amount
+    # does not apply to maximum" against D0120 — which overrides the category
+    # line for preventive services. Absent that footnote the category line
+    # stands, which is the portal's own statement either way.
+    _search = tabs.get('benefits_search') or []
+    _by_code = {str(e.get('code') or '').upper(): e for e in _search if isinstance(e, dict)}
+    if _dd_footnote(_by_code.get('D0120'), 'maximum') == 'No':
+        annual_types = ', '.join(
+            t for t in (str(x) for x in (annual.get('treatment_types') or []))
+            if 'preventive' not in t.lower() and 'preventative' not in t.lower())
 
     deductibles = overview.get('deductibles') or []
 
@@ -2058,11 +2185,17 @@ def _normalize_dd_portal(raw):
             if date not in pooled:
                 pooled.append(date)
         service_date = ', '.join(pooled)
+        # A code the plan does not pay for is stated as such rather than left
+        # blank: the sheet records those as 0% and "NC", and a blank would read
+        # as the portal never having mentioned the code at all.
+        not_covered = _dd_not_covered(entry, row)
         procedures.append({
             'procedure_code': str(entry.get('code')).upper().strip(),
             'description': str(row.get('description') or ''),
-            'benefit_level': str(entry.get('benefit_level') or '').strip(),
-            'frequency_limit': _dd_frequency(row.get('limitation')),
+            'benefit_level': ('Not Covered' if not_covered
+                              else str(entry.get('benefit_level') or '').strip()),
+            'frequency_limit': ('NC' if not_covered
+                                else _dd_frequency(row.get('limitation'))),
             'age_limit': _dd_age_limit(row.get('age_limits')),
             # "None" is the portal stating the procedure has never been
             # performed — the dash the rest of the pipeline reads as such.
@@ -2078,7 +2211,10 @@ def _normalize_dd_portal(raw):
         '_skip_llm': True,
         '_source_insurer': 'delta dental',
         'carrier_information': {
-            'name': plan_name or 'Delta Dental',
+            # The plan label names the carrier on most programmes ("Delta
+            # Dental PPO") but on some is only the network code ("DPO"), which
+            # is not a carrier name at all — the sheet says "Delta Dental GA".
+            'name': (plan_name if 'delta' in plan_name.lower() else 'Delta Dental'),
             'payer_id': payer_id,
             'address': ', '.join(address_parts),
         },
@@ -2125,6 +2261,8 @@ def _normalize_dd_portal(raw):
             'annual_treatment_types': annual.get('treatment_types') or [],
             'lifetime_treatment_types': lifetime.get('treatment_types') or [],
             'deductible_applicability': overview.get('deductible_applicability') or {},
+            'ded_applies_preventative': _dd_footnote(_by_code.get('D0120'), 'deductible'),
+            'ded_applies_diagnostic': _dd_footnote(_by_code.get('D0220'), 'deductible'),
             'claims_address_lines': address_lines,
             'procedure_count': len(procedures),
         },
@@ -2161,6 +2299,40 @@ def _apply_dd_output_rules(data, normalized):
         level = _level(*codes)
         if level:
             data[key] = level
+
+    def _covered(code):
+        """Three-valued: covered, not covered, or never stated."""
+        record = procedures.get(code)
+        if record is None:
+            return None
+        level = str(record.get('benefit_level') or '').strip()
+        if not level or level.upper() in ('N/A', 'NA'):
+            return None
+        return 'not covered' not in level.lower()
+
+    # Delta does not carry an Alternate Benefits provision; it answers the two
+    # downgrade questions through the codes themselves. A posterior composite
+    # is downgraded to its amalgam equivalent exactly when the plan pays for
+    # one of the pair and not the other, so both codes have to be stated
+    # before the question can be answered at all.
+    amalgam, composite = _covered('D2160'), _covered('D2391')
+    if amalgam is not None and composite is not None:
+        data['posterior_composite_downgrade'] = 'No' if (amalgam and composite) else 'Yes'
+
+    # A posterior crown is not downgraded where major services are paid for.
+    # Where they are not, the portal says nothing about a downgrade and the
+    # sheet is left blank, so nothing is published either.
+    if _covered('D2740') is True:
+        data['porcelain_posterior_downgrade'] = 'No'
+
+    # Whether the deductible is taken out of preventive and diagnostic work is
+    # footed out under the D0120 and D0220 cards.
+    meta = normalized.get('_dd_meta') or {}
+    for key, source in (('ded_prev', 'ded_applies_preventative'),
+                        ('ded_diag', 'ded_applies_diagnostic')):
+        answer = meta.get(source)
+        if answer:
+            data[key] = answer
     return data
 
 

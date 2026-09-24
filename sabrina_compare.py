@@ -433,11 +433,12 @@ _SEP_RE = re.compile(r"^\s*[:\-–—=>|]+\s*")
 _TRIM = " \t:-–—=|"
 
 # A Benefit Details "Frequency" cell — "2X1Year", "1X12Months", "1XLifetime",
-# "No Frequency", "NC". These sit between a CDT label and its Percentage cell
-# and must be stepped over when the field being read is a coverage percentage.
+# "No Frequency", "NC", "Pre-D". These sit between a CDT label and its
+# Percentage cell and must be stepped over when the field being read is a
+# coverage percentage.
 _FREQ_RE = re.compile(
     r"^(?:\d+\s*x\s*\d*\s*(?:year|month|lifetime|day|week|visit)s?"
-    r"|no\s+frequency|nc|n/c)$",
+    r"|no\s+frequency|nc|n/c|pre[\s-]?d(?:etermination)?)$",
     re.IGNORECASE,
 )
 
@@ -1045,6 +1046,10 @@ def _visible_part(value: str) -> tuple[str, str] | None:
 # appends conditions ("…, PERMANENT MOLARS ONLY") which are ignored.
 _FREQ_UNLIMITED = ("unlimited",)
 _FREQ_NOT_COVERED = ("not covered",)
+# Neither a cap nor an absence of one: the benefit is decided case by case on
+# the evidence submitted. The sheet writes "Pre-D"; Delta Dental states it as
+# "Benefit is based on professional determination".
+_FREQ_PREDETERMINATION = ("predetermination",)
 
 _FREQ_COMPACT_RE = re.compile(
     r"^(\d+)\s*x\s*(\d*)\s*(year|month|week|day|visit)s?$", re.IGNORECASE)
@@ -1170,6 +1175,11 @@ def _parse_single_frequency(v) -> tuple | None:
     if ("no limitation" in s or "no frequency" in s or "unlimited" in s
             or s in ("not applicable", "n/a", "na")):
         return _FREQ_UNLIMITED
+    # A benefit decided case by case rather than capped — the sheet's "Pre-D"
+    # against the portal's "Benefit is based on professional determination".
+    if ("professional determination" in s or "predetermination" in s
+            or re.fullmatch(r"pre[\s-]?d", s)):
+        return _FREQ_PREDETERMINATION
     if "lifetime" in s:
         m = re.match(r"(\d+)\s*x", s)
         return (int(m.group(1)) if m else 1, "lifetime")
