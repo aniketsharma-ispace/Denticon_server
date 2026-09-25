@@ -45,6 +45,12 @@ PORTAL_JSON_5 = os.path.join(BASE, "Material", "Smile",
 SABRINA_PDF_6 = os.path.join(BASE, "Material", "Smile", "Aaren.pdf")
 SABRINA_PDF_7 = os.path.join(BASE, "Material", "Smile", "Jason.pdf")
 SABRINA_PDF_8 = os.path.join(BASE, "Material", "Smile", "Carlos Evans.pdf")
+SABRINA_PDF_9 = os.path.join(BASE, "Material", "Smile", "Angela Cao.pdf")
+PORTAL_JSON_9 = os.path.join(
+    BASE, "Material", "Smile", "angela_cao_Delta_Dental.json")
+# A Delta Dental export whose patient is a dependent, not the subscriber.
+PORTAL_DEPENDENT = os.path.join(
+    BASE, "Material", "Comparison", "DD INS", "daniel_klopp_Delta_Dental 3.json")
 PORTAL_JSON_8 = os.path.join(
     BASE, "Material", "Smile", "carlos_evans_Delta_Dental.json")
 PORTAL_JSON_7 = os.path.join(
@@ -1656,6 +1662,193 @@ else:
     check("[8] and the whole sheet agrees with the portal",
           (res8c["summary"]["mismatches"], res8c["summary"]["match_rate"]),
           (0, 100.0))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  1m. DELTA DENTAL — dependents, age bands, waiting periods, ortho deductible
+# ══════════════════════════════════════════════════════════════════════════════
+
+print("── 1m. DELTA DENTAL (Angela Cao / dependents) ──")
+
+import datetime as _dt
+
+from new_plan import (_apply_dd_output_rules, _dd_age_ceiling, _dd_best_row,
+                      _dd_ortho_only, _dd_waiting_rows)
+
+# ── age bands ─────────────────────────────────────────────────────────────
+# Delta states a procedure once per age band. The sheet records the highest,
+# and a band with no upper bound outranks every bounded one.
+check("age band: a child ceiling is its number",
+      _dd_age_ceiling("Child up to and not including age 9"), 9)
+check("age band: 'None' has no ceiling",
+      _dd_age_ceiling("None"), float("inf"))
+check("age band: 'and older' states a floor, so the band has no ceiling",
+      _dd_age_ceiling("18 years and older"), float("inf"))
+
+sealant_rows = [{"age_limits": "Child up to and not including age 9"},
+                {"age_limits": "Child up to and not including age 16"}]
+check("rows: the highest age band governs",
+      _dd_best_row(sealant_rows)["age_limits"],
+      "Child up to and not including age 16")
+check("rows: an unbounded band outranks a bounded one",
+      _dd_best_row([{"age_limits": "Child up to and not including age 18",
+                     "limitation": "Benefit is limited to two of any bitewing "
+                                   "x-ray procedure within a calendar year"},
+                    {"age_limits": "18 years and older",
+                     "limitation": "Benefit is limited to one of any bitewing "
+                                   "x-ray procedure within a calendar year"}]),
+      {"age_limits": "18 years and older",
+       "limitation": "Benefit is limited to one of any bitewing x-ray "
+                     "procedure within a calendar year"})
+check("rows: a single row is that row", _dd_best_row([{"age_limits": "None"}]),
+      {"age_limits": "None"})
+
+# ── member class ──────────────────────────────────────────────────────────
+# Delta also splits a limit by who it covers, saying so at the end of the
+# sentence. The sheet always records the subscriber's.
+from new_plan import _dd_member_class
+check("member class: the subscriber's row ranks highest",
+      _dd_member_class({"limitation": "…rampant caries.For Subscriber and Spouse."}), 1)
+check("member class: a dependents-only row ranks lowest",
+      _dd_member_class({"limitation": "…rampant caries.For Dependents."}), -1)
+check("member class: a row naming no class sits between them",
+      _dd_member_class({"limitation": "Benefit is limited to twice within a calendar year"}), 0)
+check("rows: the subscriber's limit wins over the dependents' one",
+      _dd_best_row([
+          {"age_limits": "None",
+           "limitation": "Benefit is limited to two of any bitewing x-ray "
+                         "procedure within a calendar year.For Dependents."},
+          {"age_limits": "None",
+           "limitation": "Benefit is limited to one of any bitewing x-ray "
+                         "procedure within a calendar year.For Subscriber and Spouse."},
+      ])["limitation"].endswith("For Subscriber and Spouse."), True)
+check("rows: no rows is no row", _dd_best_row([]), {})
+
+# ── the orthodontic deductible ────────────────────────────────────────────
+# Most plans fold orthodontics into the ordinary deductible; only a record
+# covering nothing else is a separate orthodontic one.
+check("deductible: orthodontics alone is the ortho deductible",
+      _dd_ortho_only({"treatment_types": ["Orthodontics"]}), True)
+check("deductible: orthodontics with its surgery is still the ortho one",
+      _dd_ortho_only({"treatment_types": ["Orthodontics",
+                                          "Oral & Maxillofacial Surgery"]}), True)
+check("deductible: orthodontics among the general categories is not",
+      _dd_ortho_only({"treatment_types": ["Diagnostic", "Restorative",
+                                          "Orthodontics", "Periodontics"]}), False)
+check("deductible: a record without orthodontics is not",
+      _dd_ortho_only({"treatment_types": ["Diagnostic", "Restorative"]}), False)
+
+# ── waiting periods ───────────────────────────────────────────────────────
+# Delta lists them with the dates the wait begins and ends; one that has not
+# ended yet is a wait the patient is serving.
+check("waiting periods: the older export's bare list is read",
+      len(_dd_waiting_rows([{"waiting_period_ends": "01/01/2027"}])), 1)
+check("waiting periods: the newer export's wrapper is read",
+      len(_dd_waiting_rows({"rows": [{"waiting_period_ends": "01/01/2027"}],
+                            "note": "x"})), 1)
+check("waiting periods: an empty table is no rows", _dd_waiting_rows(None), [])
+
+_today = _dt.date.today()
+_ahead = (_today + _dt.timedelta(days=200)).strftime("%m/%d/%Y")
+_begun = (_today - _dt.timedelta(days=165)).strftime("%m/%d/%Y")
+_past = (_today - _dt.timedelta(days=30)).strftime("%m/%d/%Y")
+
+
+def _waiting(rows):
+    return _apply_dd_output_rules(
+        {"waiting_period": "No", "waiting_period_mo": "0", "applies_to": ""},
+        {"_dd_meta": {"waiting_period_rows": rows}})
+
+
+check("waiting period: an end date still ahead is a wait being served",
+      _waiting([{"waiting_period_begins": _begun, "waiting_period_ends": _ahead,
+                 "treatments_and_procedures": [
+                     {"treatment_type": "Restorative D2140, D2150"}]}])["waiting_period"],
+      "Yes")
+check("waiting period: and it names the work it applies to",
+      _waiting([{"waiting_period_begins": _begun, "waiting_period_ends": _ahead,
+                 "treatments_and_procedures": [
+                     {"treatment_type": "Restorative D2140, D2150"}]}])["applies_to"],
+      "Restorative")
+check("waiting period: one that has run out is no longer served",
+      _waiting([{"waiting_period_begins": _begun,
+                 "waiting_period_ends": _past}])["waiting_period"], "No")
+check("waiting period: no table at all leaves the shared answer alone",
+      _waiting([])["waiting_period"], "No")
+
+# ── a dependent's own details ─────────────────────────────────────────────
+# `eligibility` is a page-wide sweep collapsed into one dictionary, so on a
+# dependent's page the subscriber's card overwrites the patient's date of
+# birth and member ID. The patient's own card is read instead.
+if not os.path.exists(PORTAL_DEPENDENT):
+    skip("dependent identity", "Material/Comparison/DD INS files not present")
+else:
+    import json as _json9
+    with open(PORTAL_DEPENDENT, encoding="utf-8") as fh:
+        dependent = _json9.load(fh)
+
+    # What the page-wide sweep collected — the subscriber's, not the patient's.
+    check("[dep] the page-wide sweep holds the subscriber's date of birth",
+          dependent["eligibility"]["patient_dob"], "07/31/1956")
+    check("[dep] and never names the subscriber",
+          dependent["eligibility"]["subscriber_name"], "N/A")
+
+    norm9 = sc._portal_normalized(dependent)
+    check("[dep] the patient's own date of birth is read from their card",
+          norm9["metlife_data"]["patient"]["dob"], "09/30/1957")
+    check("[dep] and their own member ID",
+          norm9["metlife_data"]["plan_details"]["subscriber_id"], "123487722302")
+    check("[dep] the patient is recorded as a dependent",
+          norm9["metlife_data"]["patient"]["relationship"], "Dependent")
+    # The subscriber is named only on the Family members tab.
+    check("[dep] the subscriber is found on the family members tab",
+          (norm9["subscriber_info"]["name"], norm9["subscriber_info"]["dob"]),
+          ("Pamela Klopp", "07/31/1956"))
+
+# ── the Angela Cao pairing ────────────────────────────────────────────────
+if not (os.path.exists(SABRINA_PDF_9) and os.path.exists(PORTAL_JSON_9)):
+    skip("Angela Cao pairing", "Material/Smile Angela Cao files not present")
+else:
+    import json as _json9b
+    with open(SABRINA_PDF_9, "rb") as fh:
+        parsed9 = sc.parse_sabrina_pdf(fh.read())
+    with open(PORTAL_JSON_9, encoding="utf-8") as fh:
+        portal9 = _json9b.load(fh)
+
+    check("[9] the sheet parses whole", parsed9["labels_not_found"], [])
+
+    res9 = sc.compare_sabrina_to_portal(parsed9, portal9)
+    rows9 = {r["key"]: r for s in res9["sections"] for r in s["rows"]}
+
+    # The sealant is covered to age 9 in one band and 16 in another.
+    check("[9] the sealant age is the higher band",
+          (rows9["d1351__age"]["portal"], rows9["d1351__age"]["status"]),
+          ("16", "match"))
+    # Bitewings are once a year for an adult, twice for a child.
+    check("[9] the adult bitewing frequency governs",
+          (rows9["d0274__freq"]["portal"], rows9["d0274__freq"]["status"]),
+          ("1X1Year", "match"))
+    # This plan holds a deductible for orthodontics of its own.
+    check("[9] the separate orthodontic deductible is read",
+          (rows9["ortho_ded"]["portal"], rows9["ortho_ded"]["status"]),
+          ("50.00", "match"))
+    # …which must not have displaced the general one.
+    check("[9] the general deductibles are untouched",
+          (rows9["indiv_ded"]["status"], rows9["family_ded"]["status"]),
+          ("match", "match"))
+
+    # The waiting period is read from the dates the portal states, so what it
+    # should say depends on the day this runs.
+    _serving = _dt.date(2027, 7, 14) > _today
+    check("[9] the waiting period follows the portal's own end dates",
+          rows9["waiting_period"]["portal"], "Yes" if _serving else "No")
+    if _serving:
+        check("[9] no disagreements", res9["summary"]["mismatches"], 0)
+        check("[9] match rate", res9["summary"]["match_rate"], 100.0)
+        check_true("[9] fields compared", res9["summary"]["compared"] >= 115,
+                   f"compared={res9['summary']['compared']}")
+    check("[9] nothing reported blank on the sheet",
+          res9["summary"]["missing_in_sabrina"], 0)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

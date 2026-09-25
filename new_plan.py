@@ -1959,6 +1959,130 @@ def _dd_footnote(entry, which):
     return ''
 
 
+def _dd_waiting_rows(waiting):
+    """
+    The waiting-period rows, whichever shape the export carries.
+
+    Older builds publish the tab as a bare list of rows; newer ones wrap it as
+    {"rows": [...], "note": ...} so an empty table can say why it is empty.
+    """
+    if isinstance(waiting, dict):
+        rows = waiting.get('rows')
+    else:
+        rows = waiting
+    return [r for r in (rows or []) if isinstance(r, dict)]
+
+
+def _dd_date(text):
+    """A date Delta printed, as a date object; None where it printed none."""
+    m = re.search(r'(\d{1,2})/(\d{1,2})/(\d{2,4})', str(text or ''))
+    if not m:
+        return None
+    month, day, year = (int(g) for g in m.groups())
+    if year < 100:
+        year += 2000
+    try:
+        return datetime(year, month, day).date()
+    except ValueError:
+        return None
+
+
+def _dd_age_ceiling(text):
+    """
+    How high the age band reaches, for choosing between a code's rows.
+
+    Delta lists a procedure once per age band — "Child up to and not including
+    age 9" beside "Child up to and not including age 16", or an adult band
+    "18 years and older" beside a child one. The sheet records the highest
+    band, so a band with no upper bound ranks above every bounded one.
+    """
+    raw = str(text or '').strip()
+    if not raw or raw.lower() in ('none', 'n/a'):
+        return float('inf')
+    m = re.search(r'up to(?:\s+and\s+not\s+including)?\s+age\s+(\d{1,3})', raw, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    m = re.search(r'(?:through|to)\s+age\s+(\d{1,3})', raw, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    # "18 years and older" and "12 years and older" state a floor, not a
+    # ceiling — the band runs to the end of the member's life.
+    if re.search(r'\d{1,3}\s*years?\s+and\s+(?:older|over|up)', raw, re.IGNORECASE):
+        return float('inf')
+    m = re.search(r'age\s+(\d{1,3})', raw, re.IGNORECASE)
+    return int(m.group(1)) if m else float('inf')
+
+
+def _dd_member_class(row):
+    """
+    Which members a row's limit is written for, as a rank.
+
+    Delta splits a limit by member class and says so at the end of the
+    sentence — "…rampant caries.For Dependents." beside the same sentence
+    ending "…For Subscriber and Spouse." The breakdown sheet always records
+    the subscriber's, so that row ranks highest and a dependents-only row
+    lowest; a row that names no class sits between them and is used wherever
+    no class is stated at all.
+    """
+    text = f"{(row or {}).get('limitation') or ''} {(row or {}).get('description') or ''}".lower()
+    if re.search(r'for\s+subscriber', text):
+        return 1
+    if re.search(r'for\s+dependent', text):
+        return -1
+    return 0
+
+
+def _dd_best_row(rows):
+    """
+    The row of a code that governs, where Delta states more than one.
+
+    Rows are split either by member class or by age band. The subscriber's row
+    wins outright; between rows of the same class the highest age band wins,
+    which is the band an adult subscriber falls in and the one the breakdown
+    sheet records.
+    """
+    usable = [r for r in (rows or []) if isinstance(r, dict)]
+    if not usable:
+        return {}
+    return max(usable, key=lambda r: (_dd_member_class(r),
+                                      _dd_age_ceiling(r.get('age_limits'))))
+
+
+def _dd_subscriber_card(raw, patient, member_type):
+    """
+    The card holding the subscriber's own details.
+
+    Where the patient is the subscriber that is the patient's card. Where the
+    patient is a dependent the subscriber is named on the Family members tab,
+    under its "Subscriber" heading, and is the only place the portal states
+    them — the page-wide field scrape leaves `subscriber_name` as "N/A".
+    """
+    if 'subscriber' in str(member_type or '').lower():
+        return patient
+    for card in ((raw.get('tabs') or {}).get('family_members') or []):
+        if not isinstance(card, dict):
+            continue
+        if 'subscriber' in _dd_static(card, 'Member type').lower():
+            return card
+    return {}
+
+
+def _dd_ortho_only(record):
+    """
+    Whether a deductible record stands for orthodontics alone.
+
+    Most plans fold orthodontics into the ordinary deductible, listing it
+    beside Restorative, Endodontics and the rest — that record is the general
+    one and mentioning orthodontics does not make it otherwise. A separate
+    orthodontic deductible covers nothing else: "Orthodontics" on its own, or
+    with the surgical work that goes with it.
+    """
+    types = [str(t).lower() for t in ((record or {}).get('treatment_types') or [])]
+    if not any('orthodont' in t for t in types):
+        return False
+    return all('orthodont' in t or 'maxillofacial' in t for t in types)
+
+
 def _dd_static(patient, *labels):
     """A labelled value out of the portal's static field block."""
     fields = patient.get('static_fields') if isinstance(patient, dict) else None
@@ -2021,14 +2145,35 @@ def _normalize_dd_portal(raw):
     # The portal appends programme tags to the name ("… SmileWay participant").
     name = re.sub(r'\s+smileway\s+participant\s*$', '',
                   str(patient.get('name') or ''), flags=re.IGNORECASE).strip()
-    dob = (eligibility.get('patient_dob') if eligibility.get('patient_dob') not in (None, '', 'N/A')
-           else _dd_static(patient, 'Date of birth'))
+    # The patient's own card is read first. `eligibility` is a page-wide sweep
+    # of every label/value pair, collapsed into one dictionary, so on a
+    # dependent's page — which also shows the subscriber's card — the last
+    # "Date of birth" on the page wins and the patient would inherit the
+    # subscriber's. The card belongs to one member and cannot be confused.
+    def _member_field(label, fallback_key):
+        from_card = _dd_static(patient, label)
+        if from_card:
+            return from_card
+        value = eligibility.get(fallback_key)
+        return '' if value in (None, '', 'N/A') else str(value).strip()
+
+    dob = _member_field('Date of birth', 'patient_dob')
     member_type = _dd_static(patient, 'Member type') or 'Subscriber'
-    member_id = (eligibility.get('member_id') if eligibility.get('member_id') not in (None, '', 'N/A')
-                 else _dd_static(patient, 'Member ID'))
-    group_number = (eligibility.get('group_number')
-                    if eligibility.get('group_number') not in (None, '', 'N/A')
-                    else _dd_static(patient, 'Group number'))
+    member_id = _member_field('Member ID', 'member_id')
+    group_number = _member_field('Group number', 'group_number')
+
+    # A dependent's subscriber is named only on the Family members tab.
+    subscriber_card = _dd_subscriber_card(raw, patient, member_type)
+    subscriber_name = re.sub(r'\s+smileway\s+participant\s*$', '',
+                             str(subscriber_card.get('name') or ''),
+                             flags=re.IGNORECASE).strip()
+    subscriber_dob = _dd_static(subscriber_card, 'Date of birth')
+    if not subscriber_name:
+        value = eligibility.get('subscriber_name')
+        subscriber_name = '' if value in (None, '', 'N/A') else str(value).strip()
+    if not subscriber_dob:
+        value = eligibility.get('subscriber_dob')
+        subscriber_dob = '' if value in (None, '', 'N/A') else str(value).strip()
 
     # "Member eligibility: 11/01/2024 - present"
     coverage = _dd_static(patient, 'Member eligibility')
@@ -2072,18 +2217,33 @@ def _normalize_dd_portal(raw):
 
     deductibles = overview.get('deductibles') or []
 
+    def _as_amounts(record):
+        return {'total': _dd_money(record.get('amount')),
+                'used': _dd_money(record.get('used')),
+                'remaining': _dd_money(record.get('remaining'))}
+
     def _deductible(kind):
+        # A plan may carry a separate orthodontic deductible, listed as another
+        # "Calendar Individual Deductible" naming Orthodontics among its
+        # treatment types. It is not the deductible the general work draws on,
+        # so it is passed over here and read on its own below.
         for record in deductibles:
-            if not isinstance(record, dict):
+            if not isinstance(record, dict) or _dd_ortho_only(record):
                 continue
             if kind in str(record.get('type', '')).lower():
-                return {'total': _dd_money(record.get('amount')),
-                        'used': _dd_money(record.get('used')),
-                        'remaining': _dd_money(record.get('remaining'))}
+                return _as_amounts(record)
         # An empty deductible table is the portal stating there is none.
         if not deductibles:
             return {'total': '$0.00', 'used': '$0.00', 'remaining': '$0.00'}
         return {'total': '', 'used': '', 'remaining': ''}
+
+    def _ortho_deductible():
+        individual = [r for r in deductibles
+                      if isinstance(r, dict) and _dd_ortho_only(r)
+                      and 'individual' in str(r.get('type', '')).lower()]
+        either = individual or [r for r in deductibles
+                                if isinstance(r, dict) and _dd_ortho_only(r)]
+        return _as_amounts(either[0]) if either else {}
 
     # ── category coverage, in and out of network ───────────────────────────
     covered_services = []
@@ -2176,10 +2336,21 @@ def _normalize_dd_portal(raw):
     for entry in tabs.get('benefits_search') or []:
         if not isinstance(entry, dict) or not entry.get('code'):
             continue
-        row = (entry.get('rows') or [{}])[0] or {}
+        # Where Delta states a code once per age band, the highest band is
+        # the one the sheet records; the service dates belong to the code
+        # whichever band they were recorded under, so they come from them all.
+        row = _dd_best_row(entry.get('rows')) or {}
         code = str(entry.get('code')).upper().strip()
-        own = [d for d in re.findall(r'\d{1,2}/\d{1,2}/\d{2,4}',
-                                     str(row.get('service_date') or ''))]
+        own = []
+        for r in (entry.get('rows') or []):
+            if not isinstance(r, dict):
+                continue
+            for d in re.findall(r'\d{1,2}/\d{1,2}/\d{2,4}',
+                                str(r.get('service_date') or '')):
+                # Delta repeats a code's history under every age band it
+                # states, so the same date arrives once per row.
+                if d not in own:
+                    own.append(d)
         pooled = list(own)
         for date in history_by_code.get(code, []):
             if date not in pooled:
@@ -2219,10 +2390,8 @@ def _normalize_dd_portal(raw):
             'address': ', '.join(address_parts),
         },
         'subscriber_info': {
-            'name': name if 'subscriber' in member_type.lower() else
-                    (eligibility.get('subscriber_name') or name),
-            'dob': dob if 'subscriber' in member_type.lower() else
-                   (eligibility.get('subscriber_dob') or dob),
+            'name': subscriber_name,
+            'dob': subscriber_dob,
             'relation': member_type,
         },
         'metlife_data': {
@@ -2263,6 +2432,8 @@ def _normalize_dd_portal(raw):
             'deductible_applicability': overview.get('deductible_applicability') or {},
             'ded_applies_preventative': _dd_footnote(_by_code.get('D0120'), 'deductible'),
             'ded_applies_diagnostic': _dd_footnote(_by_code.get('D0220'), 'deductible'),
+            'ortho_deductible': _ortho_deductible(),
+            'waiting_period_rows': _dd_waiting_rows(tabs.get('waiting_periods')),
             'claims_address_lines': address_lines,
             'procedure_count': len(procedures),
         },
@@ -2333,6 +2504,61 @@ def _apply_dd_output_rules(data, normalized):
         answer = meta.get(source)
         if answer:
             data[key] = answer
+
+    # A plan may hold a deductible for orthodontics alone, separate from the
+    # one the general work draws on. Where there is none the shared default of
+    # zero already says so.
+    ortho_ded = meta.get('ortho_deductible') or {}
+    if ortho_ded.get('total'):
+        data['ortho_ded'] = _dollar(ortho_ded.get('total'), default='0.00')
+        data['ortho_ded_paid'] = _dollar(ortho_ded.get('used'), default='0.00')
+
+    # Delta gives waiting periods a tab of their own, one row per group of
+    # procedures with the dates the wait begins and ends. A row whose end date
+    # is still ahead is a wait the patient is serving; where every row has run
+    # out there is no wait left to serve. An absent table says nothing, and the
+    # shared default stands.
+    rows = meta.get('waiting_period_rows') or []
+    periods = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ends = _dd_date(row.get('waiting_period_ends'))
+        if not ends:
+            continue
+        begins = _dd_date(row.get('waiting_period_begins'))
+        categories = []
+        for item in row.get('treatments_and_procedures') or []:
+            if not isinstance(item, dict):
+                continue
+            # "Restorative D2140, D2150, …" — the category, then its codes.
+            label = re.split(r'\s+D\d{4}', str(item.get('treatment_type') or ''))[0].strip()
+            if label and label not in categories:
+                categories.append(label)
+        periods.append((ends, begins, categories))
+
+    if periods:
+        today = datetime.now().date()
+        outstanding = [p for p in periods if p[0] > today]
+        data['waiting_period'] = 'Yes' if outstanding else 'No'
+        if outstanding:
+            # The longest of the waits still running is the one that governs.
+            ends, begins, _ = max(outstanding, key=lambda p: p[0])
+            if begins:
+                months = round((ends - begins).days / 30.44)
+                data['waiting_period_mo'] = str(months)
+            applies = []
+            for _, _, categories in outstanding:
+                for label in categories:
+                    if label not in applies:
+                        applies.append(label)
+            if applies:
+                # The cell holds a line; naming nine categories shrinks it out
+                # of legibility, so the rest are counted instead of listed.
+                data['applies_to'] = (', '.join(applies) if len(applies) <= 3 else
+                                      ', '.join(applies[:3]) + f' +{len(applies) - 3} more')
+        else:
+            data['waiting_period_mo'] = '0'
     return data
 
 
