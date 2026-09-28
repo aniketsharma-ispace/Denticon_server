@@ -548,6 +548,11 @@
                 const expectedRenderedRows = countMatch ? Number(countMatch[1]) : null;
                 const rowCountReady = expectedRenderedRows == null || parsed.length >= expectedRenderedRows;
 
+                // MetLife answers every code that was asked for, so a table
+                // missing one is a table still being painted rather than a
+                // plan without that procedure.
+                const haveEveryCode = Array.from(wanted).every(code => rowCodes.includes(code));
+
                 if (belongsToCurrentBatch && tableChanged && rowCountReady) {
                     // Keep the best observed value for each row. A real date always beats an empty/dash value.
                     const previousByCode = new Map(bestRows.map(r => [r.procedure_code, r]));
@@ -573,7 +578,12 @@
                     // return earlier than 5 seconds after Search. This prevents the all-"—" capture.
                     const stableFor = Date.now() - stableSince;
                     const elapsed = Date.now() - started;
-                    if (elapsed >= 5000 && stableFor >= 4000) {
+                    // A complete table settles as quickly as it always has; one
+                    // still short of a code is given longer before being taken
+                    // as final, since a row arriving late looks exactly like a
+                    // table that has stopped changing.
+                    const settleAfter = haveEveryCode ? 5000 : 9000;
+                    if (elapsed >= settleAfter && stableFor >= 4000) {
                         return bestRows;
                     }
                 } else {
@@ -654,6 +664,32 @@
             if (i < chunks.length - 1) await sleep(1000);
         }
 
+        // Anything the batches did not answer is asked for on its own. The
+        // portal returns a row for every code it knows, so a gap here is
+        // almost always a row that painted too late to be seen; where the plan
+        // genuinely has no such row this search simply comes back empty.
+        let unanswered = allCodes.filter(code => !seen.has(code));
+        if (unanswered.length) {
+            console.warn(`[Audit] ${unanswered.length} code(s) unanswered, retrying one at a time: ${unanswered.join(",")}`);
+            for (const code of unanswered) {
+                await sleep(800);
+                try {
+                    for (const proc of await runOneBatch([code])) {
+                        if (!seen.has(proc.procedure_code)) {
+                            seen.add(proc.procedure_code);
+                            allProcedures.push(proc);
+                        }
+                    }
+                } catch (e) {
+                    console.error(`[Audit] Retry for ${code} failed:`, e);
+                }
+            }
+            unanswered = allCodes.filter(code => !seen.has(code));
+            if (unanswered.length) {
+                console.warn(`[Audit] still unanswered after retry: ${unanswered.join(",")}`);
+            }
+        }
+
         return new Promise((resolve) => {
             chrome.storage.local.get("audit_context", (res) => {
                 const ctx = res.audit_context || {};
@@ -663,6 +699,8 @@
                     timestamp: new Date().toISOString(),
                     codes_searched: allCodes,
                     extra_codes: extraList,
+                    // Named rather than left to be noticed by their absence.
+                    codes_not_returned: unanswered,
                     procedure_count: allProcedures.length,
                     procedures: allProcedures
                 };

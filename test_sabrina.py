@@ -52,6 +52,9 @@ PORTAL_JSON_9 = os.path.join(
 PORTAL_DEPENDENT = os.path.join(
     BASE, "Material", "Comparison", "DD INS", "daniel_klopp_Delta_Dental 3.json")
 SABRINA_PDF_10 = os.path.join(BASE, "Material", "Smile", "Martin S Sas.pdf")
+SABRINA_PDF_11 = os.path.join(BASE, "Material", "Smile", "Kate Licina.pdf")
+PORTAL_JSON_11 = os.path.join(
+    BASE, "Material", "Smile", "kate_s_licina_metlife_audit.json")
 PORTAL_JSON_10 = os.path.join(
     BASE, "Material", "Smile", "martin_sas_Delta_Dental.json")
 PORTAL_JSON_8 = os.path.join(
@@ -1948,6 +1951,70 @@ else:
           res10["summary"]["mismatches"], 2)
     check_true("[10] fields compared", res10["summary"]["compared"] >= 115,
                f"compared={res10['summary']['compared']}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  1o. METLIFE — a code the scrape dropped, and a fourth copied perio date
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# MetLife answers every code the scrape asks for: Tudor and Aaren both came
+# back 62 of 62. Kate Licina's came back 66 of 67, losing D0140 out of the
+# middle of a chunk — the batch settled while React still had a row to paint.
+# The content script now gives an incomplete batch longer and searches on its
+# own for anything still missing, and records what never came back.
+#
+# The audit's part is only to say so honestly: a code the export does not carry
+# is a code the portal never stated, and must not be filled in from the sibling
+# evaluation codes that do have rows.
+
+print("── 1o. METLIFE (Kate Licina) ──")
+
+if not (os.path.exists(SABRINA_PDF_11) and os.path.exists(PORTAL_JSON_11)):
+    skip("Kate Licina pairing", "Material/Smile Kate Licina files not present")
+else:
+    import json as _json11
+    with open(SABRINA_PDF_11, "rb") as fh:
+        parsed11 = sc.parse_sabrina_pdf(fh.read())
+    with open(PORTAL_JSON_11, encoding="utf-8") as fh:
+        portal11 = _json11.load(fh)
+
+    check("[11] the sheet parses whole", parsed11["labels_not_found"], [])
+
+    res11 = sc.compare_sabrina_to_portal(parsed11, portal11)
+    rows11 = {r["key"]: r for s in res11["sections"] for r in s["rows"]}
+
+    _codes = {str(p.get("procedure_code") or "").upper()
+              for p in (portal11.get("benefit_coverage") or {}).get("procedures") or []}
+
+    # Written to hold both before and after the scrape is repeated with the
+    # fixed content script, so re-capturing Kate does not break the suite.
+    if "D0140" not in _codes:
+        # The export does not carry it, so all three of its columns must say
+        # the portal did not state it — never borrowed from D0120 or D0150,
+        # which carry rows of their own.
+        for key in ("d0140", "d0140__freq", "d0140__hist"):
+            check(f"[11] {key} is reported unstated, not filled in",
+                  rows11[key]["status"], "not_in_portal")
+        check("[11] and the sibling evaluation codes are unaffected",
+              (rows11["d0120"]["status"], rows11["d0150"]["status"]),
+              ("match", "match"))
+    else:
+        check("[11] the re-scraped D0140 compares", rows11["d0140"]["status"], "match")
+
+    # A fourth patient whose sheet carries the prophylaxis date on the
+    # periodontal-maintenance row, where MetLife records no history at all.
+    # Tudor, Amanda Wilson and Aaren Boyd show the same thing.
+    check("[11] the perio-maintenance history disagrees with the portal",
+          (rows11["d1110"]["status"], rows11["d4910__hist"]["sabrina"],
+           rows11["d4910__hist"]["portal"], rows11["d4910__hist"]["status"]),
+          ("match", "05/05/2026", "—", "mismatch"))
+    check("[11] and it is the prophylaxis date the portal records",
+          parsed11["benefit_rows"]["d1110"]["history"], "05/05/2026")
+
+    check("[11] nothing reported blank on the sheet",
+          res11["summary"]["missing_in_sabrina"], 0)
+    check_true("[11] fields compared", res11["summary"]["compared"] >= 120,
+               f"compared={res11['summary']['compared']}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
