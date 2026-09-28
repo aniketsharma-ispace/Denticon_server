@@ -51,6 +51,9 @@ PORTAL_JSON_9 = os.path.join(
 # A Delta Dental export whose patient is a dependent, not the subscriber.
 PORTAL_DEPENDENT = os.path.join(
     BASE, "Material", "Comparison", "DD INS", "daniel_klopp_Delta_Dental 3.json")
+SABRINA_PDF_10 = os.path.join(BASE, "Material", "Smile", "Martin S Sas.pdf")
+PORTAL_JSON_10 = os.path.join(
+    BASE, "Material", "Smile", "martin_sas_Delta_Dental.json")
 PORTAL_JSON_8 = os.path.join(
     BASE, "Material", "Smile", "carlos_evans_Delta_Dental.json")
 PORTAL_JSON_7 = os.path.join(
@@ -1796,8 +1799,12 @@ else:
     norm9 = sc._portal_normalized(dependent)
     check("[dep] the patient's own date of birth is read from their card",
           norm9["metlife_data"]["patient"]["dob"], "09/30/1957")
-    check("[dep] and their own member ID",
-          norm9["metlife_data"]["plan_details"]["subscriber_id"], "123487722302")
+    # Delta numbers a family once and suffixes each member (…01 subscriber,
+    # …02 dependent). The sheet's "Member ID#" is the policy number claims go
+    # under, which is the subscriber's — Martin Sas's sheet records exactly
+    # that for a dependent.
+    check("[dep] the policy's member ID is the subscriber's",
+          norm9["metlife_data"]["plan_details"]["subscriber_id"], "123487722301")
     check("[dep] the patient is recorded as a dependent",
           norm9["metlife_data"]["patient"]["relationship"], "Dependent")
     # The subscriber is named only on the Family members tab.
@@ -1842,13 +1849,105 @@ else:
     _serving = _dt.date(2027, 7, 14) > _today
     check("[9] the waiting period follows the portal's own end dates",
           rows9["waiting_period"]["portal"], "Yes" if _serving else "No")
+
+    # This sheet recorded the downgraded posterior composite as not covered,
+    # where the portal says the amalgam benefit is applied in its place and
+    # Martin Sas's sheet records that benefit. The disagreement is the sheet's
+    # to settle, and the audit is right to raise it.
+    check("[9] the composite recorded as not covered is raised",
+          (rows9["d2391"]["sabrina"], rows9["d2391"]["portal"],
+           rows9["d2391"]["status"]), ("0", "80%", "mismatch"))
+    check("[9] and its frequency with it",
+          (rows9["d2391__freq"]["sabrina"], rows9["d2391__freq"]["portal"],
+           rows9["d2391__freq"]["status"]), ("NC", "1X24Months", "mismatch"))
     if _serving:
-        check("[9] no disagreements", res9["summary"]["mismatches"], 0)
-        check("[9] match rate", res9["summary"]["match_rate"], 100.0)
+        check("[9] the composite is the only disagreement",
+              res9["summary"]["mismatches"], 2)
         check_true("[9] fields compared", res9["summary"]["compared"] >= 115,
                    f"compared={res9['summary']['compared']}")
     check("[9] nothing reported blank on the sheet",
           res9["summary"]["missing_in_sabrina"], 0)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  1n. DELTA DENTAL — a dependent's sheet, and the downgraded composite
+# ══════════════════════════════════════════════════════════════════════════════
+
+print("── 1n. DELTA DENTAL (Martin Sas) ──")
+
+from new_plan import _dd_alternate_benefit
+
+# Delta does not refuse a posterior composite outright — it says the amalgam
+# benefit is applied instead, which is a benefit the patient has.
+check("alternate benefit: the substitution is recognized",
+      _dd_alternate_benefit({"limitation":
+          "When this procedure does not display in Benefit Details, it is not "
+          "a benefit of the member's plan. When amalgam restorations are a "
+          "benefit, the applicable amalgam benefit will be applied."}), True)
+check("alternate benefit: a plain refusal is not a substitution",
+      _dd_alternate_benefit({"limitation":
+          "This procedure is not a benefit of most Delta Dental plans. "
+          "The fee is the patient's responsibility."}), False)
+check("alternate benefit: an unrecognized code is not a substitution",
+      _dd_alternate_benefit({"limitation": "This procedure code could not be "
+                                           "recognized."}), False)
+
+if not (os.path.exists(SABRINA_PDF_10) and os.path.exists(PORTAL_JSON_10)):
+    skip("Martin Sas pairing", "Material/Smile Martin Sas files not present")
+else:
+    import json as _json10
+    with open(SABRINA_PDF_10, "rb") as fh:
+        parsed10 = sc.parse_sabrina_pdf(fh.read())
+    with open(PORTAL_JSON_10, encoding="utf-8") as fh:
+        portal10 = _json10.load(fh)
+
+    check("[10] the sheet parses whole", parsed10["labels_not_found"], [])
+
+    # The page-wide sweep holds the subscriber's date of birth, as it does on
+    # every dependent's page.
+    check("[10] the sweep carries the subscriber's date of birth",
+          portal10["eligibility"]["patient_dob"], "09/29/1956")
+
+    res10 = sc.compare_sabrina_to_portal(parsed10, portal10)
+    rows10 = {r["key"]: r for s in res10["sections"] for r in s["rows"]}
+
+    # The patient is a dependent; his own card holds his date of birth, and
+    # the subscriber is named only on the Family members tab.
+    check("[10] the patient's own date of birth is compared",
+          (rows10["patient_dob"]["portal"], rows10["patient_dob"]["status"]),
+          ("10/07/1942", "match"))
+    check("[10] the subscriber is named",
+          (rows10["subscriber_name"]["portal"], rows10["subscriber_name"]["status"]),
+          ("Melany Sas", "match"))
+    check("[10] with the subscriber's own date of birth",
+          (rows10["subscriber_dob"]["portal"], rows10["subscriber_dob"]["status"]),
+          ("09/29/1956", "match"))
+    # The sheet records the policy number, which is the subscriber's.
+    check("[10] the member ID is the policy's",
+          (rows10["member_id"]["portal"], rows10["member_id"]["status"]),
+          ("119982604701", "match"))
+
+    # The downgraded composite carries the amalgam benefit the portal names.
+    check("[10] D2391 carries the amalgam percentage",
+          (rows10["d2391"]["portal"], rows10["d2391"]["status"]), ("80%", "match"))
+    check("[10] and the amalgam frequency",
+          (rows10["d2391__freq"]["portal"], rows10["d2391__freq"]["status"]),
+          ("1X24Months", "match"))
+
+    # Two rows disagree, and both are the sheet's to correct rather than ours.
+    check("[10] the payer ID the portal prints is reported",
+          (rows10["payor_id"]["sabrina"], rows10["payor_id"]["portal"],
+           rows10["payor_id"]["status"]), ("DDGA1", "94276", "mismatch"))
+    check("[10] the separate orthodontic deductible is reported",
+          (rows10["ortho_ded"]["sabrina"], rows10["ortho_ded"]["portal"],
+           rows10["ortho_ded"]["status"]), ("0", "50.00", "mismatch"))
+
+    check("[10] nothing reported blank on the sheet",
+          res10["summary"]["missing_in_sabrina"], 0)
+    check("[10] the two findings are the only disagreements",
+          res10["summary"]["mismatches"], 2)
+    check_true("[10] fields compared", res10["summary"]["compared"] >= 115,
+               f"compared={res10['summary']['compared']}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

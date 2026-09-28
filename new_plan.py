@@ -1938,6 +1938,26 @@ def _dd_not_covered(entry, row):
     return bool(_DD_NOT_COVERED_RE.search(text))
 
 
+# Delta answers a posterior composite with the amalgam benefit rather than
+# with a refusal: "…it is not a benefit of the member's plan. When amalgam
+# restorations are a benefit, the applicable amalgam benefit will be applied."
+_DD_ALTERNATE_RE = re.compile(
+    r'\b(amalgam|applicable)\b[^.]*\bbenefit will be applied', re.IGNORECASE)
+
+# The code whose benefit is applied in place of each downgraded one.
+_DD_ALTERNATE_FOR = {
+    'D2391': ('D2140',),
+    'D2392': ('D2150', 'D2140'),
+    'D2393': ('D2160', 'D2140'),
+    'D2394': ('D2161', 'D2160', 'D2140'),
+}
+
+
+def _dd_alternate_benefit(row):
+    """Whether Delta is substituting another procedure's benefit for this one."""
+    return bool(_DD_ALTERNATE_RE.search(str((row or {}).get('limitation') or '')))
+
+
 def _dd_footnote(entry, which):
     """
     One of the footnotes Delta prints beneath a procedure-code card.
@@ -2159,11 +2179,17 @@ def _normalize_dd_portal(raw):
 
     dob = _member_field('Date of birth', 'patient_dob')
     member_type = _dd_static(patient, 'Member type') or 'Subscriber'
-    member_id = _member_field('Member ID', 'member_id')
     group_number = _member_field('Group number', 'group_number')
 
     # A dependent's subscriber is named only on the Family members tab.
     subscriber_card = _dd_subscriber_card(raw, patient, member_type)
+
+    # Delta numbers a family once and gives each member a suffix — …01 for the
+    # subscriber, …02 for a dependent. The sheet's "Member ID#" is the policy
+    # number claims are filed under, which is the subscriber's; for a
+    # subscriber that is their own card, so this is the same number either way.
+    member_id = (_dd_static(subscriber_card, 'Member ID')
+                 or _member_field('Member ID', 'member_id'))
     subscriber_name = re.sub(r'\s+smileway\s+participant\s*$', '',
                              str(subscriber_card.get('name') or ''),
                              flags=re.IGNORECASE).strip()
@@ -2358,8 +2384,10 @@ def _normalize_dd_portal(raw):
         service_date = ', '.join(pooled)
         # A code the plan does not pay for is stated as such rather than left
         # blank: the sheet records those as 0% and "NC", and a blank would read
-        # as the portal never having mentioned the code at all.
-        not_covered = _dd_not_covered(entry, row)
+        # as the portal never having mentioned the code at all. A code whose
+        # benefit is merely substituted is not one of them — the patient has a
+        # benefit, stated against another code, and it is filled in below.
+        not_covered = _dd_not_covered(entry, row) and not _dd_alternate_benefit(row)
         procedures.append({
             'procedure_code': str(entry.get('code')).upper().strip(),
             'description': str(row.get('description') or ''),
@@ -2375,6 +2403,27 @@ def _normalize_dd_portal(raw):
             'deductible': str(entry.get('deductible') or ''),
             'limitation': str(row.get('limitation') or ''),
         })
+
+    # A downgraded procedure carries the benefit of the code it is downgraded
+    # to — the portal says so outright — so that benefit is filled in once
+    # every code has been read and the substitute can be looked up.
+    by_code = {p['procedure_code']: p for p in procedures}
+    for entry in tabs.get('benefits_search') or []:
+        if not isinstance(entry, dict) or not entry.get('code'):
+            continue
+        code = str(entry['code']).upper().strip()
+        record = by_code.get(code)
+        if not record or not _dd_alternate_benefit(_dd_best_row(entry.get('rows'))):
+            continue
+        for substitute in _DD_ALTERNATE_FOR.get(code, ()):
+            source = by_code.get(substitute)
+            level = str((source or {}).get('benefit_level') or '').strip()
+            if not source or not level or level.upper() in ('N/A', 'NA'):
+                continue
+            record['benefit_level'] = level
+            record['frequency_limit'] = source.get('frequency_limit') or ''
+            record['alternate_benefit_from'] = substitute
+            break
 
     plan_name = str(patient.get('plan') or 'Delta Dental').strip()
 
