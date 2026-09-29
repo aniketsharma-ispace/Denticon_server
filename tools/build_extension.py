@@ -24,7 +24,7 @@ DIST_DIR = REPO_ROOT / "dist"
 
 # Files/patterns that should never end up in a shipped package.
 EXCLUDE_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini"}
-EXCLUDE_SUFFIXES = {".map", ".zip", ".log", ".bak", ".md"}
+EXCLUDE_SUFFIXES = {".map", ".zip", ".log", ".bak", ".md", ".txt"}
 
 
 def read_manifest(manifest_path: Path) -> dict:

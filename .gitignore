@@ -29,3 +29,7 @@ Thumbs.db
 .idea/
 .vscode/
 Material/
+
+# Local secrets - never commit
+secrets/
+*authenticator*.txt
