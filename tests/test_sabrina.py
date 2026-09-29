@@ -19,6 +19,14 @@ test_regression.py, so the suite stays runnable on a fresh checkout.
 import os
 import sys
 
+# The suites live in tests/ but read fixtures from, and import, the repo root.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+import os
+import sys
+
 import sabrina_compare as sc
 
 # Windows consoles default to cp1252 and cannot encode the section rules below.
@@ -28,7 +36,7 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+BASE = _ROOT
 SABRINA_PDF = os.path.join(BASE, "Material", "Comparison", "Metlife.pdf")
 SABRINA_PDF_2 = os.path.join(BASE, "Material", "Comparison", "Metlife - 81986.pdf")
 PORTAL_JSON_2 = os.path.join(BASE, "Material", "Comparison",
@@ -548,7 +556,7 @@ check("carrier: unknown brands fall back to text rules",
       sc._compare("carrier", "Acme Dental Trust", "Acme Dental Trust")[0], True)
 
 # OBS: the missing-tooth answer is INVERTED and taken from the FIRST sentence.
-from new_plan import _missing_tooth_clause as _mtc
+from smile_partners.breakdown import _missing_tooth_clause as _mtc
 _BOTH = ("Are plan benefits available for teeth lost prior to effective date: {} "
          "Are plan benefits available for congenital teeth lost prior to "
          "effective date: {}")
@@ -743,7 +751,7 @@ else:
 
 print("── 1f. APT 92763 MAPPING BUGS ──")
 
-from new_plan import _get_plan_year_start as _pys
+from smile_partners.breakdown import _get_plan_year_start as _pys
 
 _BENEFIT_PERIOD = {
     "rule": "Benefit Period",
@@ -976,7 +984,7 @@ check("cigna: sheet 18 matches an 'Exclude after age 18' limit",
       sc._compare("agelimit", "18", "Exclude after age 18")[0], True)
 
 # A multi-class annual maximum must survive the ortho/implant exclusion.
-from new_plan import _cigna_general_annual_record as _annual
+from smile_partners.portals.cigna import _cigna_general_annual_record as _annual
 _NET = {"id": "P0010", "name": "TOTAL"}
 _MIXED = [{"desc": "Individual Calendar Year Maximum", "amount": "$2,000.00",
            "met": "$222.20", "remaining": "$1,777.80", "covers": "IND",
@@ -1350,7 +1358,7 @@ else:
 
 print("── 1k. DELTA DENTAL PAIRING (Jason Knezevich) ──")
 
-from new_plan import (_dd_age_limit, _dd_frequency, _is_dd_portal,
+from smile_partners.portals.delta_dental import (_dd_age_limit, _dd_frequency, _is_dd_portal,
                       _normalize_dd_portal)
 
 # Delta states limits in prose; the sheet uses the compact form.
@@ -1469,7 +1477,7 @@ else:
 
 print("── 1l. DELTA DENTAL (Carlos Evans) ──")
 
-from new_plan import _dd_maximum, _dd_not_covered
+from smile_partners.portals.delta_dental import _dd_maximum, _dd_not_covered
 
 # The rest of Delta's limitation wording, each taken verbatim off a card.
 for prose, compact in [
@@ -1678,7 +1686,7 @@ print("── 1m. DELTA DENTAL (Angela Cao / dependents) ──")
 
 import datetime as _dt
 
-from new_plan import (_apply_dd_output_rules, _dd_age_ceiling, _dd_best_row,
+from smile_partners.portals.delta_dental import (_apply_dd_output_rules, _dd_age_ceiling, _dd_best_row,
                       _dd_ortho_only, _dd_waiting_rows)
 
 # ── age bands ─────────────────────────────────────────────────────────────
@@ -1712,7 +1720,7 @@ check("rows: a single row is that row", _dd_best_row([{"age_limits": "None"}]),
 # ── member class ──────────────────────────────────────────────────────────
 # Delta also splits a limit by who it covers, saying so at the end of the
 # sentence. The sheet always records the subscriber's.
-from new_plan import _dd_member_class
+from smile_partners.portals.delta_dental import _dd_member_class
 check("member class: the subscriber's row ranks highest",
       _dd_member_class({"limitation": "…rampant caries.For Subscriber and Spouse."}), 1)
 check("member class: a dependents-only row ranks lowest",
@@ -1878,7 +1886,7 @@ else:
 
 print("── 1n. DELTA DENTAL (Martin Sas) ──")
 
-from new_plan import _dd_alternate_benefit
+from smile_partners.portals.delta_dental import _dd_alternate_benefit
 
 # Delta does not refuse a posterior composite outright — it says the amalgam
 # benefit is applied instead, which is a benefit the patient has.

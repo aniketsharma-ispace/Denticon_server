@@ -1,3 +1,11 @@
+import os
+import sys
+
+# The suites live in tests/ but read fixtures from, and import, the repo root.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
 import httpx
 import asyncio
 

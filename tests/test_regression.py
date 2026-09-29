@@ -8,6 +8,14 @@ Each verified real-world case gets added here so later fixes can't silently
 break earlier ones. Real-data cases are skipped (not failed) when their JSON
 files are missing from Material/Comparison.
 """
+import os
+import sys
+
+# The suites live in tests/ but read fixtures from, and import, the repo root.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
 import asyncio
 import json
 import logging
@@ -16,7 +24,7 @@ import sys
 
 logging.disable(logging.CRITICAL)
 
-from compare_patients import (
+from DCA.compare_patients import (
     _group_numbers_match,
     _notes_maintained_date,
     _plan_is_in_use,
@@ -26,7 +34,7 @@ from compare_patients import (
     match_insurance_plan,
 )
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = _ROOT
 COMPARISON_DIR = os.path.join(HERE, "Material", "Comparison")
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
@@ -410,7 +418,7 @@ async def case_real_data():
             report(f"real: {name}", SKIP, "files not present")
             continue
         if ppath.lower().endswith(".pdf"):
-            from pdf_extractor import parse_insurance_pdf
+            from shared.pdf_extractor import parse_insurance_pdf
             with open(ppath, "rb") as f:
                 portal = await parse_insurance_pdf(f.read())
         else:
@@ -433,7 +441,7 @@ def case_no_fabricated_portal_values():
     text. Feed each Delta parser a minimal export that lacks the major/ortho
     and financials sections; those fields must come out missing, never a made-up
     default (which silently creates false mismatches during comparison)."""
-    from pdf_extractor import _parse_delta_dental_wi, _parse_delta_dental_toolkit
+    from shared.pdf_extractor import _parse_delta_dental_wi, _parse_delta_dental_toolkit
 
     # WI: coverage line present for Preventive/Basic, "None" for Major, and NO
     # Orthodontics line at all. Major must be 0% (explicit None), ortho missing.
@@ -472,7 +480,7 @@ def case_no_fabricated_portal_values():
     # Benefits-detail (Delta WI): NO "Maximum - Ortho" block and an "N/A" proc
     # row. Ortho must stay missing (not the old hardcoded $0), and an N/A
     # plan-pays must NOT be fabricated to 0%.
-    from pdf_extractor import _parse_delta_dental_benefits_detail
+    from shared.pdf_extractor import _parse_delta_dental_benefits_detail
     bd_text = (
         "Subscriber name:\nTEST PATIENT\nGroup #:\n999\nGroup name:\nTEST\n"
         "PPO Maximum\n11% used - 89% max\n$100.00 used - $1,500.00 max\n"
@@ -493,7 +501,7 @@ def case_no_fabricated_portal_values():
 
     # DentaQuest: no Family deductible in the export → must stay None, never a
     # fabricated $0 that critically rejects the correct plan (Hall).
-    from pdf_extractor import _parse_dentaquest
+    from shared.pdf_extractor import _parse_dentaquest
     dq_text = (
         "Dental Health Alliance (DHA) Benefits at a glance Deductible: $50.0 "
         "Individual Maximum: $1,500.0\nGroup Number: ABC123\n"
@@ -513,7 +521,7 @@ async def case_wi_none_not_fabricated():
     NOTE: the 5 siblings 283982/289637/290120/291434/295756 are byte-identical
     in coverage, so the exact winner is a genuine tie — we assert 291434 is IN
     the confident top group, not that it is THE pick."""
-    from pdf_extractor import parse_insurance_pdf
+    from shared.pdf_extractor import parse_insurance_pdf
     ppath = os.path.join(COMPARISON_DIR, "Julie.pdf")
     dpath = os.path.join(COMPARISON_DIR, "Denticon_DeepAudit_Stohr, Brynn_1784621804769.json")
     if not (os.path.exists(ppath) and os.path.exists(dpath)):
@@ -902,7 +910,7 @@ def case_benefits_detail_ortho_and_family():
     """Delta WI 'benefits-detail' parser: ortho max read from the
     '<tier> Maximum - Ortho' block; family deductible defaults to the individual
     when no family line exists; and 'N/A' plan-pays (age-excluded) → None, not 0%."""
-    from pdf_extractor import _parse_delta_dental_benefits_detail
+    from shared.pdf_extractor import _parse_delta_dental_benefits_detail
     text = (
         "Subscriber name:\nAMY WANG\n"
         "Group #:\n002900000511700000\nGroup name:\nElite Plan\n"
@@ -964,7 +972,7 @@ def case_fee_ok_ucci_is_concordia():
     Concordia (same carrier). A record declaring its own 'UCCI PPO' fee schedule
     must NOT be demoted for a patient whose carrier reads 'United Concordia' —
     while a genuinely foreign network (ZELIS vs Guardian) is still flagged."""
-    import compare_patients as cp
+    import DCA.compare_patients as cp
     own = {"benefits": {"notes": "WHAT FEE SCHEDULE :UCCI PPO\nPlan Type: PPO"}}
     foreign = {"benefits": {"notes": "WHAT FEE SCHEDULE :ZELIS PPO\nPlan Type: PPO"}}
     ok = (cp._fee_schedule_ok(own, "UNITED CONCORDIA PPO") is True       # same carrier
@@ -1067,7 +1075,7 @@ async def case_llm_fallback():
       2. anti-fabrication-gated — keep a value only if it appears in the source,
       3. gap-filling — never overwrite a value the deterministic parser found.
     Uses a mocked Ollama so it is deterministic and needs no running model."""
-    import compare_patients as cp
+    import DCA.compare_patients as cp
 
     fields = cp._LLM_PORTAL_STRING_FIELDS + cp._LLM_PORTAL_NUM_FIELDS
     empty = {k: None for k in fields}

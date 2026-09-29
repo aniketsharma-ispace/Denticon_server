@@ -1,5 +1,13 @@
+import os
+import sys
+
+# The suites live in tests/ but read fixtures from, and import, the repo root.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
 import asyncio
-from pdf_extractor import parse_delta_dental_pdf
+from shared.pdf_extractor import parse_delta_dental_pdf
 
 async def test():
     print("Testing PDF extractor...")

@@ -40,6 +40,22 @@
         }
         .section-label::after { content:''; flex:1; height:1px; background:rgba(255,255,255,0.1); }
 
+        .client-row { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+        .client-select {
+            background:rgba(0,0,0,0.35); border:2px solid rgba(255,255,255,0.2);
+            border-radius:10px; color:#fff; padding:12px 16px; font-family:inherit;
+            font-size:0.95rem; font-weight:600; min-width:280px; cursor:pointer;
+            outline:none; transition:all 0.2s;
+        }
+        .client-select:hover  { border-color:rgba(255,255,255,0.4); }
+        .client-select:focus  { border-color:#00d2ff; }
+        .client-select.chosen { border-color:#00d2ff; background:rgba(0,210,255,0.07); }
+        .client-select option { background:#161d2e; color:#fff; }
+        .client-note { font-size:0.8rem; color:#ffab40; font-weight:500; }
+        .client-note.chosen { color:#00e676; }
+        /* Nothing can be uploaded until the client is known. */
+        .upload-grid.locked { opacity:0.45; pointer-events:none; filter:grayscale(0.4); }
+
         .upload-grid { display:grid; grid-template-columns:1fr 1fr; gap:30px; margin-bottom:35px; }
         @media(max-width:650px){ .upload-grid{ grid-template-columns:1fr; } }
 
@@ -419,8 +435,16 @@
     <h1>🔍 AI Patient Reconciliation</h1>
     <p class="subtitle">Upload your Portal export and Denticon export to match patients, generate notes, and create new plan PDFs.</p>
 
-    <div class="section-label">01 — Upload Files</div>
-    <div class="upload-grid">
+    <div class="section-label">01 — Client</div>
+    <div class="client-row">
+        <select class="client-select" id="clientSelect">
+            <option value="" selected disabled>— Select a client —</option>
+        </select>
+        <div class="client-note" id="clientNote">Required — this decides whose rules are applied.</div>
+    </div>
+
+    <div class="section-label">02 — Upload Files</div>
+    <div class="upload-grid locked" id="uploadGrid">
         <div class="upload-box" id="boxPortal">
             <h3>1. Portal JSON</h3>
             <p style="font-size:13px;color:#a0aabf;">(Cigna / MetLife Export)</p>
@@ -435,7 +459,7 @@
         </div>
     </div>
 
-    <div class="section-label">02 — Run</div>
+    <div class="section-label">03 — Run</div>
     <div class="btn-row">
         <button class="run-btn"            id="btnMatch"   disabled>✨ Run AI Plan Matching</button>
         <button class="run-btn notes-btn"  id="btnNotes"   disabled>⚡ Generate Patient Notes</button>
@@ -637,11 +661,83 @@ const planLoader   = document.getElementById('planLoader');
 const planOutput   = document.getElementById('planOutput');
 
 /* ─────────────────────────────────────────
+   CLIENT
+   Which client's code the server runs. Asked before anything else and never
+   defaulted: the same portal export means different things to different
+   clients, so guessing would produce a confident wrong answer.
+───────────────────────────────────────── */
+let selectedClient = '';
+let clientSpecs    = {};
+
+const clientSelect = document.getElementById('clientSelect');
+const clientNote   = document.getElementById('clientNote');
+const uploadGrid   = document.getElementById('uploadGrid');
+
+async function loadClients() {
+    try {
+        const res = await fetch(`${API_BASE}/api/clients`);
+        if (!res.ok) throw new Error(`Server error ${res.status}`);
+        const { clients } = await res.json();
+        clients.forEach(c => {
+            clientSpecs[c.key] = c;
+            const opt = document.createElement('option');
+            opt.value = c.key;
+            opt.textContent = `${c.label} — ${c.system}`;
+            clientSelect.appendChild(opt);
+        });
+    } catch (err) {
+        console.error(err);
+        clientNote.textContent = 'Could not reach the server to list clients. Is it running on port 8000?';
+        clientNote.style.color = '#ff5252';
+    }
+}
+
+function resetLoadedFiles() {
+    portalData = null;
+    denticonData = null;
+    clearSabrinaMode();
+    ['Portal', 'Denticon'].forEach(slot => {
+        const status = document.getElementById('status' + slot);
+        status.innerText = 'Waiting for file…';
+        status.style.color = '#a0aabf';
+        document.getElementById('box' + slot).classList.remove('ready');
+    });
+    filePortal.value = '';
+    fileDenticon.value = '';
+    matchOutput.innerHTML = '';
+}
+
+clientSelect.addEventListener('change', () => {
+    const previous = selectedClient;
+    selectedClient = clientSelect.value;
+    // Files loaded for one client mean nothing to another.
+    if (previous && previous !== selectedClient) resetLoadedFiles();
+
+    const spec = clientSpecs[selectedClient];
+    clientSelect.classList.toggle('chosen', !!selectedClient);
+    clientNote.classList.toggle('chosen', !!selectedClient);
+    clientNote.textContent = spec
+        ? `${spec.label} works in ${spec.system} — ${spec.hint}.`
+        : 'Required — this decides whose rules are applied.';
+    uploadGrid.classList.toggle('locked', !selectedClient);
+    refreshButtons();
+});
+
+loadClients();
+
+/* ─────────────────────────────────────────
    FILE LOADING
 ───────────────────────────────────────── */
 function handleFile(event, type) {
     const file = event.target.files[0];
     if (!file) return;
+    /* Belt and braces: the upload grid is already inert until a client is
+       chosen, but nothing should be read without knowing whose rules apply. */
+    if (!selectedClient) {
+        event.target.value = '';
+        alert('Select a client first — it decides whose rules are applied.');
+        return;
+    }
     
     const isPdf = file.type === 'application/pdf'
         || file.name.toLowerCase().trim().endsWith('.pdf');
@@ -721,6 +817,7 @@ async function handleSabrinaUpload(file) {
 
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('client', selectedClient);
 
     try {
         const res = await fetch(`${API_BASE}/api/sabrina-parse`, { method:'POST', body:formData });
@@ -764,9 +861,29 @@ function clearSabrinaMode() {
 }
 
 function refreshButtons() {
+    /* Nothing runs until we know whose rules to apply. */
+    if (!selectedClient) {
+        btnMatch.disabled = btnNotes.disabled = btnNewPlan.disabled = true;
+        btnMatch.title = btnNotes.title = btnNewPlan.title = 'Select a client first.';
+        return;
+    }
+    btnMatch.title = '';
+
+    /* What a client can run is the server's answer, not a guess here. */
+    const supports = (clientSpecs[selectedClient] || {}).supports || [];
+    const canAudit = supports.includes('sabrina_audit');
+    const canPlan  = supports.includes('new_plan');
+    const canNotes = supports.includes('notes');
+    const canMatch = supports.includes('match');
+
     /* Sabrina mode: only the field audit is available — patient notes and the
        new-plan PDF both need Denticon data that Sabrina teams don't have. */
     if (sabrinaFile) {
+        if (!canAudit) {
+            btnMatch.disabled = btnNotes.disabled = btnNewPlan.disabled = true;
+            btnMatch.title = `${clientSpecs[selectedClient].label} does not use Sabrina sheets.`;
+            return;
+        }
         btnMatch.disabled   = !portalData;
         btnMatch.innerText  = '🔍 Compare Sabrina PDF vs Portal';
         btnNotes.disabled   = true;
@@ -778,9 +895,9 @@ function refreshButtons() {
     btnMatch.innerText = '✨ Run AI Plan Matching';
     btnNotes.title = btnNewPlan.title = '';
     const both = !!(portalData && denticonData);
-    btnMatch.disabled   = !both;
-    btnNotes.disabled   = !both;
-    btnNewPlan.disabled = !both;
+    btnMatch.disabled   = !both || !canMatch;
+    btnNotes.disabled   = !both || !canNotes;
+    btnNewPlan.disabled = !both || !canPlan;
 }
 filePortal.addEventListener('change',   e => handleFile(e, 'portal'));
 fileDenticon.addEventListener('change', e => handleFile(e, 'denticon'));
@@ -796,6 +913,7 @@ btnMatch.addEventListener('click', async () => {
     matchLoader.classList.add('visible');
     btnMatch.disabled = true;
     const payload = {
+        client:        selectedClient,
         portal_data:   portalData.cigna_data || portalData.metlife_data || portalData,
         denticon_data: denticonData.denticon_data || denticonData,
     };
@@ -1071,6 +1189,7 @@ async function runSabrinaCompare() {
     try {
         const fd = new FormData();
         fd.append('file', sabrinaFile);
+        fd.append('client', selectedClient);
         fd.append('portal_data', JSON.stringify(portalData));
 
         const res = await fetch(`${API_BASE}/api/sabrina-compare`, { method:'POST', body:fd });
@@ -1166,7 +1285,9 @@ btnNotes.addEventListener('click', async () => {
     try {
         const res = await fetch(`${API_BASE}/api/patient-notes`, {
             method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({ denticon_data:denticonData.denticon_data||denticonData, insurance_data:portalData }),
+            body:JSON.stringify({ client:selectedClient,
+                                  denticon_data:denticonData.denticon_data||denticonData,
+                                  insurance_data:portalData }),
         });
         if (!res.ok) throw new Error('Server error '+res.status+'. Is FastAPI running on port 8000?');
         renderNotes(await res.json());
@@ -1578,6 +1699,7 @@ btnNewPlan.addEventListener('click', async () => {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+                client:        selectedClient,
                 portal_data:   portalToSend,   // ← corrected frequencies applied
                 denticon_data: denticonWithRel,
                 ins_override:  insFields

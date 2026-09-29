@@ -1,5 +1,13 @@
+import os
+import sys
+
+# The suites live in tests/ but read fixtures from, and import, the repo root.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
 import asyncio
-from compare_patients import ask_ollama
+from DCA.compare_patients import ask_ollama
 
 test_text = """
 Benefits, Eligibility, Claims

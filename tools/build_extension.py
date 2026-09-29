@@ -18,7 +18,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parent.parent
 SOURCE_DIR = REPO_ROOT / "Extension"
 DIST_DIR = REPO_ROOT / "dist"
 

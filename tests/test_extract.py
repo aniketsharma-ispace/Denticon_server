@@ -1,5 +1,13 @@
+import os
+import sys
+
+# The suites live in tests/ but read fixtures from, and import, the repo root.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
 import json
-from compare_patients import extract_portal_fields, extract_denticon_plan_fields, _python_score
+from DCA.compare_patients import extract_portal_fields, extract_denticon_plan_fields, _python_score
 
 with open("william_j_flowers_metlife_audit.json", "r", encoding="utf-8") as f:
     portal_data = json.load(f)

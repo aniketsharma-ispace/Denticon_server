@@ -3,7 +3,7 @@
 # # from pydantic import BaseModel
 # # import uvicorn
 
-# # from compare_patients import trim_patient_data, ask_ollama
+# # from DCA.compare_patients import trim_patient_data, ask_ollama
 
 # # app = FastAPI(title="AI Insurance Matcher")
 
@@ -16,12 +16,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-from new_plan import generate_new_plan_pdf
 import uvicorn
 
-from compare_patients import match_insurance_plan
+from DCA.compare_patients import match_insurance_plan
 
-from patient_notes import build_patient_notes
+from DCA.patient_notes import build_patient_notes
 
 from fastapi.responses import Response, FileResponse
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
@@ -34,13 +33,7 @@ import json
 import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-from pdf_extractor import parse_insurance_pdf
-from sabrina_compare import (
-    audit_sabrina_pdf,
-    core_fields,
-    is_sabrina_pdf,
-    parse_sabrina_pdf,
-)
+from shared.pdf_extractor import parse_insurance_pdf
 from Appointment_Scheduler.appointment_processor import (
     process_appointments,
     generate_day_start_reports,
@@ -74,14 +67,17 @@ app.add_middleware(
 class MatchRequest(BaseModel):
     portal_data: dict
     denticon_data: dict
+    client: Optional[str] = None
 
 class NotesRequest(BaseModel):
     denticon_data: dict
     insurance_data: dict
+    client: Optional[str] = None
 
 class PDFRequest(BaseModel):
     portal_data: dict
     denticon_data: dict
+    client: Optional[str] = None
 
 class InsOverride(BaseModel):
     insName:      Optional[str] = None
@@ -91,7 +87,74 @@ class InsOverride(BaseModel):
 class NewPlanRequest(BaseModel):
     portal_data:   dict
     denticon_data: dict
+    client:        Optional[str] = None
     ins_override:  Optional[InsOverride] = None   # ← carries modal values
+
+# ── Clients ───────────────────────────────────────────────────────────────────
+#
+# Each client's code lives in a package of its own — its portal readers, its
+# breakdown builder, and whatever else it needs. Nothing here guesses which one
+# a request means: the caller names the client, and an unnamed or unknown one
+# is refused rather than defaulted, because running DCA's rules on a Smile
+# Partners sheet would produce a confident wrong answer instead of an error.
+
+CLIENTS = {
+    "dca": {
+        "label":    "DCA",
+        "system":   "Denticon",
+        "package":  "DCA",
+        "hint":     "Portal export + Denticon deep-audit JSON",
+        # What this client's folder actually provides.
+        "supports": {"match", "notes", "new_plan", "parse_pdf"},
+    },
+    "smile_partners": {
+        "label":    "Smile Partners",
+        "system":   "Sabrina",
+        "package":  "smile_partners",
+        "hint":     "Portal export + Sabrina breakdown PDF",
+        "supports": {"sabrina_audit", "parse_pdf"},
+    },
+}
+
+# What each capability is called in an error the user will read.
+_CAPABILITY_NAMES = {
+    "match":         "AI plan matching",
+    "notes":         "patient notes",
+    "new_plan":      "the Insurance Plan Breakdown PDF",
+    "sabrina_audit": "the Sabrina sheet audit",
+    "parse_pdf":     "portal PDF parsing",
+}
+
+
+def resolve_client(name, capability):
+    """
+    The client a request names, refusing anything that cannot be run as asked.
+
+    Returns (key, spec). Raises 400 when no client was named, when the name is
+    not one we have, or when that client's folder has nothing for the job.
+    """
+    key = str(name or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if not key:
+        raise HTTPException(
+            status_code=400,
+            detail="Choose a client first — this decides whose rules are applied.")
+    if key not in CLIENTS:
+        known = ", ".join(sorted(CLIENTS))
+        raise HTTPException(status_code=400, detail=f"Unknown client {name!r}. Known: {known}")
+    spec = CLIENTS[key]
+    if capability not in spec["supports"]:
+        job = _CAPABILITY_NAMES.get(capability, capability)
+        raise HTTPException(
+            status_code=400,
+            detail=f"{spec['label']} does not use {job}.")
+    return key, spec
+
+
+def client_module(spec, dotted):
+    """A module inside a client's package, imported by name."""
+    from importlib import import_module
+    return import_module(f"{spec['package']}.{dotted}")
+
 
 class ExclusionRequest(BaseModel):
     exclusions: list
@@ -105,11 +168,34 @@ class BlockNamesRequest(BaseModel):
 @app.get("/")
 def serve_ui():
     """Serve the web UI (index.html) so it can be opened directly from the server."""
-    return FileResponse(os.path.join(BASE_DIR, "index.html"))
+    return FileResponse(os.path.join(BASE_DIR, "web", "index.html"))
+
+
+@app.get("/api/clients")
+def list_clients():
+    """
+    The clients this server can run, for the UI's picker.
+
+    Served rather than hard-coded in the page so that adding a client is one
+    entry in `CLIENTS` and the dropdown follows.
+    """
+    return {
+        "clients": [
+            {
+                "key":      key,
+                "label":    spec["label"],
+                "system":   spec["system"],
+                "hint":     spec["hint"],
+                "supports": sorted(spec["supports"]),
+            }
+            for key, spec in CLIENTS.items()
+        ]
+    }
 
 
 @app.post("/api/match")
 async def match_patient_plan(req: MatchRequest):
+    resolve_client(req.client, "match")
     if not req.portal_data or not req.denticon_data:
         raise HTTPException(status_code=400, detail="Missing portal or denticon data")
 
@@ -120,6 +206,7 @@ async def match_patient_plan(req: MatchRequest):
 
 @app.post("/api/patient-notes")
 def generate_notes(req: NotesRequest):
+    resolve_client(req.client, "notes")
     if not req.denticon_data or not req.insurance_data:
         raise HTTPException(status_code=400, detail="Missing denticon or insurance data")
 
@@ -128,6 +215,8 @@ def generate_notes(req: NotesRequest):
 
 @app.post("/api/generate-new-plan-pdf")
 async def generate_new_plan_pdf_api(req: PDFRequest):
+    _key, spec = resolve_client(req.client, "new_plan")
+    build_pdf = client_module(spec, "plan_pdf").generate_new_plan_pdf
 
     if not req.portal_data or not req.denticon_data:
         raise HTTPException(
@@ -135,7 +224,7 @@ async def generate_new_plan_pdf_api(req: PDFRequest):
             detail="Missing portal or denticon data"
         )
 
-    pdf_bytes = generate_new_plan_pdf(
+    pdf_bytes = build_pdf(
         req.portal_data,
         req.denticon_data
     )
@@ -163,15 +252,21 @@ async def parse_pdf_endpoint(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF parsing failed: {str(e)}")
     
-# ── Sabrina flow (BPO teams that don't use Denticon) ──────────────────────────
+# ── Sabrina flow (clients that don't use Denticon) ────────────────────────────
 #
 # These teams export a patient breakdown PDF from Sabrina instead of a Denticon
 # JSON. There are no candidate plans to rank, so /api/match does not apply — the
-# job is a straight field-by-field audit against the insurance portal, handled
-# entirely by `sabrina_compare`. The Denticon path is untouched.
+# job is a straight field-by-field audit against the insurance portal.
+#
+# The sheet is the client's own, so the audit that reads it is too: both
+# endpoints below run the `sabrina` package of whichever client the request
+# names, and refuse a client that has none.
 
 @app.post("/api/sabrina-parse")
-async def sabrina_parse_endpoint(file: UploadFile = File(...)):
+async def sabrina_parse_endpoint(
+    file: UploadFile = File(...),
+    client: Optional[str] = Form(None),
+):
     """
     Confirm an uploaded PDF is a Sabrina breakdown and return the fields read
     off it. The UI calls this on upload so it can acknowledge the file (and
@@ -180,9 +275,12 @@ async def sabrina_parse_endpoint(file: UploadFile = File(...)):
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Uploaded file must be a PDF")
 
+    _key, spec = resolve_client(client, "sabrina_audit")
+    audit = client_module(spec, "sabrina")
+
     pdf_bytes = await file.read()
     try:
-        parsed = await run_in_threadpool(parse_sabrina_pdf, pdf_bytes)
+        parsed = await run_in_threadpool(audit.parse_sabrina_pdf, pdf_bytes)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
@@ -191,9 +289,10 @@ async def sabrina_parse_endpoint(file: UploadFile = File(...)):
     fields = parsed["fields"]
     # Counted over the labelled fields only — the generated Frequency/Age/History
     # rows are not "fields on the sheet" and most are legitimately empty.
-    core = core_fields(fields)
+    core = audit.core_fields(fields)
     return {
-        "is_sabrina":        is_sabrina_pdf(parsed["text"]),
+        "client":            _key,
+        "is_sabrina":        audit.is_sabrina_pdf(parsed["text"]),
         "marker_count":      parsed["marker_count"],
         "fields_found":      sum(1 for v in core.values() if v not in (None, "")),
         "fields_total":      len(core),
@@ -208,6 +307,7 @@ async def sabrina_parse_endpoint(file: UploadFile = File(...)):
 @app.post("/api/sabrina-compare")
 async def sabrina_compare_endpoint(
     file: UploadFile = File(...),
+    client: Optional[str] = Form(None),
     portal_data: Optional[str] = Form(None),
     portal_file: Optional[UploadFile] = File(None),
 ):
@@ -218,6 +318,9 @@ async def sabrina_compare_endpoint(
     portal export, or the output of /api/parse-pdf) or as `portal_file` (a
     carrier PDF, parsed here). Returns per-field statuses plus a mismatch list.
     """
+    _key, spec = resolve_client(client, "sabrina_audit")
+    audit = client_module(spec, "sabrina")
+
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="The Sabrina file must be a PDF")
 
@@ -242,7 +345,9 @@ async def sabrina_compare_endpoint(
         )
 
     try:
-        return await audit_sabrina_pdf(await file.read(), portal_raw)
+        result = await audit.audit_sabrina_pdf(await file.read(), portal_raw)
+        result["client"] = _key
+        return result
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
@@ -431,6 +536,8 @@ def generate_new_plan(req: NewPlanRequest):
     Generate and return an Insurance Plan Breakdown PDF.
     Accepts the full raw JSONs from both portals + optional UI overrides.
     """
+    _key, spec = resolve_client(req.client, "new_plan")
+    build_pdf = client_module(spec, "plan_pdf").generate_new_plan_pdf
     if not req.portal_data or not req.denticon_data:
         raise HTTPException(status_code=400, detail="Missing portal or denticon data")
 
@@ -446,7 +553,7 @@ def generate_new_plan(req: NewPlanRequest):
            .replace(' ', '_')
     )
 
-    pdf_bytes = generate_new_plan_pdf(
+    pdf_bytes = build_pdf(
         req.portal_data,
         req.denticon_data,
         ins_override=override_dict,   # ← insName, feeSchedule, relationship applied inside

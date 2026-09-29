@@ -1,6 +1,14 @@
+import os
+import sys
+
+# The suites live in tests/ but read fixtures from, and import, the repo root.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
 import json
 import asyncio
-from compare_patients import match_insurance_plan
+from DCA.compare_patients import match_insurance_plan
 
 async def main():
     with open("william_j_flowers_metlife_audit.json", "r", encoding="utf-8") as f:
