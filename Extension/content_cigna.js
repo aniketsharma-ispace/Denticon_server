@@ -272,14 +272,10 @@ const PROCEDURE_CODES = [
     "D4260", "D4249", "D4341", "D4355", "D4381", "D4346", "D4910",
     "D5860", "D5110", "D5740", "D5982",
     "D6194", "D6010", "D6056", "D6065",
-    "D6245", "D6750",
+    "D6245", "D6750", "5212", "5995", "2980",
     "D7259", "D7140", "D7210", "D7240", "D7953",
     "D8010", "D8080", "D8090",
-    "D9430", "D9110", "D9222", "D9230", "D9239", "D9243", "D9310", "D9944",
-    // Codes the Sabrina breakdown sheet audits that were never requested, so
-    // the portal was never asked about them and the comparison could only
-    // report "not stated" for rows the sheet does fill in.
-    "D2160", "D2980", "D5212", "D5899", "D5995"
+    "D9430", "D9110", "D9222", "D9230", "D9239", "D9243", "D9310", "D9944"
 ];
 
 const CIGNA_VALID_CONTEXT_VALUES = {
@@ -328,7 +324,9 @@ const CIGNA_CONTEXT_BY_CODE = {
     D7140: { tooth: "3" },
     D7210: { tooth: "3" },
     D7240: { tooth: "17" },
-    D7953: { tooth: "3" }
+    D7953: { tooth: "3" },
+    D2980: { tooth: "1"},
+    D5212: { arch: "LA"}
 };
 const CIGNA_CONTEXT_VARIANTS_BY_CODE = {
     D1351: [
@@ -355,6 +353,7 @@ const CIGNA_FORCED_CONTEXT_CODES = new Set(Object.keys(CIGNA_CONTEXT_VARIANTS_BY
 
 let _overlay = null;
 let activeCignaRun = null;
+let cignaSelectedNetwork = null;   // { id, name, type, label } — from the Plan View dropdown
 let _lastStatusAt = 0;
 function lockPage() {
     if (_overlay) return;
@@ -1290,22 +1289,10 @@ async function crawlProcedureCodesLegacy(baseData) {
         excluded_codes:    excludedCodes,
     };
 
-    // Cigna returns dependable per-code benefits only when ONE code is
-    // searched at a time. Entering ten together collapses the result rows, so
-    // codes come back sharing a benefit or missing from the table altogether —
-    // which is why the per-code Frequency / Percentage / Age Limit / History
-    // values could not be trusted for Cigna. One search per code is slower
-    // (roughly one submit per code instead of one per ten) but it is the only
-    // form in which the results map back to the code that produced them.
-    const CODES_PER_SEARCH = 1;
-
     const allCodes = [...STATIC_CODES, ...allowedAgeCodes, ...SPECIAL_CODES];
     const batches  = [];
-    for (let i = 0; i < allCodes.length; i += CODES_PER_SEARCH) {
-        batches.push(allCodes.slice(i, i + CODES_PER_SEARCH));
-    }
-    console.log(`Cigna: ${allCodes.length} codes → ${batches.length} search(es), ` +
-                `${CODES_PER_SEARCH} code per search`);
+    for (let i = 0; i < allCodes.length; i += 10) batches.push(allCodes.slice(i, i + 10));
+    console.log(`Cigna: ${allCodes.length} codes → ${batches.length} batch(es):`, batches);
 
     await ensureAccordionOpen("Procedure Code Search");
     await sleep(800);
@@ -1313,14 +1300,14 @@ async function crawlProcedureCodesLegacy(baseData) {
     const allResults = [];
 
     for (let b = 0; b < batches.length; b++) {
-        setStatus(`Code ${b + 1}/${batches.length} (${batches[b].join(', ')}) — clearing…`);
+        setStatus(`Batch ${b + 1}/${batches.length} — clearing old codes…`);
         await clearExistingCodes();
         await sleep(800);
 
         const ok = await enterBatch(batches[b]);
         if (!ok) continue;
 
-        setStatus(`Code ${b + 1}/${batches.length} (${batches[b].join(', ')}) — reading results…`);
+        setStatus(`Batch ${b + 1} submitted — locating result rows…`);
         const batchResults = await expandAndScrapeAllRows();
 
         batchResults.forEach(r => {
@@ -1412,12 +1399,16 @@ function selectedNetwork(...records) {
     };
 }
 
-function parseApiProcedure(item, requested) {
+function parseApiProcedure(item, requested) {  
     const benefits = item.benefits || {};
-    const maximum = preferredRecord(benefits.maximum?.accumulations, true);
-    const coinsurance = preferredRecord(benefits.coinsurance?.accumulations);
-    const deductible = preferredRecord(benefits.deductible?.accumulations, true);
-    const limitation = preferredRecord(item.limitations);
+    const maximumRecords = recordsForSelectedNetwork(benefits.maximum?.accumulations);
+    const coinsuranceRecords = recordsForSelectedNetwork(benefits.coinsurance?.accumulations);
+    const deductibleRecords = recordsForSelectedNetwork(benefits.deductible?.accumulations);
+    const limitationRecords = recordsForSelectedNetwork(item.limitations);
+    const maximum = preferredRecord(maximumRecords, true);
+    const coinsurance = preferredRecord(coinsuranceRecords);
+    const deductible = preferredRecord(deductibleRecords, true);
+    const limitation = preferredRecord(limitationRecords);
     const limit = Number(limitation?.limit);
     const meaningfulFrequency = Number.isFinite(limit) && limit > 0 && limitation?.limitConsumed !== undefined && limitation?.limitConsumed !== null;
     const covered = apiBoolean(item.covered);
@@ -1457,18 +1448,18 @@ function parseApiProcedure(item, requested) {
                 covers: apiValue(maximum?.covers), period: apiValue(maximum?.planPeriodCode),
                 notes: uniqueStrings(maximum?.notes)
             },
-            maximum_records: dedupeAccumulationRecords(benefits.maximum?.accumulations),
+            maximum_records: dedupeAccumulationRecords(maximumRecords),
             deductible: {
                 description: apiValue(deductible?.desc), total: apiValue(deductible?.amount),
                 used: apiValue(deductible?.met), remaining: apiValue(deductible?.remaining),
                 covers: apiValue(deductible?.covers), notes: uniqueStrings(deductible?.notes)
             },
-            deductible_records: dedupeAccumulationRecords(benefits.deductible?.accumulations),
+            deductible_records: dedupeAccumulationRecords(deductibleRecords),
             coinsurance: {
                 description: apiValue(coinsurance?.desc), member_percent: apiValue(coinsurance?.amount),
                 notes: uniqueStrings(coinsurance?.notes)
             },
-            coinsurance_records: dedupeAccumulationRecords(benefits.coinsurance?.accumulations),
+            coinsurance_records: dedupeAccumulationRecords(coinsuranceRecords),
             limitation: {
                 limit: apiValue(limitation?.limit), consumed: apiValue(limitation?.limitConsumed),
                 frequency: apiValue(limitation?.frequency), frequency_unit: apiValue(limitation?.frequencyUnit),
@@ -1477,7 +1468,7 @@ function parseApiProcedure(item, requested) {
                 covered: apiBoolean(limitation?.covered),
                 missing_tooth_limit: limitation?.missingtoothlimit || null
             },
-            limitation_records: dedupeLimitationRecords(item.limitations),
+            limitation_records: dedupeLimitationRecords(limitationRecords),
             history_dates: uniqueStrings(serviceHistory.map(entry => entry.date))
                 .sort((a, b) => Date.parse(b) - Date.parse(a)),
             service_history: serviceHistory
@@ -1996,10 +1987,11 @@ function formatApiAddress(address) {
 }
 
 function completeAccumulationRecords(coverage, benefitName) {
-    return dedupeAccumulationRecords(coverageServiceRecords(coverage, benefitName));
+    return dedupeAccumulationRecords(recordsForSelectedNetwork(coverageServiceRecords(coverage, benefitName)));
 }
 
 function selectedCoverageNetwork(coverage) {
+    if (cignaSelectedNetwork) return { id: cignaSelectedNetwork.id, name: cignaSelectedNetwork.name, type: cignaSelectedNetwork.type || "", tier: "" };
     const network = coverage?.coverageDetails?.networkDetails || {};
     return {
         id: apiValue(network.superNetworkId || network.networkId, ""),
@@ -2055,6 +2047,89 @@ function deductibleApplicabilityFromCoverage(coverage) {
     };
 }
 
+// ── SELECTED NETWORK (Plan View dropdown) ─────────────────────────────────
+const OON_LABEL = /OUT[\s-]*OF[\s-]*NETWORK|\bOON|NON[\s-]*PAR/i;
+
+function readNetworkDropdown() {
+    const anchor = findByPartialText("Cigna Network Affiliation", ['h1','h2','h3','h4','label','p','span','div']);
+    let scope = anchor;
+    for (let i = 0; scope && i < 6; i++, scope = scope.parentElement) {
+        const sel = scope.querySelector('select');
+        if (sel && sel.selectedIndex >= 0) {
+            const opt = sel.options[sel.selectedIndex];
+            return { label: clean(opt.text), value: String(opt.value || "").trim() };
+        }
+        const mat = scope.querySelector('mat-select, [role="combobox"]');
+        if (mat) {
+            const text = clean(mat.querySelector('.mat-select-value-text, .mat-mdc-select-value-text')?.innerText || mat.innerText);
+            if (text) return { label: text, value: "" };
+        }
+    }
+    return { label: "", value: "" };
+}
+
+function collectCoverageNetworks(coverage) {
+    const map = new Map();
+    const add = record => {
+        if (!record || (!record.networkId && !record.networkName)) return;
+        const key = normalizeComparableScalar(record.networkId) || normalizedNetworkName(record.networkName);
+        if (!map.has(key)) map.set(key, { id: record.networkId || "", name: record.networkName || "", type: record.networkType || "" });
+    };
+    for (const service of coverage.planBenefits?.services || [])
+        for (const benefit of Object.values(service.benefits || {})) (benefit?.accumulations || []).forEach(add);
+    for (const item of coverage.frequencyAgeLimitation?.procedural || []) (item.limitations || []).forEach(add);
+    for (const age of coverage.frequencyAgeLimitation?.ageLimitations || [])
+        ["student", "dependent", "ortho"].forEach(key => add(age?.[key]));
+    return [...map.values()];
+}
+
+function matchNetworkLabel(label, networks) {
+    const target = normalizedNetworkName(label);
+    if (!target) return null;
+    const isOon = n => /OON/i.test(n.name) || /OON/i.test(n.id);
+    if (OON_LABEL.test(label)) return networks.find(isOon) || null;
+    return networks.find(n => normalizedNetworkName(n.name) === target)
+        || (target.length >= 3 ? networks.find(n => {
+            const name = normalizedNetworkName(n.name);
+            return name.length >= 3 && !isOon(n) && (target.includes(name) || name.includes(target));
+        }) : null)
+        || null;
+}
+
+function resolveSelectedCignaNetwork(coverage) {
+    const networks = collectCoverageNetworks(coverage);
+    let { label, value } = readNetworkDropdown();
+    const byValue = v => {
+        const target = normalizeComparableScalar(v);
+        const targetName = normalizedNetworkName(v);
+        return target ? networks.find(n =>
+            normalizeComparableScalar(n.id) === target ||
+            (targetName && normalizedNetworkName(n.name) === targetName)) : null;
+    };
+    // 1) option value vs API id/name (exact), 2) label text (fuzzy), 3) value text (fuzzy)
+    let match = byValue(value) || matchNetworkLabel(label, networks) || matchNetworkLabel(value, networks);
+    if (!match) {
+        for (const sel of document.querySelectorAll('select')) {
+            const opt = sel.options[sel.selectedIndex];
+            const found = byValue(opt?.value) || matchNetworkLabel(clean(opt?.text), networks);
+            if (found) { label = clean(opt.text); match = found; break; }
+        }
+    }
+    if (!match) throw new Error(
+        `Could not match the Plan View network ("${label || "dropdown not found"}") to this plan's networks ` +
+        `(${networks.map(n => n.name).join(", ") || "none"}). Check the dropdown and run again.`);
+    console.info("Cigna: Selected network", { label, ...match });
+    return { ...match, label };
+}
+
+function inSelectedNetwork(record) {
+    return !cignaSelectedNetwork || matchesSelectedCoverageNetwork(record, cignaSelectedNetwork);
+}
+
+function recordsForSelectedNetwork(records) {
+    return (Array.isArray(records) ? records : []).filter(Boolean).filter(inSelectedNetwork);
+}
+
 function applyCoverageApi(baseData, coverage) {
     const patient = coverage.patientDetails || {};
     const subscriber = coverage.subscriberDetails || {};
@@ -2088,9 +2163,10 @@ function applyCoverageApi(baseData, coverage) {
         account_number: apiValue(details.accountNumber),
         account_name: apiValue(details.accountName),
         network: {
-            id: apiValue(network.superNetworkId || network.networkId),
-            name: apiValue(network.networkName),
-            type: apiValue(network.networkType),
+            id: apiValue(cignaSelectedNetwork?.id || network.superNetworkId || network.networkId),
+            name: apiValue(cignaSelectedNetwork?.name || network.networkName),
+            type: apiValue(cignaSelectedNetwork?.type || network.networkType),
+            dropdown_label: apiValue(cignaSelectedNetwork?.label),
             tier: apiValue(network.tier)
         },
         electronic_claims: apiValue(
@@ -2104,7 +2180,7 @@ function applyCoverageApi(baseData, coverage) {
         deductible_applicability: deductibleApplicabilityFromCoverage(coverage)
     };
     baseData.coinsurance = dedupeCoinsuranceRecords((coverage.planBenefits?.services || []).flatMap(service => {
-        const records = service.benefits?.coinsurance?.accumulations;
+        const records = recordsForSelectedNetwork(service.benefits?.coinsurance?.accumulations);
         if (!records?.length) return [];
         return records.map(record => ({
             network: apiValue(record?.networkName || network.networkName),
@@ -2115,28 +2191,36 @@ function applyCoverageApi(baseData, coverage) {
             details: { ...record, notes: uniqueStrings(record.notes), coveredServices: uniqueStrings(record.coveredServices) }
         }));
     }));
-    baseData.frequencies = dedupeRecords((coverage.frequencyAgeLimitation?.procedural || []).map(item => {
-        const limitation = preferredRecord(item.limitations);
-        return {
+    baseData.frequencies = dedupeRecords((coverage.frequencyAgeLimitation?.procedural || []).flatMap(item => {
+        const networkLimitations = recordsForSelectedNetwork(item.limitations);
+        if (!networkLimitations.length) return [];
+        const limitation = preferredRecord(networkLimitations);
+        return [{
             network: apiValue(limitation?.networkName || network.networkName),
             network_id: apiValue(limitation?.networkId),
             procedure_code: apiValue(item.procedureCode),
             procedure: apiValue(item.procedureDesc),
             age_limitation: apiValue(limitation?.ageSummary),
             limit: apiValue(limitation?.summary),
-            limitation_records: dedupeLimitationRecords(item.limitations),
+            limitation_records: dedupeLimitationRecords(networkLimitations),
             waiting_period: item.waitingPeriod || item.WaitingPeriod || null
-        };
-    }), record => [record.procedure_code, buildLimitationRecordKey(record.limitation_records?.[0] || {}),
+        }];
+        }), record => [record.procedure_code, buildLimitationRecordKey(record.limitation_records?.[0] || {}),
         normalizeComparableScalar(record.limit), normalizeComparableScalar(record.age_limitation),
         normalizeComparableScalar(record.waiting_period)].join("\u001f"));
-    const ageRecords = coverage.frequencyAgeLimitation?.ageLimitations || [];
+    const allAgeRecords = coverage.frequencyAgeLimitation?.ageLimitations || [];
+    const ageRecords = cignaSelectedNetwork
+        ? allAgeRecords.filter(r => ["student", "dependent", "ortho"].some(k => r?.[k] && inSelectedNetwork(r[k])))
+        : allAgeRecords;
     const age = preferredRecord(ageRecords);
     const meaningfulAgeRecord = value => value && typeof value === "object" && Object.values(value).some(item => item !== null && item !== undefined && item !== "");
-    baseData.age_limits = dedupeRecords(ageRecords.flatMap(record => [
-        meaningfulAgeRecord(record?.student) ? { network: apiValue(record.student.networkName), network_id: apiValue(record.student.networkId), type: "Student Age Limitation **", age: apiValue(record.student.limit), ends: apiValue(record.coverageEnds?.limit), details: { ...record.student } } : null,
-        meaningfulAgeRecord(record?.dependent) ? { network: apiValue(record.dependent.networkName), network_id: apiValue(record.dependent.networkId), type: "Dependent Age Limitation **", age: apiValue(record.dependent.limit), ends: apiValue(record.coverageEnds?.limit), details: { ...record.dependent } } : null,
-        meaningfulAgeRecord(record?.ortho) ? { network: apiValue(record.ortho.networkName), network_id: apiValue(record.ortho.networkId), type: "Ortho Age Limitation **", age: apiValue(record.ortho.limit), ends: apiValue(record.orthoCoverageEnds?.limit), details: { ...record.ortho } } : null
+        baseData.age_limits = dedupeRecords(ageRecords.flatMap(record => [
+        meaningfulAgeRecord(record?.student) && inSelectedNetwork(record.student)
+            ? { network: apiValue(record.student.networkName), network_id: apiValue(record.student.networkId), type: "Student Age Limitation **", age: apiValue(record.student.limit), ends: apiValue(record.coverageEnds?.limit), details: { ...record.student } } : null,
+        meaningfulAgeRecord(record?.dependent) && inSelectedNetwork(record.dependent)
+            ? { network: apiValue(record.dependent.networkName), network_id: apiValue(record.dependent.networkId), type: "Dependent Age Limitation **", age: apiValue(record.dependent.limit), ends: apiValue(record.coverageEnds?.limit), details: { ...record.dependent } } : null,
+        meaningfulAgeRecord(record?.ortho) && inSelectedNetwork(record.ortho)
+            ? { network: apiValue(record.ortho.networkName), network_id: apiValue(record.ortho.networkId), type: "Ortho Age Limitation **", age: apiValue(record.ortho.limit), ends: apiValue(record.orthoCoverageEnds?.limit), details: { ...record.ortho } } : null
     ]).filter(Boolean), record => [record.type, record.age, record.ends, buildLimitationRecordKey(record.details)].map(normalizeComparableScalar).join("\u001f"));
     baseData.notes = {
         ...baseData.notes,
@@ -2420,11 +2504,14 @@ async function runCignaCrawl(run) {
     setStatus('Scraping page data…');
     const fullData = scrapeCignaFull();
     if (!fullData) return null;
-    console.log('Cigna: Page data scraped ✓');
 
     setStatus('Loading coverage and financial details from Cigna API...');
+    cignaSelectedNetwork = null;
     const coverage = await cignaMessage("coverage");
     assertPatientConsistency(fullData, coverage);
+    cignaSelectedNetwork = resolveSelectedCignaNetwork(coverage);
+    fullData.selected_network = { ...cignaSelectedNetwork };
+    setStatus(`Network: <b>${cignaSelectedNetwork.name}</b> — loading coverage…`);
     applyCoverageApi(fullData, coverage);
     if (run.cancelled || activeCignaRun !== run) throw new Error("Cigna crawl superseded by a newer run.");
     await crawlProcedureCodes(fullData, run);
@@ -2496,6 +2583,110 @@ async function clearCignaAfterDownload() {
     });
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// OUTPUT COMPACTION — runs once, right before download/storage
+// ══════════════════════════════════════════════════════════════════════════
+const CIGNA_OUTPUT_MODE = "compact";   // "full" = old verbose JSON, for debugging
+
+function isBlank(value) {
+    return value === null || value === undefined || value === "" || value === "N/A" ||
+        (Array.isArray(value) && value.length === 0);
+}
+function stripBlank(obj) {
+    return Object.fromEntries(Object.entries(obj).filter(([, value]) => !isBlank(value)));
+}
+
+function compactCignaOutput(data) {
+    if (CIGNA_OUTPUT_MODE === "full") return data;
+    const planNotes = new Set(data.notes?.plan_notes || []);
+    const takeNotes = notes => (notes || []).forEach(note => planNotes.add(note));
+
+    const accumulation = record => {
+        takeNotes(record.notes);
+        return stripBlank({
+            desc: record.desc, amount: record.amount, met: record.met, remaining: record.remaining,
+            covers: record.covers, planPeriodCode: record.planPeriodCode,
+            classCode: record.classCode, classDesc: record.classDesc,
+            networkName: record.networkName, networkId: record.networkId
+        });
+    };
+
+    const procedure = item => {
+        const details = item.api_details || {};
+        const covered = item.covered === true;
+        [details.maximum, details.deductible, details.coinsurance].forEach(part => takeNotes(part?.notes));
+        return {
+            procedure_code: item.procedure_code,
+            description: item.description,
+            covered,
+            benefit_status: item.benefit_status,
+            // Not-covered codes: hide the catch-all max / 0% Cigna attaches (portal shows none)
+            coinsurance_member_pct: covered ? item.coinsurance_member_pct : "N/A",
+            maximum_remaining: covered ? item.maximum_remaining : "N/A",
+            maximum_total: covered ? item.maximum_total : "N/A",
+            frequency_used: item.frequency_used,
+            frequency_limit: item.frequency_limit,
+            history_date: item.history_date,
+            quadrant: item.quadrant,
+            alternate_benefit: item.alternate_benefit,
+            api_details: {
+                history_dates: details.history_dates || [],   // always present — backend reads it
+                ...stripBlank({
+                    class_code: details.class_code,
+                    class_description: details.class_description,
+                    tooth: details.tooth,
+                    arch: details.arch,
+                    maximum_type: covered ? details.maximum?.description : undefined,
+                    deductible_applies: covered && details.deductible_records ? details.deductible_records.length > 0 : undefined,
+                    age_limit: details.limitation?.age_summary,
+                    procedure_group: details.procedure_group,
+                    procedure_group_description: details.procedure_group_description,
+                    notes: details.notes,
+                    waiting_period: details.waiting_period,
+                    service_history: details.service_history,
+                    coverage_scope: details.coverage_scope && details.coverage_scope !== "context_independent" ? details.coverage_scope : undefined,
+                    varies_by_context: details.varies_by_context || undefined,
+                    lookup_error: details.lookup_error
+                })
+            }
+        };
+    };
+
+    const meta = data.procedures?.api_meta || {};
+    const output = {
+        ...data,
+        financials: {
+            maximum_records: (data.financials?.maximum_records || []).map(accumulation),
+            deductible_records: (data.financials?.deductible_records || []).map(accumulation),
+            deductible_applicability: data.financials?.deductible_applicability
+        },
+        coinsurance: (data.coinsurance || []).map(row => {
+            takeNotes(row.details?.notes);
+            return { category: row.category, class_code: row.class_code, patient_pays: row.patient_pays, network: row.network, network_id: row.network_id };
+        }),
+        frequencies: (data.frequencies || []).map(row => stripBlank({
+            procedure_code: row.procedure_code, procedure: row.procedure, limit: row.limit,
+            age_limitation: row.age_limitation, waiting_period: row.waiting_period,
+            network: row.network, network_id: row.network_id
+        })),
+        age_limits: (data.age_limits || []).map(row => ({
+            type: row.type, age: row.age, ends: row.ends, network: row.network, network_id: row.network_id
+        })),
+        procedures: {
+            codes_searched: data.procedures?.codes_searched,
+            count: data.procedures?.count,
+            results: (data.procedures?.results || []).map(procedure),
+            api_meta: stripBlank({
+                failures: meta.failures && Object.keys(meta.failures).length ? meta.failures : undefined,
+                unresolved_context_codes: meta.context_resolution?.unresolved_codes,
+                duration_ms: meta.request_stats?.duration_ms
+            })
+        }
+    };
+    output.notes = { ...data.notes, plan_notes: [...planNotes] };
+    return output;
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.command === "START_CRAWL") {
         console.log("Cigna: START_CRAWL received");
@@ -2519,12 +2710,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
             validateProcedureResultIntegrity(fullData.procedures.results);
             fullData.data_quality = "full_api";
-            autoDownloadJSON(fullData);
+            const output = compactCignaOutput(fullData);
+            autoDownloadJSON(output);
 
             chrome.storage.local.get("audit_context", res => {
                 const ctx = res.audit_context || {};
                 validateProcedureResultIntegrity(fullData.procedures.results);
-                ctx.cigna_data = fullData;
+                ctx.cigna_data = output;
                 chrome.storage.local.set({ audit_context: ctx }, async () => {
                     const excl = fullData.procedures.age_gate.excluded_codes || [];
                     await clearCignaAfterDownload();
