@@ -8,13 +8,16 @@ const STORAGE_KEYS = {
 };
 
 const PROCEDURE_CODES = [
-    "D0120", "D0180", "D0140", "D0150", "D0274", "D0210", "D0330",
-    "D0220", "D0364", "D0431", "D1110", "D1120", "D1206", "D1351",
-    "D1510", "D2391", "D2740", "D2950", "D2962", "D6750", "D5110",
-    "D9110", "D9222", "D9230", "D9243", "D9310", "D9944", "D4341",
-    "D4355", "D4346", "D4910", "D4381", "D4260", "D4249", "D3310",
-    "D3330", "D7140", "D7210", "D7240", "D7953", "D6010", "D6056"
+    "D0180", "D0120", "D0140", "D0150", "D0210", "D0220", "D0230", "D0240", "D0274", "D0330",
+    "D1510", "D1110", "D1120", "D1206", "D1351", "D2140", "D2331", "D2620", "D2740", "D2950",
+    "D2991", "D3347", "D3310", "D3330", "D4260", "D4341", "D4355", "D4381", "D4910", "D5860",
+    "D5110", "D5740", "D5982", "D6194", "D6010", "D6056", "D6065", "D6245", "D7259", "D7140",
+    "D7240", "D8010", "D8080", "D8090", "D9430", "D9110", "D9222", "D9239", "D9310", "D9944"
 ];
+
+// Used only when the procedure-code lookup explicitly reports that a CDT is not
+// covered. The lookup response remains the authority for coverage status.
+
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const clean = str => (str || "").replace(/[\n\r\t]/g, " ").replace(/\s+/g, " ").trim();
@@ -117,11 +120,65 @@ function collectPatient() {
     };
 }
 
+// NEW HELPER: fixes the bug where collectPlan() looked up the Eligibility row by *Subscriber*
+// Name (e.g. "CHARLES RAPOZA"), but the Eligibility table row lists the covered *Member*
+// (e.g. "DONNA RAPOZA", a spouse/dependent) -- so that lookup silently failed and coverage
+// dates were always "N/A". This instead finds the Eligibility table by its "Coverage Dates"
+// header text (not the fixed 'table.Eligibility' class) and reads the dates directly.
+function getEligibilityCoverageDates() {
+    const memberName = getLabelValue('.SubscriberProfile', 'Member Name');
+    const tables = Array.from(document.querySelectorAll('table'));
+
+    for (const table of tables) {
+        const headerCells = Array.from(table.querySelectorAll('thead th, thead td'));
+        if (headerCells.length === 0) continue;
+        const headerLabels = headerCells.map(c => clean(c.textContent).toLowerCase());
+        const dateColIdx = headerLabels.findIndex(t => t.includes('coverage dates'));
+        if (dateColIdx === -1) continue;
+
+        const rows = Array.from(table.querySelectorAll('tbody tr'));
+        if (rows.length === 0) continue;
+
+        // Prefer the row matching this specific member (handles family plans with multiple
+        // dependents listed in the same table); otherwise fall back to the first data row.
+        // Per the task, we deliberately do NOT match by subscriber name here.
+        let targetRow = null;
+        if (memberName && memberName !== 'N/A') {
+            targetRow = rows.find(r => Array.from(r.querySelectorAll('td'))
+                .some(c => clean(c.textContent).toUpperCase() === memberName.toUpperCase()));
+        }
+        if (!targetRow) targetRow = rows[0];
+
+        const cells = targetRow.querySelectorAll('td');
+        if (cells[dateColIdx]) return clean(cells[dateColIdx].textContent);
+    }
+
+    // Legacy fallback in case the header-text lookup above ever fails
+    const legacyTable = document.querySelector('table.Eligibility');
+    if (legacyTable) {
+        const row = legacyTable.querySelector('tbody tr');
+        if (row) {
+            const cells = row.querySelectorAll('td');
+            if (cells.length) return clean(cells[cells.length - 1].textContent);
+        }
+    }
+
+    return "N/A";
+}
+
 function collectPlan() {
-    const dates = getEligibilityRow(getLabelValue('.SubscriberProfile', 'Subscriber Name'))?.dates || "N/A";
+    // MODIFIED: was `getEligibilityRow(getLabelValue('.SubscriberProfile', 'Subscriber Name'))?.dates`
+    // -- see getEligibilityCoverageDates() above for why that always returned "N/A".
+    const dates = getEligibilityCoverageDates();
     let start = "N/A", end = "N/A";
-    if (dates.includes('-')) {
-        [start, end] = dates.split('-').map(clean);
+    if (dates && dates !== "N/A") {
+        if (dates.includes('-')) {
+            [start, end] = dates.split('-').map(clean);
+        } else {
+            // Single date with no range separator (e.g. termination-only entries) -- keep it
+            // as the effective date rather than discarding it.
+            start = dates;
+        }
     }
 
     return {
@@ -140,54 +197,86 @@ function collectFinancials() {
         maximums: [],
         deductibles: []
     };
+
+    // DDRI renders deductible rows in the same main table as maximums and may
+    // repeat a simplified deductible total in the OON table. The main table is
+    // authoritative because it contains total + used + remaining.
     const maximumKeys = new Set();
-    const deductibleKeys = new Set();
+    const deductibleByCategory = new Map();
+
+    const categoryKey = value => clean(value).replace(/:\s*$/, '').toLowerCase();
+    const isDeductible = value => /\bdeductible\b/i.test(clean(value));
+    const isMissing = value => !value || value === "N/A";
+
+    const keepMoreCompleteDeductible = (entry) => {
+        const key = categoryKey(entry.category);
+        if (!key) return;
+
+        const existing = deductibleByCategory.get(key);
+        if (!existing) {
+            deductibleByCategory.set(key, entry);
+            return;
+        }
+
+        // Never replace a real main-table value with the OON fallback's N/A.
+        for (const field of ["total", "used", "remaining"]) {
+            if (isMissing(existing[field]) && !isMissing(entry[field])) {
+                existing[field] = entry[field];
+            }
+        }
+    };
 
     const maxRows = document.querySelectorAll('tr.DataTableRow, tr.DataTableOddRow');
 
     for (const row of maxRows) {
         const catCell = row.querySelector('.MaximumsFreqCategory');
-        if (catCell && row.querySelector('.MaximumsAmount')) {
-            const category = clean(catCell.textContent);
-            const total = clean(row.querySelector('.MaximumsAmount')?.textContent);
-            const used = clean(row.querySelector('.MaximumsAmountUsed')?.textContent);
-            const remaining = clean(row.querySelector('.MaximumsAmountAvailable')?.textContent);
-            
-            if (category) {
-                const entry = { category, total: total || "N/A", used: used || "N/A", remaining: remaining || "N/A" };
-                const key = [entry.category, entry.total, entry.used, entry.remaining]
-                    .map(value => clean(value).toLowerCase())
-                    .join('\u0000');
-                if (!maximumKeys.has(key)) {
-                    maximumKeys.add(key);
-                    financials.maximums.push(entry);
-                }
-            }
+        if (!catCell || !row.querySelector('.MaximumsAmount')) continue;
+
+        const category = clean(catCell.textContent).replace(/:\s*$/, '');
+        if (!category) continue;
+
+        const entry = {
+            category,
+            total: clean(row.querySelector('.MaximumsAmount')?.textContent) || "N/A",
+            used: clean(row.querySelector('.MaximumsAmountUsed')?.textContent) || "N/A",
+            remaining: clean(row.querySelector('.MaximumsAmountAvailable')?.textContent) || "N/A"
+        };
+
+        if (isDeductible(category)) {
+            keepMoreCompleteDeductible(entry);
+            continue;
+        }
+
+        const key = [entry.category, entry.total, entry.used, entry.remaining]
+            .map(value => clean(value).toLowerCase())
+            .join('\u0000');
+        if (!maximumKeys.has(key)) {
+            maximumKeys.add(key);
+            financials.maximums.push(entry);
         }
     }
 
+    // OON deductible values are fallback-only. If the main table already gave
+    // us Individual/Family deductible values, do not create a duplicate row.
     const oonTables = document.querySelectorAll('.OONTbl table');
     for (const table of oonTables) {
-        const rows = table.querySelectorAll('tr');
-        for (const row of rows) {
+        for (const row of table.querySelectorAll('tr')) {
             const cells = row.querySelectorAll('td');
-            if (cells.length >= 2) {
-                const category = clean(cells[0].textContent).replace(/:\s*$/, '');
-                const amount = clean(cells[1].textContent);
-                if (category) {
-                    const entry = { category, total: amount || "N/A", used: "N/A", remaining: "N/A" };
-                    const key = [entry.category, entry.total, entry.used, entry.remaining]
-                        .map(value => clean(value).toLowerCase())
-                        .join('\u0000');
-                    if (!deductibleKeys.has(key)) {
-                        deductibleKeys.add(key);
-                        financials.deductibles.push(entry);
-                    }
-                }
-            }
+            if (cells.length < 2) continue;
+
+            const category = clean(cells[0].textContent).replace(/:\s*$/, '');
+            if (!category || !isDeductible(category)) continue;
+
+            keepMoreCompleteDeductible({
+                category,
+                total: clean(cells[1].textContent) || "N/A",
+                used: "N/A",
+                remaining: "N/A"
+            });
         }
     }
 
+    financials.deductibles = Array.from(deductibleByCategory.values());
     return financials;
 }
 
@@ -213,51 +302,244 @@ function collectProvisions() {
     const benefitDiv = document.getElementById('benefits');
     if (!benefitDiv) return provisions;
 
-    const blocks = Array.from(benefitDiv.querySelectorAll('p, div.redBackgroundTextAlignedLeft, .Disclaimer'));
+    // MODIFIED: broadened from 'p, div.redBackgroundTextAlignedLeft, .Disclaimer' to a generic
+    // set of text-bearing block elements (plus '.Disclaimer' on any tag, kept for back-compat)
+    // so this keeps working even if DDRI wraps these notices in a differently-named class.
+    const blocks = Array.from(benefitDiv.querySelectorAll('p, div, li, td, .Disclaimer'));
+    const seen = new Set(); // avoid duplicate entries when a parent/child both match identical cleaned text
     for (const block of blocks) {
         const text = clean(block.textContent);
+        if (!text || seen.has(text)) continue;
+
         if (text.includes("missing tooth clause")) {
-            provisions.push({ rule: "Missing Tooth Clause", value: text });
-        } else if (text.includes("Dependent children are covered")) {
+            seen.add(text);
+            provisions.push({ rule: "Missing Tooth Clause", value: getMissingToothClauseValue(text) });
+        } else if (text.includes("Dependent children")) {
+            // MODIFIED: was an exact-sentence match ("Dependent children are covered"). Now
+            // matches ANY paragraph mentioning "Dependent children", since other DDRI plans
+            // phrase this notice differently.
+            seen.add(text);
             provisions.push({ rule: "Dependent Age Limit", value: text });
         } else if (block.classList.contains('Disclaimer')) {
+            seen.add(text);
             provisions.push({ rule: "Disclaimer", value: text });
         }
     }
     return provisions;
 }
 
+// DDRI describes this benefit in prose. Return the answer required by the audit instead of
+// copying that prose into the JSON. For example, "does not include a missing tooth clause"
+// becomes "No"; an affirmative clause becomes "Yes".
+function getMissingToothClauseValue(text) {
+    const normalized = normalizeText(text);
+    if (!normalized.includes('missing tooth clause')) return 'N/A';
+    if (/\b(no|not|does not|doesnt|without|exclude|excluded)\b/.test(normalized)) return 'No';
+    if (/\b(yes|include|included|apply|applies|has|have)\b/.test(normalized)) return 'Yes';
+    return 'N/A';
+}
+
+// Return the missing-tooth-clause answer only; do not emit the complete notice.
+function collectMissingToothClause() {
+    const benefitDiv = document.getElementById('benefits') || document;
+    const elements = Array.from(benefitDiv.querySelectorAll('p, div, li, td, .Disclaimer'));
+    for (const element of elements) {
+        const value = getMissingToothClauseValue(clean(element.textContent));
+        if (value !== 'N/A') return value;
+    }
+    return 'N/A';
+}
+
+// NEW HELPER: fallback for `dependent_age_limit` in case the notice ever sits outside
+// div#benefits on a differently structured DDRI page. collectProvisions() (searched first,
+// see startCrawl()) already covers the normal case.
+function collectDependentAgeLimit() {
+    const candidates = Array.from(document.querySelectorAll('p, div, li, td'));
+    for (const el of candidates) {
+        const text = clean(el.textContent);
+        if (text.includes("Dependent children")) return text;
+    }
+    return "N/A";
+}
+
+// NEW HELPER: pulls an age-related clause (e.g. "under age 19") out of a Frequency/Limitations
+// string. The new benefit table (see collectBenefitCategories()) doesn't have a dedicated "age
+// limit" column — age restrictions are expressed inline in that text — so this is used by
+// findLimits() inside collectProcedures() to populate each procedure's age_limit.
+// Benefit matching uses descriptions, never CDT codes, so new codes can inherit the
+// appropriate plan limitation without a code-specific release.
+const BENEFIT_MATCH_DEBUG = false;
+
+function normalizeText(text) {
+    return clean(text).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[–—]/g, '-').replace(/\bx[ -]?rays?\b|\bradiographs?\b|\bfilms?\b/g, ' xray ')
+        .replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function tokenize(text) {
+    return normalizeText(text).split(/\s+/).filter(Boolean).map(token =>
+        token.length > 3 && token.endsWith('ies') ? `${token.slice(0, -3)}y` :
+        (token.length > 3 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token));
+}
+
+function removeStopWords(tokens) {
+    const words = new Set(['a', 'an', 'and', 'or', 'the', 'of', 'to', 'for', 'with', 'on', 'in', 'by', 'per',
+        'procedure', 'service', 'treatment', 'dental', 'teeth', 'tissue', 'existing', 'other', 'related',
+        'following', 'active', 'natural', 'permanent', 'adult', 'child', 'children']);
+    return tokens.filter(token => !words.has(token));
+}
+
+// Canonical clinical concepts make equivalent wording comparable while retaining the original
+// benefit row as the source of all returned values.
+function expandSynonyms(tokens) {
+    const aliases = {
+        evaluation: 'exam', examination: 'exam', exam: 'exam', oralexam: 'exam',
+        prophylaxi: 'cleaning', prophy: 'cleaning', cleaning: 'cleaning', fluorid: 'fluoride', fluoride: 'fluoride',
+        composite: 'filling', resin: 'filling', amalgam: 'filling', filling: 'filling', restoration: 'filling',
+        denture: 'denture', partial: 'denture', complete: 'denture', prosthesi: 'denture',
+        implant: 'implantprosthetic', abutment: 'implantprosthetic', pontic: 'implantprosthetic', bridge: 'implantprosthetic',
+        scaling: 'periodontaltherapy', planing: 'periodontaltherapy', srp: 'periodontaltherapy',
+        endodontic: 'rootcanal', endo: 'rootcanal', canal: 'rootcanal', orthodontic: 'orthodontic', brace: 'orthodontic',
+        extraction: 'extraction', extract: 'extraction', surgery: 'extraction', anesthesia: 'sedation',
+        anaesthesia: 'sedation', sedation: 'sedation', intravenous: 'sedation', reline: 'reline', rebas: 'reline',
+        repair: 'repair', gingivectomy: 'gingivectomy', osseou: 'osseous', graft: 'graft', lengthening: 'lengthening',
+        maintainer: 'maintainer', maintenance: 'maintenance', palliative: 'palliative'
+    };
+    return tokens.map(token => {
+        // Periapical and occlusal images are represented by the generic single-image benefit row.
+        if (token === 'periapical' || token === 'occlusal' || token === 'single') return 'singleimage';
+        return aliases[token] || token;
+    });
+}
+
+function getMatchTokens(text) {
+    // Resolve multi-word concepts before tokenization, making word order and punctuation harmless.
+    const phrases = normalizeText(text)
+        .replace(/oral\s+(evaluation|examination|exam)/g, ' oralexam ')
+        .replace(/root\s+canal/g, ' rootcanal ').replace(/root\s+planing/g, ' periodontaltherapy ')
+        .replace(/complete\s+(series|set)\s+(of\s+)?(xray|images?)/g, ' fullxrayseries ')
+        .replace(/panoramic\s+(xray|image)/g, ' panoramic fullxrayseries ')
+        .replace(/bitewing\s+(xray|image)/g, ' bitewing ')
+        .replace(/implant\s+(crown|bridge)/g, ' implantprosthetic ');
+    return expandSynonyms(removeStopWords(tokenize(phrases)));
+}
+
+function calculateSimilarity(procedureText, benefitText) {
+    const procedureTokens = [...new Set(getMatchTokens(procedureText))];
+    const benefitTokens = [...new Set(getMatchTokens(benefitText))];
+    if (!procedureTokens.length || !benefitTokens.length) return 0;
+    const benefitSet = new Set(benefitTokens);
+    const common = procedureTokens.filter(token => benefitSet.has(token));
+    if (!common.length) return 0;
+    const procedureCoverage = common.length / procedureTokens.length;
+    const benefitCoverage = common.length / benefitTokens.length;
+    const jaccard = common.length / new Set([...procedureTokens, ...benefitTokens]).size;
+    return Number((0.65 * procedureCoverage + 0.25 * benefitCoverage + 0.10 * jaccard).toFixed(4));
+}
+
+// Return only an age restriction, not the entire frequency/limitations sentence.
+function extractAgeLimit(text) {
+    if (!text) return 'N/A';
+    const source = clean(text);
+    const number = '(?:\\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|twenty[ -]one|twenty[ -]two|twenty[ -]three|twenty[ -]four|twenty[ -]five|twenty[ -]six)';
+    const patterns = [
+        new RegExp(`\\b(?:dependent\\s+)?children\\s+(?:under|through|to)\\s+(?:the\\s+)?(?:age\\s+(?:of\\s+)?)?${number}\\b`, 'i'),
+        new RegExp(`\\bstudents?\\s+(?:through|to|under)\\s+(?:the\\s+)?(?:age\\s+(?:of\\s+)?)?${number}\\b`, 'i'),
+        new RegExp(`\\b(?:under|younger\\s+than)\\s+(?:the\\s+)?(?:age\\s+(?:of\\s+)?)?${number}\\b`, 'i'),
+        new RegExp(`\\b(?:through|to)\\s+age\\s+(?:of\\s+)?${number}\\b`, 'i'),
+        new RegExp(`\\bage\\s+(?:of\\s+)?${number}\\b`, 'i'), /\bdependent children\b/i
+    ];
+    const match = patterns.map(pattern => source.match(pattern)).find(Boolean);
+    return match ? clean(match[0]) : 'N/A';
+}
+
+function findBestBenefitMatch(description, benefitCategories, threshold = 0.45) {
+    let best = null;
+    for (const category of benefitCategories) {
+        for (const service of category.services || []) {
+            const similarity = calculateSimilarity(description, service.procedure);
+            if (!best || similarity > best.similarity) best = { service, category: category.category, similarity };
+        }
+    }
+    return best && best.similarity >= threshold ? best : null;
+}
+
+// NEW HELPER (replaces the old `benefitDiv.querySelector('table')`, which grabbed whichever
+// table happened to appear FIRST inside #benefits). #benefits actually contains 3 tables in
+// order: a small Deductibles table, the hidden Procedure Code Look-up form table, and finally
+// the real benefit table -- so the old code was always scraping the wrong (Deductibles) table.
+// This instead finds the table by its header text ("Procedure" + "Frequency"/"Limitations"),
+// which is stable even if DDRI changes class names or table order.
+function findBenefitTable() {
+    const container = document.getElementById('benefits') || document;
+    const tables = Array.from(container.querySelectorAll('table'));
+
+    // Primary: match on <thead> header text
+    for (const table of tables) {
+        const headerCells = Array.from(table.querySelectorAll('thead th, thead td'));
+        if (headerCells.length === 0) continue;
+        const headerText = headerCells.map(c => clean(c.textContent).toLowerCase()).join(' | ');
+        if (headerText.includes('procedure') && (headerText.includes('frequency') || headerText.includes('limitation'))) {
+            return table;
+        }
+    }
+
+    // Fallback: some markup variants may not use a <thead> tag at all -- check each table's
+    // first row instead.
+    for (const table of tables) {
+        const firstRow = table.querySelector('tr');
+        if (!firstRow) continue;
+        const text = clean(firstRow.textContent).toLowerCase();
+        if (text.includes('procedure') && (text.includes('frequency') || text.includes('limitation'))) {
+            return table;
+        }
+    }
+
+    return null;
+}
+
 function collectBenefitCategories() {
     const categories = [];
-    const benefitDiv = document.getElementById('benefits');
-    if (!benefitDiv) return categories;
-
-    const table = benefitDiv.querySelector('table');
+    const table = findBenefitTable();
     if (!table) return categories;
 
+    let rows = Array.from(table.querySelectorAll('tbody tr'));
+    if (rows.length === 0) rows = Array.from(table.querySelectorAll('tr'));
+
     let currentCat = null;
-    const rows = Array.from(table.querySelectorAll('tr'));
-    
     for (const row of rows) {
-        if (row.classList.contains('TRhBEN')) {
-            currentCat = {
-                category: clean(row.textContent),
-                services: []
-            };
-            categories.push(currentCat);
-        } else if (row.classList.contains('DataTableRow') || row.classList.contains('DataTableOddRow')) {
-            if (!currentCat) continue;
-            const cells = row.querySelectorAll('td');
-            if (cells.length >= 5) {
-                currentCat.services.push({
-                    name: clean(cells[1].textContent),
-                    coverage: clean(cells[2].textContent).replace('Deductible Applies', '').trim(),
-                    deductible_applies: cells[2].innerHTML.includes('ICON_DeductibleSM.png') ? "Yes" : "No",
-                    age_limit: clean(cells[3].textContent),
-                    frequency: clean(cells[4].textContent)
-                });
+        const cells = Array.from(row.querySelectorAll('td'));
+        if (cells.length === 0) continue; // header row (th only) or an empty spacer row
+
+        // MODIFIED: section header rows (DIAGNOSTIC, PREVENTIVE, ...) render as a single cell
+        // spanning the full table width via colspan. This structural signal replaces the old
+        // hardcoded '.TRhBEN' class check, so it survives markup/class changes.
+        const spanningCell = cells.find(c => parseInt(c.getAttribute('colspan') || '1', 10) > 1);
+        if (cells.length === 1 || spanningCell) {
+            const text = clean((spanningCell || cells[0]).textContent);
+            if (text) {
+                currentCat = { category: text, services: [] };
+                categories.push(currentCat);
             }
+            continue;
         }
+
+        // MODIFIED: data rows are [indicator icon (optional), procedure, covered at, waiting
+        // period, frequency/limitations]. Some rows have a leading icon-only cell (prior-auth /
+        // pre-treatment indicators) and some don't, so anchor from the END of the row (last 4
+        // cells) instead of a fixed index -- this replaces the old '.DataTableRow' class check.
+        if (!currentCat || cells.length < 4) continue;
+
+        const n = cells.length;
+        const procedure = clean(cells[n - 4].textContent);
+        if (!procedure) continue;
+
+        currentCat.services.push({
+            procedure: procedure,
+            covered_at: clean(cells[n - 3].textContent),
+            waiting_period: clean(cells[n - 2].textContent),
+            frequency_limitations: clean(cells[n - 1].textContent)
+        });
     }
     return categories;
 }
@@ -273,8 +555,39 @@ function getHiddenParams() {
 
 async function fetchProcedure(code, params) {
     const rawCode = code.replace(/^D/i, '');
-    let procData = null;
     const txt = el => (el?.textContent || '').replace(/[\n\r\t]/g, ' ').replace(/\s+/g, ' ').trim();
+    // Keep the procedure entry schema complete even when DDRI returns an empty table cell.
+    // Property order here is the order used in the generated audit JSON.
+    const valueOrNA = el => txt(el) || 'N/A';
+    const createStatusProcedure = (description, coverageStatus) => ({
+        procedure_code: code,
+        description,
+        coverage_status: coverageStatus,
+        coverage_percentage: "N/A",
+        deductible_applies: "N/A",
+        waiting_period: "N/A",
+        alternate_benefit: "N/A",
+        frequency: "N/A",
+        age_limit: "N/A",
+        history: []
+    });
+    const setStatus = (data, status) => Object.defineProperty(data, '_ddriStatus', {
+        value: status,
+        enumerable: false
+    });
+
+    // This is deliberately text-based rather than class-based: DDRI has changed the
+    // markup around this message, but its wording remains the reliable signal.
+    const isNotCoveredResponse = html => {
+        const text = normalizeText(new DOMParser().parseFromString(html || '', 'text/html').body?.textContent || html);
+        return text.includes('not a covered benefit') ||
+            text.includes('not covered benefit') ||
+            text.includes('not a covered benefit under this patient s contract') ||
+            text.includes('not covered under this patient s contract') ||
+            text.includes('not covered');
+    };
+
+    let procData;
     
     try {
         const response = await fetch('/BenefitsAndClaims/GetProcedureCode', {
@@ -286,35 +599,76 @@ async function fetchProcedure(code, params) {
             },
             body: `Code=${rawCode}`
         });
+        if (!response.ok) {
+            console.error(`[DDRI] ${code} - SCRAPE ERROR`, `Procedure lookup returned HTTP ${response.status}`);
+            return setStatus(createStatusProcedure("SCRAPE ERROR", "SCRAPE ERROR"), 'error');
+        }
+
         const html = await response.text();
+        if (isNotCoveredResponse(html)) {
+            console.debug(`[DDRI] ${code} - NOT COVERED`);
+            return setStatus(createStatusProcedure("N/A", "NOT COVERED"), 'not-covered');
+        }
+
         const parser = new DOMParser();
         const doc = parser.parseFromString(html, 'text/html');
         const table = doc.getElementById('ProcedureCodeSearchResult');
         
         if (table) {
             const rows = table.querySelectorAll('tr');
-            if (rows.length >= 2) {
-                const cells = rows[1].querySelectorAll('td');
-                if (cells.length >= 6) {
-                    procData = {
-                        procedure_code: code,
-                        description: txt(cells[1]),
-                        coverage_percentage: txt(cells[2]),
-                        deductible_applies: txt(cells[3]),
-                        waiting_period: txt(cells[4]),
-                        alternate_benefit: txt(cells[5]),
-                        frequency: "N/A",
-                        age_limit: "N/A",
-                        history: []
-                    };
+            const requestedCode = code.toUpperCase();
+            const headerLabels = new Set([
+                'covered at', 'deductible applies', 'waiting period',
+                'alternate benefit may apply', 'procedure', 'cdt code'
+            ]);
+            const isHeaderLabel = value => headerLabels.has(normalizeText(value));
+
+            // DDRI can render its header, explanatory, and data rows using the same TD
+            // markup. Identify the result by its actual CDT cell before reading positions.
+            const dataRow = Array.from(rows).find(row => {
+                const cells = row.querySelectorAll('td');
+                if (cells.length < 6 || clean(cells[0].textContent).toUpperCase() !== requestedCode) {
+                    return false;
                 }
+
+                // Never allow column labels from a header-like row into the audit JSON.
+                return Array.from(cells).slice(1, 6)
+                    .every(cell => !isHeaderLabel(clean(cell.textContent)));
+            });
+            if (dataRow) {
+                const cells = dataRow.querySelectorAll('td');
+                procData = {
+                    procedure_code: code,
+                    description: valueOrNA(cells[1]),
+                    coverage_status: "COVERED",
+                    coverage_percentage: valueOrNA(cells[2]),
+                    deductible_applies: valueOrNA(cells[3]),
+                    waiting_period: valueOrNA(cells[4]),
+                    alternate_benefit: valueOrNA(cells[5]),
+                    frequency: "N/A",
+                    age_limit: "N/A",
+                    history: []
+                };
             }
         }
     } catch (e) {
-        console.error(`Error fetching coverage for ${code}:`, e);
+        console.error(`[DDRI] ${code} - SCRAPE ERROR`, e);
+        return setStatus(createStatusProcedure("SCRAPE ERROR", "SCRAPE ERROR"), 'error');
     }
 
-    if (!procData) return null;
+    // If the portal returns a successful response but the requested CDT code is not
+    // present in the result, treat that as NOT COVERED rather than SCRAPE ERROR.
+    // Actual network/server failures above still remain SCRAPE ERROR.
+    if (!procData) {
+        console.debug(`[DDRI] ${code} - NOT COVERED`, 'Requested CDT code was not present in the portal response');
+        return setStatus(
+            createStatusProcedure("N/A", "NOT COVERED"),
+            'not-covered'
+        );
+    }
+
+    setStatus(procData, 'covered');
+    console.debug(`[DDRI] ${code} - COVERED`);
 
     try {
         const reqBody = `StartDate=7&ProcedureCode=${rawCode}&ToothNumber=&MemberId=${params.memberId}&GroupNumber=${params.groupNumber}&DivisionNumber=${params.divisionNumber}`;
@@ -341,8 +695,8 @@ async function fetchProcedure(code, params) {
                     if (svc_date && svc_date !== 'NA' && svc_date !== '' && svc_date !== '\u00a0') {
                         procData.history.push({
                             service_date: svc_date,
-                            tooth_number: txt(cells[3]),
-                            tooth_surface: txt(cells[4]),
+                            tooth_number: valueOrNA(cells[3]),
+                            tooth_surface: valueOrNA(cells[4]),
                             history_notes: "NA"
                         });
                     }
@@ -357,7 +711,7 @@ async function fetchProcedure(code, params) {
 }
 
 async function collectProcedures(requestedCodes = null) {
-    const results = [];
+    const resultsByCode = new Map();
     const params = getHiddenParams();
     
     if (!params.memberId) {
@@ -365,20 +719,11 @@ async function collectProcedures(requestedCodes = null) {
     }
 
     const BATCH_SIZE = 10;
-    const codes = requestedCodes || PROCEDURE_CODES;
+    // Preserve caller order while preventing accidental duplicate lookups/results. The normal
+    // audit always uses PROCEDURE_CODES, which contains the required 50 CDT codes.
+    const codes = [...new Set(requestedCodes || PROCEDURE_CODES)];
     
     const benefitCats = collectBenefitCategories();
-    const findLimits = (keywords) => {
-        for (const cat of benefitCats) {
-            for (const svc of cat.services) {
-                const s = svc.name.toLowerCase();
-                if (keywords.some(kw => s.includes(kw))) {
-                    return { freq: svc.frequency, age: svc.age_limit };
-                }
-            }
-        }
-        return { freq: "N/A", age: "N/A" };
-    };
 
     for (let i = 0; i < codes.length; i += BATCH_SIZE) {
         const batch = codes.slice(i, i + BATCH_SIZE);
@@ -389,33 +734,80 @@ async function collectProcedures(requestedCodes = null) {
         broadcastState("FETCHING PROCEDURES", "Fetching Procedures", `Batch ${batchNum} of ${totalBatches}`, pct);
         
         const batchPromises = batch.map(async (code) => {
-            const data = await fetchProcedure(code, params);
-            if (data) {
-                let limits = { freq: "N/A", age: "N/A" };
-                if (code === "D0120" || code === "D0150" || code === "D0180") limits = findLimits(['oral exam']);
-                else if (code === "D1110" || code === "D1120" || code === "D4910") limits = findLimits(['cleaning', 'periodontal maintenance']);
-                else if (code === "D1206") limits = findLimits(['fluoride']);
-                else if (code === "D1351") limits = findLimits(['sealant']);
-                else if (code === "D1510") limits = findLimits(['space maintainer']);
-                else if (code === "D2391" || code === "D2140") limits = findLimits(['amalgam', 'composite']);
-                else if (code === "D2740") limits = findLimits(['crowns over natural teeth']);
-                else if (code === "D8080" || code.startsWith("D8")) limits = findLimits(['orthodontic', 'braces']);
-                
-                data.frequency = limits.freq;
-                data.age_limit = limits.age;
+            try {
+                const data = await fetchProcedure(code, params);
+                if (data && data._ddriStatus === 'covered') {
+                // Every fetched description is compared with every benefit-table service. No CDT
+                // code or sample-plan-specific branching is used here.
+                const match = findBestBenefitMatch(data.description, benefitCats);
+                if (match) {
+                    data.frequency = match.service.frequency_limitations || 'N/A';
+                    data.age_limit = extractAgeLimit(match.service.frequency_limitations);
+
+                    // These values already exist in the procedure response. Keep that response
+                    // authoritative unless it is absent, then inherit the matched plan value.
+                    if (!data.waiting_period || data.waiting_period === 'N/A') {
+                        data.waiting_period = match.service.waiting_period || 'N/A';
+                    }
+                    if ((!data.coverage_percentage || data.coverage_percentage === 'N/A') && match.service.covered_at) {
+                        data.coverage_percentage = match.service.covered_at;
+                    }
+                    if (BENEFIT_MATCH_DEBUG) {
+                        console.debug('[DDRI] Benefit match', {
+                            procedure: data.description,
+                            matched: match.service.procedure,
+                            category: match.category,
+                            similarity: match.similarity,
+                            frequency: data.frequency
+                        });
+                    }
+                } else if (BENEFIT_MATCH_DEBUG) {
+                    console.debug('[DDRI] No benefit match', { procedure: data.description });
+                }
+                }
+                return data;
+            } catch (error) {
+                // A defensive final boundary: no unexpected matching/parsing exception may
+                // reject Promise.all and prevent the remaining CDT codes from being crawled.
+                console.error(`[DDRI] ${code} - SCRAPE ERROR`, error);
+                return {
+                    procedure_code: code,
+                    description: "SCRAPE ERROR",
+                    coverage_status: "SCRAPE ERROR",
+                    coverage_percentage: "N/A",
+                    deductible_applies: "N/A",
+                    waiting_period: "N/A",
+                    alternate_benefit: "N/A",
+                    frequency: "N/A",
+                    age_limit: "N/A",
+                    history: []
+                };
             }
-            return data;
         });
 
         const batchResults = await Promise.all(batchPromises);
-        batchResults.forEach(r => { if (r) results.push(r); });
+        batchResults.forEach(r => { if (r) resultsByCode.set(r.procedure_code, r); });
         
         if (i + BATCH_SIZE < codes.length) {
             await sleep(150);
         }
     }
     
-    return results;
+    // Keep exactly one record per requested code and return them in the request order even if
+    // concurrent batches complete out of order. The fallback protects the final JSON if an
+    // unexpected coding error occurs outside fetchProcedure's own error handling.
+    return codes.map(code => resultsByCode.get(code) || setStatus({
+        procedure_code: code,
+        description: "SCRAPE ERROR",
+        coverage_status: "SCRAPE ERROR",
+        coverage_percentage: "N/A",
+        deductible_applies: "N/A",
+        waiting_period: "N/A",
+        alternate_benefit: "N/A",
+        frequency: "N/A",
+        age_limit: "N/A",
+        history: []
+    }, 'error'));
 }
 
 function generateJSON(auditData) {
@@ -531,7 +923,15 @@ async function startCrawl() {
         
         logState("COLLECTING BENEFIT CATEGORIES");
         auditData.benefit_categories = collectBenefitCategories();
-        
+
+        // NEW: collectProvisions() was previously defined but never called, so its output
+        // never reached the final JSON. Wiring it in here to populate the two new top-level
+        // fields requested: missing_tooth_clause and dependent_age_limit.
+        logState("COLLECTING PROVISIONS");
+        auditData.missing_tooth_clause = collectMissingToothClause();
+        const provisions = collectProvisions();
+        auditData.dependent_age_limit = provisions.find(p => p.rule === "Dependent Age Limit")?.value || collectDependentAgeLimit();
+
         logState("FETCHING PROCEDURES");
         auditData.benefit_coverage = { procedures: await collectProcedures() };
         
@@ -579,8 +979,9 @@ async function startLightweightCrawl() {
         auditData.plan_details = collectPlan();
         auditData.financials = collectFinancials();
         
-        const requiredCodes = ["D0120", "D0150", "D1110", "D4910", "D4355", "D1206", "D1208", "D0274", "D0210"];
-        auditData.benefit_coverage = { procedures: await collectProcedures(requiredCodes) };
+        // Patient-note generation also performs the complete benefit crawl so every patient
+        // receives the same 50-code audit data before the selected note fields are extracted.
+        auditData.benefit_coverage = { procedures: await collectProcedures() };
         
         const patientNotes = generatePatientNotesJSON(auditData);
         
