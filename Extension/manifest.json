@@ -113,13 +113,6 @@
             "run_at": "document_idle"
         },
         {
-        },
-        {
-            "matches": ["https://www4.deltadentalwi.com/dentist/*"],
-            "js": ["content_DD_WI.js"],
-            "run_at": "document_idle"
-        },
-        {
             "matches": ["https://providers.dentaquest.com/*"],
             "js":["content_dentaquest.js"],
             "all_frames":true
@@ -137,9 +130,6 @@
             ],
             "run_at": "document_start",
             "world": "ISOLATED"
-            "js": ["content_dd_toolkit.js"],
-            "run_at": "document_start",
-            "world": "MAIN"
         }
     ],
     "browser_specific_settings": {
