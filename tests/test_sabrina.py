@@ -1531,6 +1531,18 @@ for prose, compact in [
 ]:
     check(f"delta frequency {compact or 'unstated'!r}", _dd_frequency(prose), compact)
 
+# Delta Dental INS (Anshunette Mccoy) states some limits over a "contract
+# period" — the plan's benefit year — which the sheet records as years.
+for prose, compact in [
+        ("Benefit is limited to two within a contract period", "2X1Year"),
+        ("Benefit is limited to once within a contract period", "1X1Year"),
+        ("Benefit is limited to four periapical films within a contract period", "4X1Year"),
+        ("Benefit is limited to once per tooth within a 3 contract period for "
+         "teeth without caries Limitations apply", "1X3Years"),
+        ("Benefit is limited to once within two contract periods", "1X2Years"),
+]:
+    check(f"delta frequency contract period {compact}", _dd_frequency(prose), compact)
+
 # The period belongs to the limit that states it. The labial-veneer note names
 # twelve months and five years in exclusions that describe other procedures
 # before stating the veneer's own limit.

@@ -60,10 +60,16 @@ _DD_COUNT_RE = re.compile(
 # "within two calendar years", "within a 24 month period", "within 3 calendar
 # years". The count may be a digit or a word, and may be absent — "within a
 # calendar year" is one year.
+#
+# Some programmes say "contract period" instead: "limited to two within a
+# contract period", "once per tooth within a 3 contract period". A contract
+# period is the plan's benefit year — the accumulation period printed on the
+# annual maximum — so it counts as a year, which is how the sheet records it
+# (2X1Year, 1X3Years).
 _DD_PERIOD_RE = re.compile(
     r'within\s+(?:a\s+|an\s+)?'
     r'(?:(one|two|three|four|five|six|seven|eight|nine|ten|\d+)[\s-]+)?'
-    r'(?:calendar\s+|consecutive\s+)?(year|month)s?',
+    r'(?:calendar\s+|consecutive\s+)?(year|month|contract\s+period)s?',
     re.IGNORECASE)
 
 
@@ -82,6 +88,7 @@ def _dd_frequency(limitation):
     "limited to once per quadrant within a 24 month period"  -> 1X24Months
     "limited to once per quadrant within two calendar years" -> 1X2Years
     "limited to one occlusal guard within 3 calendar years"  -> 1X3Years
+    "limited to two within a contract period"                -> 2X1Year
     "limited to once per lifetime"                           -> 1XLifetime
     "limited to once per date of service"                    -> 1X1Day
     "this procedure has no frequency limitation"             -> No Frequency
