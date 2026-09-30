@@ -1,13 +1,13 @@
 (() => {
     "use strict";
 
-    // MetLife auditor v1.30 — one ordinary isolated-world content script.
+    // MetLife auditor v1.31 — one ordinary isolated-world content script.
     // All MetLife logic lives in this file. No page-world bridge is required.
 
     // Protect against accidental duplicate isolated-world registration.
     if (globalThis.__IAP_METLIFE_ISOLATED_SCRIPT_LOADED__) return;
     globalThis.__IAP_METLIFE_ISOLATED_SCRIPT_LOADED__ = true;
-    console.log("[Audit] MetLife content script v1.30 loaded:", location.href);
+    console.log("[Audit] MetLife content script v1.31 loaded:", location.href);
 
     const clean = (s) => (s || "").trim().replace(/\s+/g, ' ');
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -190,13 +190,42 @@
         };
     }
 
-    function scrapeProviderInfo() {
-        const networkBadge = Array.from(document.querySelectorAll("*")).find(el =>
-            /^(in-network|out-of-network)$/i.test((el.innerText || "").trim())
-        );
+    // The selected provider's network status. The Benefit & Coverage tab states
+    // it twice — the sticker beside the provider dropdown and the badge above
+    // the procedure results — and both are read by their own selectors. The
+    // sticker's aria-label says "In-network" even for an out-of-network
+    // provider, so only its visible text is trusted.
+    //
+    // A plain "text is exactly In-Network" search is NOT safe: the category
+    // cards title their two columns "IN-NETWORK" / "OUT-OF-NETWORK", and the
+    // coverage table heads its columns the same way, so that search reported
+    // whichever heading came first as the provider's status.
+    function normalizeNetworkStatus(text) {
+        const t = clean(text).toLowerCase();
+        if (/^out[\s-]*of[\s-]*network$/.test(t)) return "Out-of-Network";
+        if (/^in[\s-]*network$/.test(t)) return "In-Network";
+        return "";
+    }
 
+    function scrapeProviderInfo() {
+        const stated = [
+            "#in-network-status-stickers .content",
+            ".table-network-status",
+        ].map(sel => normalizeNetworkStatus(document.querySelector(sel)?.textContent))
+         .find(Boolean);
+        if (stated) return { provider_network_status: stated };
+
+        // Fallback for a page without either badge: an exact-text element that
+        // is not a column heading or a category-card title.
+        const badge = Array.from(document.querySelectorAll("span,div,p")).find(el =>
+            !el.closest("th, thead, [id^='donut-chart-title']") &&
+            el.children.length === 0 &&
+            normalizeNetworkStatus(el.textContent) &&
+            // Headings are rendered in capitals; the status badge is not.
+            clean(el.textContent) !== clean(el.textContent).toUpperCase()
+        );
         return {
-            provider_network_status: networkBadge ? (networkBadge.innerText || "").trim() : "N/A"
+            provider_network_status: badge ? normalizeNetworkStatus(badge.textContent) : "N/A"
         };
     }
 
@@ -449,9 +478,27 @@
         return false;
     }
 
-    async function crawlPlanOverview() {
+    // The provider picked in the Benefit & Coverage dropdown, and the tab
+    // currently shown. Benefit Level / Patient Responsibility depend on the
+    // provider's network, so a crawl must run against the provider the user
+    // chose — and leaving that tab can reset the dropdown to its default.
+    function selectedProviderName() {
+        return clean(document.querySelector(".benefits__provider-list .pop-dropdown-trigger")?.textContent) || "N/A";
+    }
+
+    function isTabActive(label) {
+        return Array.from(document.querySelectorAll("[role='tab']")).some(tab =>
+            clean(tab.textContent) === label &&
+            (tab.getAttribute("aria-selected") === "true" || tab.classList.contains("active"))
+        );
+    }
+
+    // `reset` starts a fresh audit context (a new patient). When the Benefit &
+    // Coverage crawl has already run, its provider network status is kept: the
+    // Plan Overview tab does not show which provider is selected.
+    async function crawlPlanOverview(reset = true) {
         const tabEl = findByText("Maximums, Deductibles & Provisions");
-        if (tabEl) {
+        if (tabEl && !isTabActive("Maximums, Deductibles & Provisions")) {
             tabEl.click();
             await waitForText("Benefit Maximums", 5000);
         }
@@ -459,9 +506,17 @@
         const data = buildPlanOverviewPayload();
 
         return new Promise((resolve) => {
-            chrome.storage.local.set({ audit_context: { metlife_data: data } }, () => {
-                const got = Object.values(data.financials).some(f => Object.values(f).some(v => v !== "N/A"));
-                resolve({ status: got ? `[+] Plan Overview saved (${data.provisions.length} provisions).` : `[!] Saved but financials N/A — stay on Plan Overview and retry.` });
+            chrome.storage.local.get("audit_context", (res) => {
+                const ctx = reset ? {} : (res.audit_context || {});
+                const benefitStatus = ctx.benefit_coverage?.provider_network_status;
+                if (benefitStatus && benefitStatus !== "N/A") {
+                    data.provider_info = { ...data.provider_info, provider_network_status: benefitStatus };
+                }
+                ctx.metlife_data = data;
+                chrome.storage.local.set({ audit_context: ctx }, () => {
+                    const got = Object.values(data.financials).some(f => Object.values(f).some(v => v !== "N/A"));
+                    resolve({ status: got ? `[+] Plan Overview saved (${data.provisions.length} provisions).` : `[!] Saved but financials N/A — stay on Plan Overview and retry.` });
+                });
             });
         });
     }
@@ -471,7 +526,9 @@
     // LOW-LEVEL: run one batch of codes, click Search, scrape table
     // ══════════════════════════════════════════════════════════════════════════
 
-    async function runOneBatch(codes) {
+    // `expectedNetwork` is the selected provider's status; results showing a
+    // different network are a table left over from another provider.
+    async function runOneBatch(codes, expectedNetwork = "") {
         let codeInput = document.querySelector("input[aria-label='Procedure Code(s)']") ||
             document.querySelector("input[placeholder*='rocedure']") ||
             document.querySelector("input[placeholder*='ode']") ||
@@ -511,7 +568,7 @@
         console.log(`[Audit] Searching ${codes.join(",")}`);
         searchBtn.click();
 
-        const results = await waitForProcedureBatch(codes, beforeSignature, 22000);
+        const results = await waitForProcedureBatch(codes, beforeSignature, 22000, expectedNetwork);
         console.log(`[Audit] DOM batch: ${codes.join(",")} -> ${results.length} row(s)`);
         return results;
     }
@@ -523,7 +580,13 @@
             .map(row => Array.from(row.querySelectorAll("td")).map(td => clean(td.textContent)).join("|")).join("\n");
     }
 
-    async function waitForProcedureBatch(codes, beforeSignature = "", timeout = 18000) {
+    function tableNetworkMatches(expectedNetwork) {
+        if (!expectedNetwork || expectedNetwork === "N/A") return true;
+        const shown = normalizeNetworkStatus(document.querySelector(".table-network-status")?.textContent);
+        return !shown || shown === expectedNetwork;
+    }
+
+    async function waitForProcedureBatch(codes, beforeSignature = "", timeout = 18000, expectedNetwork = "") {
         const wanted = new Set(codes.map(code => code.toUpperCase()));
         const deadline = Date.now() + timeout;
         const started = Date.now();
@@ -553,7 +616,11 @@
                 // plan without that procedure.
                 const haveEveryCode = Array.from(wanted).every(code => rowCodes.includes(code));
 
-                if (belongsToCurrentBatch && tableChanged && rowCountReady) {
+                // The results carry their own network badge. One that disagrees
+                // with the selected provider is from a previous provider.
+                const networkMatches = tableNetworkMatches(expectedNetwork);
+
+                if (belongsToCurrentBatch && tableChanged && rowCountReady && networkMatches) {
                     // Keep the best observed value for each row. A real date always beats an empty/dash value.
                     const previousByCode = new Map(bestRows.map(r => [r.procedure_code, r]));
                     bestRows = parsed.map(row => {
@@ -595,7 +662,12 @@
             await sleep(250);
         }
 
-        // Timeout fallback: return only rows that actually belong to this batch.
+        // Timeout fallback: return only rows that actually belong to this batch,
+        // and never rows priced for a different provider's network.
+        if (!tableNetworkMatches(expectedNetwork)) {
+            console.warn(`[Audit] Results still show a different network than ${expectedNetwork} — discarding.`);
+            return [];
+        }
         const fallback = scrapeProcedureTable().filter(r => wanted.has(r.procedure_code.toUpperCase()));
         return fallback.length ? fallback : bestRows;
     }
@@ -606,8 +678,19 @@
     // ══════════════════════════════════════════════════════════════════════════
 
     async function crawlBenefitCoverage(extraCodes = "") {
+        // Clicking the tab when it is already shown can remount it and drop the
+        // provider the user picked, so it is only clicked when needed.
         const tabEl = findByText("Benefit & Coverage Details");
-        if (tabEl) { tabEl.click(); await sleep(2500); }
+        if (tabEl && !isTabActive("Benefit & Coverage Details")) { tabEl.click(); await sleep(2500); }
+
+        // The provider — and so the network — every search below is priced for.
+        // Read from the sticker beside the dropdown, which follows the
+        // selection; the results badge only changes after the next search.
+        const providerName = selectedProviderName();
+        const providerNetworkStatus =
+            normalizeNetworkStatus(document.querySelector("#in-network-status-stickers .content")?.textContent)
+            || scrapeProviderInfo().provider_network_status;
+        console.log(`[Audit] Crawling for provider ${providerName} (${providerNetworkStatus})`);
 
         // Scrape subscriber — non-fatal, cannot block procedure scraping
         let subscriberInfo = null;
@@ -651,7 +734,7 @@
         for (let i = 0; i < chunks.length; i++) {
             console.log(`[Audit] Chunk ${i + 1}/${chunks.length}: ${chunks[i].join(",")}`);
             try {
-                const batchResults = await runOneBatch(chunks[i]);
+                const batchResults = await runOneBatch(chunks[i], providerNetworkStatus);
                 for (const proc of batchResults) {
                     if (!seen.has(proc.procedure_code)) {
                         seen.add(proc.procedure_code);
@@ -674,7 +757,7 @@
             for (const code of unanswered) {
                 await sleep(800);
                 try {
-                    for (const proc of await runOneBatch([code])) {
+                    for (const proc of await runOneBatch([code], providerNetworkStatus)) {
                         if (!seen.has(proc.procedure_code)) {
                             seen.add(proc.procedure_code);
                             allProcedures.push(proc);
@@ -690,13 +773,36 @@
             }
         }
 
+        const procedureCategories = scrapeProcedureCategories();
+
+        // A provider switched mid-crawl leaves results priced for two networks.
+        const providerAtEnd = selectedProviderName();
+        const providerChanged = providerAtEnd !== providerName;
+        if (providerChanged) {
+            console.warn(`[Audit] Provider changed during crawl: ${providerName} -> ${providerAtEnd}. Re-run the crawl.`);
+        }
+
         return new Promise((resolve) => {
             chrome.storage.local.get("audit_context", (res) => {
                 const ctx = res.audit_context || {};
                 ctx.subscriber_info = subscriberInfo;
+                // Only this tab states the selected provider's network, so it
+                // replaces whatever the Plan Overview scrape recorded.
+                if (providerNetworkStatus !== "N/A" && ctx.metlife_data) {
+                    ctx.metlife_data.provider_info = {
+                        ...(ctx.metlife_data.provider_info || {}),
+                        provider_network_status: providerNetworkStatus,
+                    };
+                }
                 ctx.benefit_coverage = {
                     source: "MetLife Portal - Benefit & Coverage Details",
                     timestamp: new Date().toISOString(),
+                    // The Benefit Level / Patient Responsibility columns are for
+                    // this network; an out-of-network table has no Network Fee.
+                    provider_name: providerName,
+                    provider_network_status: providerNetworkStatus,
+                    provider_changed_during_crawl: providerChanged,
+                    procedure_categories: procedureCategories,
                     codes_searched: allCodes,
                     extra_codes: extraList,
                     // Named rather than left to be noticed by their absence.
@@ -705,7 +811,9 @@
                     procedures: allProcedures
                 };
                 chrome.storage.local.set({ audit_context: ctx }, () => {
-                    resolve({ status: `[+] Scraped ${allProcedures.length} procedures across ${chunks.length} chunk(s).` });
+                    resolve({ status: providerChanged
+                        ? `[!] Provider changed during crawl (${providerName} -> ${providerAtEnd}) — re-run.`
+                        : `[+] Scraped ${allProcedures.length} procedures for ${providerName} (${providerNetworkStatus}) across ${chunks.length} chunk(s).` });
                 });
             });
         });
@@ -732,6 +840,11 @@
         const semanticCell = row.querySelector(`td[headers="${headerId}"]`);
         if (semanticCell) return clean(semanticCell.textContent || semanticCell.innerText);
 
+        // A row that uses the contract but has no such cell does not have the
+        // column. For an out-of-network provider the table drops Network Fee,
+        // and falling back by position read Benefit Level in its place.
+        if (row.querySelector("td[headers]")) return "";
+
         const cells = row.querySelectorAll("td");
         return clean(cells[fallbackIndex]?.textContent || cells[fallbackIndex]?.innerText);
     }
@@ -745,8 +858,16 @@
         if (!rows.length) return [];
 
         return Array.from(rows).map(row => {
-            const procedureCode = getProcedureCell(row, "header-procedurecode", 0).toUpperCase();
+            // Codes can carry a footnote marker ("D0140*" — limited exams do
+            // not share frequency with comprehensive ones). Left on, the row
+            // never matched the code that was searched and was discarded.
+            const codeText = getProcedureCell(row, "header-procedurecode", 0).toUpperCase();
+            const procedureCode = codeText.match(/[A-Z]\d{4}/)?.[0] || codeText;
             if (!procedureCode) return null;
+            // The marker's meaning is printed under the table; keep it with the row.
+            const footnote = codeText.includes("*")
+                ? clean(document.querySelector("#procedure-search-frequency-note")?.textContent) || "*"
+                : "";
 
             const lateDate = normalizeLateDate(
                 getProcedureCell(row, "header-latedateofservice", 4)
@@ -761,7 +882,47 @@
                 deductible: getProcedureCell(row, "header-deductible", 5) || "N/A",
                 network_fee: getProcedureCell(row, "header-networkfee", 6) || "N/A",
                 benefit_level: getProcedureCell(row, "header-benefitlevel", 7) || "N/A",
-                patient_responsibility: getProcedureCell(row, "header-patientobligation", 8) || "N/A"
+                patient_responsibility: getProcedureCell(row, "header-patientobligation", 8) || "N/A",
+                ...(footnote ? { footnote } : {})
+            };
+        }).filter(Boolean);
+    }
+
+    // "Browse by Procedure Categories" cards on the Benefit & Coverage tab. Each
+    // card states the in-network and out-of-network benefit separately
+    // (MetLife pays / Patient pays / Deductible), which the Covered Services
+    // table only gives as one run-on string per network.
+    function scrapeProcedureCategories() {
+        const cards = document.querySelectorAll(".category-card");
+        return Array.from(cards).map(card => {
+            const name = clean(card.querySelector("[id='procedure-category__title']")?.textContent);
+            if (!name) return null;
+
+            // Label/value spans share one id, so they are paired by order.
+            const coverage = {};
+            const spans = Array.from(card.querySelectorAll("[id='procedure-category__coverage']"));
+            for (let i = 0; i + 1 < spans.length; i += 2) {
+                const label = clean(spans[i].textContent).replace(/:\s*$/, "").toLowerCase();
+                coverage[label] = clean(spans[i + 1].textContent);
+            }
+
+            const network = (title) => {
+                const col = card.querySelector(`[id='donut-chart-title-${title}']`)?.closest(".col");
+                if (!col) return { metlife_pays: "N/A", patient_pays: "N/A", deductible: "N/A" };
+                return {
+                    metlife_pays: clean(col.querySelector("[id='donut-chart-percent-0']")?.textContent) || "N/A",
+                    patient_pays: clean(col.querySelector("[id='donut-chart-percent-1']")?.textContent) || "N/A",
+                    deductible: clean(col.querySelector("[id='donut-chart-deductible-value']")?.textContent) || "N/A",
+                };
+            };
+
+            return {
+                category: name,
+                class: clean(card.querySelector("[id='procedure-category__description']")?.textContent) || "N/A",
+                frequency_limit: coverage["frequency limit"] || "N/A",
+                age_limit: coverage["age limit"] || "N/A",
+                in_network: network("IN-NETWORK"),
+                out_of_network: network("OUT-OF-NETWORK"),
             };
         }).filter(Boolean);
     }
@@ -790,6 +951,20 @@
         const data = buildPlanOverviewPayload();
         chrome.storage.local.get("audit_context", (res) => {
             const ctx = res.audit_context || {};
+            // The Plan Overview tab does not state the provider's network. The
+            // status that belongs in the export is the one the captured
+            // procedures were priced for; failing that, one already read for
+            // this patient is kept rather than overwritten with N/A.
+            const prev = ctx.metlife_data;
+            const benefitStatus = ctx.benefit_coverage?.provider_network_status;
+            if (benefitStatus && benefitStatus !== "N/A") {
+                data.provider_info = { ...data.provider_info, provider_network_status: benefitStatus };
+            } else if (data.provider_info.provider_network_status === "N/A" &&
+                data.patient.name !== "N/A" &&
+                prev?.patient?.name === data.patient.name &&
+                prev?.provider_info?.provider_network_status) {
+                data.provider_info = prev.provider_info;
+            }
             ctx.metlife_data = data;
             chrome.storage.local.set({ audit_context: ctx });
         });
@@ -826,8 +1001,13 @@
 
         if (request.command === "START_CRAWL") {
             (async () => {
-                await crawlPlanOverview();
+                // Benefit & Coverage first, while the provider the user picked
+                // is still selected — leaving that tab can reset the dropdown,
+                // which priced every procedure for the default provider's
+                // network. Plan Overview then merges into the same context.
+                await new Promise(resolve => chrome.storage.local.set({ audit_context: {} }, resolve));
                 const res = await crawlBenefitCoverage("");
+                await crawlPlanOverview(false);
                 downloadAuditJSON();
                 sendResponse({ status: res.status + " JSON downloaded." });
             })();
