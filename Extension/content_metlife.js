@@ -216,9 +216,11 @@
         if (stated) return { provider_network_status: stated };
 
         // Fallback for a page without either badge: an exact-text element that
-        // is not a column heading or a category-card title.
+        // is not a column heading, a category-card title, or the Maximums tab's
+        // "Show Benefit Maximums & Deductibles for" filter (which names the
+        // network the amounts are shown for, not the provider's).
         const badge = Array.from(document.querySelectorAll("span,div,p")).find(el =>
-            !el.closest("th, thead, [id^='donut-chart-title']") &&
+            !el.closest("th, thead, [id^='donut-chart-title'], .network-filter") &&
             el.children.length === 0 &&
             normalizeNetworkStatus(el.textContent) &&
             // Headings are rendered in capitals; the status badge is not.
@@ -458,6 +460,8 @@
             patient: scrapePatientInfo(),
             plan_details: scrapePlanDetails(),
             provider_info: scrapeProviderInfo(),
+            // The network the maximums and deductibles below are shown for.
+            financials_network: financialsNetwork(),
             financials: scrapeFinancials(),
             covered_services: scrapeCoveredServices(),
             provisions: scrapeProvisions()
@@ -483,7 +487,10 @@
     // provider's network, so a crawl must run against the provider the user
     // chose — and leaving that tab can reset the dropdown to its default.
     function selectedProviderName() {
-        return clean(document.querySelector(".benefits__provider-list .pop-dropdown-trigger")?.textContent) || "N/A";
+        // The name is the trigger's own <span>; the whole button's text also
+        // carries the chevron icon's <title> ("Carolyn LeungChevron Down").
+        const trigger = document.querySelector(".benefits__provider-list .pop-dropdown-trigger");
+        return clean(trigger?.querySelector(":scope > span")?.textContent || trigger?.textContent) || "N/A";
     }
 
     function isTabActive(label) {
@@ -493,9 +500,90 @@
         );
     }
 
+    // ── Maximums & deductibles network filter ──
+    // The Maximums tab shows its amounts for ONE network at a time, chosen in
+    // "Show Benefit Maximums & Deductibles for: [In-Network | Out-of-Network]".
+    // Deductibles differ by network (Nicole Green: $50/$100 in, $75/$150 out),
+    // so reading whatever the filter happened to show gave an out-of-network
+    // office the in-network deductible.
+    function financialsNetwork() {
+        return normalizeNetworkStatus(
+            document.querySelector("#network-filter-dropdown-combo-label")?.textContent
+        ) || "N/A";
+    }
+
+    // An option's text may carry more than the name (an icon title, a check
+    // mark), so options are matched on the network they mention.
+    function networkMentioned(text) {
+        const t = clean(text).toLowerCase();
+        if (/out[\s-]*of[\s-]*network/.test(t)) return "Out-of-Network";
+        if (/\bin[\s-]*network/.test(t)) return "In-Network";
+        return "";
+    }
+
+    function financialsSignature() {
+        return [".plan-coverage-details", ".plan-deductible-details"]
+            .map(sel => clean(document.querySelector(sel)?.textContent)).join("|");
+    }
+
+    // Switch the filter to `wanted`; true once it shows that network.
+    async function selectFinancialsNetwork(wanted) {
+        if (financialsNetwork() === wanted) return true;
+        const combobox = document.querySelector("#network-filter-dropdown-combobox");
+        if (!combobox) return false;
+        const before = financialsSignature();
+
+        const findOption = () => {
+            const listbox = document.getElementById(
+                combobox.getAttribute("aria-controls") || "network-filter-dropdown-listbox");
+            const candidates = listbox
+                ? listbox.querySelectorAll("[role='option'], li")
+                : document.querySelectorAll("[role='option']");
+            return Array.from(candidates).find(el => networkMentioned(el.textContent) === wanted);
+        };
+        const waitForOption = async (tries) => {
+            for (let i = 0; i < tries; i++) {
+                await sleep(250);
+                const option = findOption();
+                if (option) return option;
+            }
+            return null;
+        };
+        const press = (el) => ["mousedown", "mouseup", "click"].forEach(type =>
+            el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true })));
+
+        // The dropdown may open on click, on mousedown, or from the keyboard.
+        combobox.click();
+        let option = await waitForOption(8);
+        if (!option) { press(combobox); option = await waitForOption(8); }
+        if (!option) {
+            combobox.focus();
+            combobox.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+            option = await waitForOption(8);
+        }
+        if (!option) {
+            console.warn(`[Audit] Maximums network filter: no "${wanted}" option found.`);
+            document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+            return false;
+        }
+        press(option);
+
+        const deadline = Date.now() + 5000;
+        while (Date.now() < deadline && financialsNetwork() !== wanted) await sleep(250);
+        if (financialsNetwork() !== wanted) return false;
+
+        // The amounts can re-render after the label. Networks with equal
+        // amounts never change, so this waits a bounded time, not for a change.
+        const settle = Date.now() + 3000;
+        while (Date.now() < settle && financialsSignature() === before) await sleep(250);
+        await sleep(500);
+        return true;
+    }
+
     // `reset` starts a fresh audit context (a new patient). When the Benefit &
-    // Coverage crawl has already run, its provider network status is kept: the
-    // Plan Overview tab does not show which provider is selected.
+    // Coverage crawl has already run, its provider network status is kept — the
+    // Plan Overview tab does not show which provider is selected — and the
+    // maximums & deductibles filter is set to that network before reading.
     async function crawlPlanOverview(reset = true) {
         const tabEl = findByText("Maximums, Deductibles & Provisions");
         if (tabEl && !isTabActive("Maximums, Deductibles & Provisions")) {
@@ -503,20 +591,31 @@
             await waitForText("Benefit Maximums", 5000);
         }
 
+        const ctx = reset ? {} : await new Promise(resolve =>
+            chrome.storage.local.get("audit_context", res => resolve(res.audit_context || {})));
+        const benefitStatus = ctx.benefit_coverage?.provider_network_status;
+        const providerKnown = Boolean(benefitStatus) && benefitStatus !== "N/A";
+        if (providerKnown && !(await selectFinancialsNetwork(benefitStatus))) {
+            console.warn(`[Audit] Could not switch maximums & deductibles to ${benefitStatus}; ` +
+                         `they are shown for ${financialsNetwork()}.`);
+        }
+
         const data = buildPlanOverviewPayload();
+        if (providerKnown) {
+            data.provider_info = { ...data.provider_info, provider_network_status: benefitStatus };
+        }
+        ctx.metlife_data = data;
+        const networkMismatch = providerKnown && data.financials_network !== benefitStatus;
 
         return new Promise((resolve) => {
-            chrome.storage.local.get("audit_context", (res) => {
-                const ctx = reset ? {} : (res.audit_context || {});
-                const benefitStatus = ctx.benefit_coverage?.provider_network_status;
-                if (benefitStatus && benefitStatus !== "N/A") {
-                    data.provider_info = { ...data.provider_info, provider_network_status: benefitStatus };
+            chrome.storage.local.set({ audit_context: ctx }, () => {
+                const got = Object.values(data.financials).some(f => Object.values(f).some(v => v !== "N/A"));
+                let status = got ? `[+] Plan Overview saved (${data.provisions.length} provisions).` : `[!] Saved but financials N/A — stay on Plan Overview and retry.`;
+                if (networkMismatch) {
+                    status += ` [!] Maximums & deductibles are for ${data.financials_network}, provider is ${benefitStatus} — ` +
+                              `set "Show Benefit Maximums & Deductibles for" to ${benefitStatus} and re-run.`;
                 }
-                ctx.metlife_data = data;
-                chrome.storage.local.set({ audit_context: ctx }, () => {
-                    const got = Object.values(data.financials).some(f => Object.values(f).some(v => v !== "N/A"));
-                    resolve({ status: got ? `[+] Plan Overview saved (${data.provisions.length} provisions).` : `[!] Saved but financials N/A — stay on Plan Overview and retry.` });
-                });
+                resolve({ status });
             });
         });
     }
@@ -945,8 +1044,23 @@
     // PASSIVE BACKGROUND SYNC
     // ══════════════════════════════════════════════════════════════════════════
 
+    // Set while a crawl drives the page. A tick mid-crawl could read the
+    // maximums before the network filter is switched and store them after the
+    // crawl's own write, just before the JSON is downloaded.
+    let crawlInProgress = false;
+
+    async function exclusiveCrawl(run) {
+        crawlInProgress = true;
+        try {
+            return await run();
+        } finally {
+            crawlInProgress = false;
+        }
+    }
+
     setInterval(() => {
         if (!chrome.runtime?.id) return;
+        if (crawlInProgress) return;
         if (!(document.body?.innerText || "").includes("Benefit Maximums")) return;
         const data = buildPlanOverviewPayload();
         chrome.storage.local.get("audit_context", (res) => {
@@ -1000,27 +1114,30 @@
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         if (request.command === "START_CRAWL") {
-            (async () => {
+            exclusiveCrawl(async () => {
                 // Benefit & Coverage first, while the provider the user picked
                 // is still selected — leaving that tab can reset the dropdown,
                 // which priced every procedure for the default provider's
-                // network. Plan Overview then merges into the same context.
+                // network. Plan Overview then merges into the same context and
+                // reads maximums & deductibles for that provider's network.
                 await new Promise(resolve => chrome.storage.local.set({ audit_context: {} }, resolve));
                 const res = await crawlBenefitCoverage("");
-                await crawlPlanOverview(false);
+                const plan = await crawlPlanOverview(false);
                 downloadAuditJSON();
-                sendResponse({ status: res.status + " JSON downloaded." });
-            })();
+                // Plan Overview's own message only when it has a warning.
+                const planNote = plan.status.includes("[!]") ? " " + plan.status : "";
+                sendResponse({ status: res.status + planNote + " JSON downloaded." });
+            });
             return true;
         }
 
         if (request.command === "CRAWL_PLAN_OVERVIEW") {
-            crawlPlanOverview().then(sendResponse).catch(() => sendResponse({ status: "[!] Error." }));
+            exclusiveCrawl(() => crawlPlanOverview()).then(sendResponse).catch(() => sendResponse({ status: "[!] Error." }));
             return true;
         }
 
         if (request.command === "CRAWL_BENEFIT_COVERAGE") {
-            crawlBenefitCoverage(request.extraCodes || "").then(sendResponse).catch(() => sendResponse({ status: "[!] Error." }));
+            exclusiveCrawl(() => crawlBenefitCoverage(request.extraCodes || "")).then(sendResponse).catch(() => sendResponse({ status: "[!] Error." }));
             return true;
         }
     });

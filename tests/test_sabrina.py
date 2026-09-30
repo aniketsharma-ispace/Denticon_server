@@ -659,6 +659,35 @@ check("network: the scraped provider badge is ignored",
 check("network: nothing stated anywhere",
       sc._portal_in_network({}, {"metlife_data": {}}), None)
 
+# A MetLife export from extension v1.38+ does state the office's own network:
+# the Benefit & Coverage tab's provider sticker, recorded with the procedures
+# priced under it. That answers the field outright — including the case the
+# coverage rows cannot catch, a sheet claiming In for an out-of-network office
+# on a plan that pays both ways.
+def _ml_crawl(status, changed=False, source="MetLife Portal - Benefit & Coverage Details"):
+    raw = dict(_BOTH)
+    raw["benefit_coverage"] = {"source": source, "provider_network_status": status,
+                               "provider_changed_during_crawl": changed, "procedures": []}
+    return raw
+
+check("network: MetLife provider sticker says Out, sheet claims In -> Out",
+      sc._portal_in_network({}, _ml_crawl("Out-of-Network"), "In"), "Out")
+check("network: that comparison is a conflict",
+      sc._compare("network", "In", sc._portal_in_network({}, _ml_crawl("Out-of-Network"), "In"))[0], False)
+check("network: MetLife provider sticker says In, sheet claims Out -> In",
+      sc._portal_in_network({}, _ml_crawl("In-Network"), "Out"), "In")
+check("network: MetLife sticker agrees with the sheet",
+      sc._compare("network", "Out", sc._portal_in_network({}, _ml_crawl("Out-of-Network"), "Out"))[0], True)
+# Anything less than a clean statement falls back to the coverage rows.
+check("network: MetLife sticker unread (N/A) -> coverage rows decide",
+      sc._portal_in_network({}, _ml_crawl("N/A"), "In"), "In")
+check("network: provider switched mid-crawl -> coverage rows decide",
+      sc._portal_in_network({}, _ml_crawl("Out-of-Network", changed=True), "In"), "In")
+# Only MetLife's own export carries the statement; another carrier's
+# translation that happened to hold the key is not read.
+check("network: a non-MetLife benefit_coverage is not read",
+      sc._portal_in_network({}, _ml_crawl("Out-of-Network", source=""), "In"), "In")
+
 # Network-type normalization across both vocabularies.
 for raw, want in [("In", "IN"), ("Out", "OUT"), ("In-Network", "IN"),
                   ("Out-of-Network", "OUT"), ("Yes", "IN"), ("No", "OUT"),

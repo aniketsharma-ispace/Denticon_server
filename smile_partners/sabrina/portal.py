@@ -19,6 +19,7 @@ from .carriers.cigna import (
     _cigna_oon_benefits,
     _cigna_ortho_deductible,
 )
+from .carriers.metlife import _metlife_provider_network
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -155,10 +156,14 @@ def _portal_in_network(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
     The network type, confirmed against what the plan actually pays under.
 
-    The portal does NOT reliably state whether this particular office is in or
-    out of network — `provider_info.provider_network_status` is scraped by
-    matching the first element whose text is exactly "IN-NETWORK" or
-    "OUT-OF-NETWORK", and the plan-details page renders both of those as
+    A MetLife export from extension v1.38+ states the office's own status — the
+    selected provider's network sticker — and that is taken as the answer; see
+    `_metlife_provider_network`.
+
+    Otherwise the portal does NOT reliably state whether this particular office
+    is in or out of network — `provider_info.provider_network_status` was
+    scraped by matching the first element whose text is exactly "IN-NETWORK"
+    or "OUT-OF-NETWORK", and the plan-details page renders both of those as
     coverage-panel headings, so it reads "In-Network" for every patient. It is
     deliberately not used here.
 
@@ -169,6 +174,10 @@ def _portal_in_network(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     Where the plan pays under both — the common case — either claim is valid and
     this correctly reports agreement.
     """
+    metlife = _metlife_provider_network(portal_raw)
+    if metlife:
+        return metlife
+
     pays_in, pays_out, stated = _network_coverage(portal_raw)
 
     if stated:
