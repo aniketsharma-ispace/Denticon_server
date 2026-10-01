@@ -272,7 +272,7 @@ const PROCEDURE_CODES = [
     "D4260", "D4249", "D4341", "D4355", "D4381", "D4346", "D4910",
     "D5860", "D5110", "D5740", "D5982",
     "D6194", "D6010", "D6056", "D6065",
-    "D6245", "D6750", "5212", "5995", "2980",
+    "D6245", "D6750", "D5212", "D5995", "D2980", "D5899",
     "D7259", "D7140", "D7210", "D7240", "D7953",
     "D8010", "D8080", "D8090",
     "D9430", "D9110", "D9222", "D9230", "D9239", "D9243", "D9310", "D9944"
@@ -2068,6 +2068,22 @@ function readNetworkDropdown() {
     return { label: "", value: "" };
 }
 
+// All options of the Plan View network dropdown, e.g.
+// [{label:"ADVANTAGE"}, {label:"TOTAL"}, {label:"Out-of-Network", value:"OONET"}].
+// The backend answers "OON Benefits?" from whether Out-of-Network is offered.
+function readNetworkDropdownOptions() {
+    let select = document.querySelector('select#network-type, select[data-test-id="network-type"]');
+    if (!select) {
+        const anchor = findByPartialText("Cigna Network Affiliation", ['h1','h2','h3','h4','label','p','span','div']);
+        for (let scope = anchor, i = 0; scope && i < 6 && !select; i++, scope = scope.parentElement)
+            select = scope.querySelector('select');
+    }
+    if (!select) return [];
+    return Array.from(select.options)
+        .map(opt => ({ label: clean(opt.text), value: String(opt.value || "").trim() }))
+        .filter(opt => opt.label || opt.value);
+}
+
 function collectCoverageNetworks(coverage) {
     const map = new Map();
     const add = record => {
@@ -2169,6 +2185,7 @@ function applyCoverageApi(baseData, coverage) {
             dropdown_label: apiValue(cignaSelectedNetwork?.label),
             tier: apiValue(network.tier)
         },
+        network_options: readNetworkDropdownOptions(),
         electronic_claims: apiValue(
             (coverage.serviceContact || []).find(item => item?.web)?.web ||
             document.querySelector('a[href*="EDIvendors" i]')?.href
