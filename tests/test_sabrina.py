@@ -1405,6 +1405,24 @@ check("delta frequency: 'Limitations apply' states no countable limit",
       _dd_frequency("Limitations apply"), "")
 check("delta frequency: professional determination is the sheet's Pre-D",
       _dd_frequency("Benefit is based on professional determination"), "Pre-D")
+# Caleb Phillips' D0150: the "Limitations apply" panel adds a per-provider
+# lifetime sentence after the calendar-year limit, and the year limit stands.
+check("delta frequency: a later per-provider lifetime sentence does not win",
+      _dd_frequency("Benefit is limited to two of any oral evaluation procedure "
+                    "within a calendar year This procedure is a benefit once per "
+                    "provider per lifetime."), "2X1Year")
+check("delta frequency: a lifetime stated before any period still wins",
+      _dd_frequency("Benefit is limited to once per lifetime"), "1XLifetime")
+
+# Delta states only that the deductible does NOT apply; a card that is silent
+# means it applies, once the export carries the footnote reader's keys at all.
+from smile_partners.portals.delta_dental import _dd_deductible_applies
+check("delta deductible: footnoted out of the deductible",
+      _dd_deductible_applies({"code": "D0120", "applies_to_deductible": "No"}), "No")
+check("delta deductible: no footnote on the search means it applies",
+      _dd_deductible_applies({"code": "D0120", "applies_to_deductible": ""}), "Yes")
+check("delta deductible: an export older than the footnote reader stays unstated",
+      _dd_deductible_applies({"code": "D0120"}), "")
 # The compact form Delta yields must compare equal to the sheet's wording.
 check("delta frequency: 5 year period matches the sheet's 1X5Years",
       sc._compare("frequency",
@@ -1565,6 +1583,93 @@ check("delta: a covered code whose prose mentions an exclusion is still covered"
       _dd_not_covered({"benefit_level": "60%"},
                       {"limitation": "They are not a benefit within 12 months "
                                      "of a basic restoration."}), False)
+# Anshunette Mccoy / Caleb Phillips: D5899 is priced only by report, with no
+# benefit level — the sheet's 0% and NC.
+_BY_REPORT = ("This procedures requires a narrative report and description of "
+              "the services provided to determine possible benefits.")
+check("delta: a by-report code with no benefit level is not covered",
+      _dd_not_covered({"benefit_level": "N/A"}, {"limitation": _BY_REPORT}), True)
+check("delta: a by-report code that states a benefit level keeps it",
+      _dd_not_covered({"benefit_level": "50%"}, {"limitation": _BY_REPORT}), False)
+
+# Caleb Phillips: the extension searches every code under the plan's network
+# and again under "Non-Delta Dental Dentist", and the sheet's "In Network"
+# decides which one the codes are audited against.
+import copy as _copy_net
+
+
+def _dd_card(code, level, limitation):
+    return {"code": code, "benefit_level": level, "deductible": "Applies",
+            "applies_to_deductible": "", "applies_to_maximum": "",
+            "rows": [{"description": code, "limitation": limitation,
+                      "service_date": "None", "age_limits": "None",
+                      "pre_approval": "None"}]}
+
+
+_net_in = [
+    _dd_card("D0120", "100%", "Benefit is limited to two of any oral evaluation "
+                              "procedure within a calendar year"),
+    _dd_card("D0150", "100%", "Benefit is limited to two of any oral evaluation "
+                              "procedure within a calendar year This procedure "
+                              "is a benefit once per provider per lifetime."),
+    _dd_card("D5899", "N/A", _BY_REPORT),
+]
+_net_oon = _copy_net.deepcopy(_net_in)
+_net_oon[1]["benefit_level"] = "50%"
+_net_export = {
+    "source": "Delta Dental",
+    "primary_patient": {"name": "CALEB PHILLIPS", "plan": "Delta Dental PPO",
+                        "static_fields": {"Member type": "Dependent",
+                                          "Date of birth": "11/20/2007"}},
+    "tabs": {
+        "overview": {"benefits_overview": [
+            {"treatment_type": "Diagnostic Oral Exams and X-Rays",
+             "contract_benefit_level": "80% - 100%", "non_delta_dental": "50%"}]},
+        "benefits_search": _net_in,
+        "benefits_search_network": "Delta Dental PPO Dentist",
+        "benefits_search_oon": _net_oon,
+        "benefits_search_oon_network": "Non-Delta Dental Dentist",
+    },
+}
+
+
+def _net_audit(in_network, export=_net_export):
+    sheet = {"fields": {"in_network": in_network, "d0150": "50%",
+                        "d0150__freq": "2X1Year", "d5899": "0",
+                        "d5899__freq": "NC", "ded_prev": "Yes"}}
+    res = sc.compare_sabrina_to_portal(sheet, export)
+    return res, {r["key"]: r for s in res["sections"] for r in s["rows"]}
+
+
+_res_out, _rows_out = _net_audit("Out")
+check("delta network: an out-of-network sheet reads the non-Delta percentage",
+      (_rows_out["d0150"]["portal"], _rows_out["d0150"]["status"]), ("50%", "match"))
+check("delta network: and says which network it read",
+      _res_out["diagnostics"]["portal_network"], "Non-Delta Dental Dentist")
+check("delta network: the plan pays out of network, so 'Out' agrees",
+      _rows_out["in_network"]["status"], "match")
+check("delta network: D0150's per-provider lifetime does not override the year",
+      (_rows_out["d0150__freq"]["portal"], _rows_out["d0150__freq"]["status"]),
+      ("2X1Year", "match"))
+check("delta network: D5899 by report is not covered",
+      (_rows_out["d5899"]["portal"], _rows_out["d5899__freq"]["portal"]),
+      ("Not Covered", "NC"))
+check("delta network: no deductible footnote on D0120 means it applies",
+      (_rows_out["ded_prev"]["portal"], _rows_out["ded_prev"]["status"]), ("Yes", "match"))
+
+_res_in, _rows_in = _net_audit("In")
+check("delta network: an in-network sheet keeps the plan network's percentage",
+      _rows_in["d0150"]["portal"], "100%")
+check("delta network: and says so",
+      _res_in["diagnostics"]["portal_network"], "Delta Dental PPO Dentist")
+
+_net_old = _copy_net.deepcopy(_net_export)
+del _net_old["tabs"]["benefits_search_oon"]
+_res_old, _rows_old = _net_audit("Out", _net_old)
+check("delta network: without the second search the plan network still answers",
+      _rows_old["d0150"]["portal"], "100%")
+check("delta network: the export passed in is not altered",
+      _net_export["tabs"]["benefits_search"][1]["benefit_level"], "100%")
 
 # Two annual maximums: a narrow one and the one covering every service.
 check("delta: the annual maximum is the one covering all services",

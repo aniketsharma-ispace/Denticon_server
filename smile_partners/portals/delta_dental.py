@@ -128,11 +128,16 @@ def _dd_frequency(limitation):
     tail = text[match.end():]
 
     # "per lifetime" is a limit over the whole of the member's life and
-    # overrides any period that follows it.
-    if re.search(r'\blifetime\b', tail, re.IGNORECASE):
+    # overrides any period that follows it. A lifetime mentioned only after the
+    # period belongs to a later sentence — the "Limitations apply" panel adds
+    # "This procedure is a benefit once per provider per lifetime." beneath
+    # D0150's "two of any oral evaluation procedure within a calendar year" —
+    # and the period stands.
+    period = _DD_PERIOD_RE.search(tail)
+    lifetime = re.search(r'\blifetime\b', tail, re.IGNORECASE)
+    if lifetime and (not period or lifetime.start() < period.start()):
         return f'{count}XLifetime'
 
-    period = _DD_PERIOD_RE.search(tail)
     if period:
         span_word = (period.group(1) or '').lower()
         if not span_word:
@@ -186,12 +191,23 @@ def _dd_not_covered(entry, row):
     plan's own catalogue does not carry — "This procedure code could not be
     recognized." Either comes with no benefit level, which is what separates
     them from a covered code whose limitation merely mentions an exclusion.
+
+    A by-report code with no benefit level is a third: "This procedures requires
+    a narrative report and description of the services provided to determine
+    possible benefits." Nothing is payable as stated, and the sheet records it
+    as 0% and "NC". It is matched here, behind the benefit-level check, rather
+    than in the shared pattern, so a by-report code that does carry a
+    percentage keeps it.
     """
     level = str((entry or {}).get('benefit_level') or '').strip().upper()
     if level not in ('', 'N/A', 'NA'):
         return False
     text = f"{(row or {}).get('limitation') or ''} {(row or {}).get('description') or ''}"
-    return bool(_DD_NOT_COVERED_RE.search(text))
+    return bool(_DD_NOT_COVERED_RE.search(text) or _DD_BY_REPORT_RE.search(text))
+
+
+# Delta's wording for a code it prices only once a narrative is sent.
+_DD_BY_REPORT_RE = re.compile(r'requires?\s+a\s+narrative\s+report', re.IGNORECASE)
 
 
 # Delta answers a posterior composite with the amalgam benefit rather than
@@ -233,6 +249,25 @@ def _dd_footnote(entry, which):
         return 'Yes'
     if text in ('no', 'does not apply', 'false'):
         return 'No'
+    return ''
+
+
+def _dd_deductible_applies(entry):
+    """
+    Whether the deductible comes out of this code's work, as the BPO reads it.
+
+    Delta states only the exception — "Amount does not apply to deductible"
+    footed against the card — so a card that says nothing means the deductible
+    applies. The scraper leaves `applies_to_deductible` empty when no footnote
+    list rendered for the search, which Delta does only when no card in it
+    carried a marker; that silence is therefore a "Yes". An export without the
+    key at all predates the footnote reader and stays unstated.
+    """
+    stated = _dd_footnote(entry, 'deductible')
+    if stated:
+        return stated
+    if isinstance(entry, dict) and 'applies_to_deductible' in entry:
+        return 'Yes'
     return ''
 
 
@@ -736,8 +771,8 @@ def _normalize_dd_portal(raw):
             'annual_treatment_types': annual.get('treatment_types') or [],
             'lifetime_treatment_types': lifetime.get('treatment_types') or [],
             'deductible_applicability': overview.get('deductible_applicability') or {},
-            'ded_applies_preventative': _dd_footnote(_by_code.get('D0120'), 'deductible'),
-            'ded_applies_diagnostic': _dd_footnote(_by_code.get('D0220'), 'deductible'),
+            'ded_applies_preventative': _dd_deductible_applies(_by_code.get('D0120')),
+            'ded_applies_diagnostic': _dd_deductible_applies(_by_code.get('D0220')),
             'ortho_deductible': _ortho_deductible(),
             'waiting_period_rows': _dd_waiting_rows(tabs.get('waiting_periods')),
             'claims_address_lines': address_lines,

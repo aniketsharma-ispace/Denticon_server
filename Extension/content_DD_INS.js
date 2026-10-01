@@ -975,19 +975,156 @@ function parseTableContent(table, code, cardEl, footnotes, expanded) {
         rows
     };
 }
-async function scrapeBenefitsSearchTab() {
+async function searchAllBatches(networkLabel) {
     const batches = [BATCH_1, BATCH_2, BATCH_3, BATCH_4, BATCH_5, BATCH_6, BATCH_7];
     const allResults = [];
 
     for (let i = 0; i < batches.length; i++) {
-        console.log(`Benefits search batch ${i + 1}/${batches.length}...`);
+        console.log(`Benefits search batch ${i + 1}/${batches.length} (${networkLabel || "default network"})...`);
         const batchResults = await searchBenefitCodes(batches[i]);
         allResults.push(...batchResults);
         if (i < batches.length - 1) await sleep(1500);
     }
 
-    console.log(`Benefits search complete: ${allResults.length} codes scraped`);
+    console.log(`Benefits search complete (${networkLabel || "default network"}): ${allResults.length} codes scraped`);
     return allResults;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Provider network
+//
+// Benefits Search answers for one network at a time, chosen in the "Search
+// the provider network" dropdown above the results. The same D0150 is 100%
+// for a Delta Dental PPO dentist and 50% for a non-Delta dentist, so an
+// out-of-network office needs the second answer. Every code is therefore
+// searched twice: once under the plan's own network, once under "Non-Delta
+// Dental Dentist". The audit uses whichever the breakdown sheet says the
+// office is.
+//
+// The portal remembers the last network chosen, so the in-network pass picks
+// its network explicitly rather than trusting whatever is showing.
+//
+// Anything unexpected leaves the dropdown alone and records why, so a change
+// to the portal can only cost the out-of-network answers — never the scrape.
+// ──────────────────────────────────────────────────────────────────────────
+
+const NETWORK_LABEL_RE = /^search the provider network$/i;
+const OUT_OF_NETWORK_RE = /non[-\s]?delta/i;
+// Most specific first: the search-result chips beside the dropdown are
+// buttons too, so a bare button is only taken when nothing better is there.
+const NETWORK_CONTROL_SELECTORS =
+    ['select', '[role="combobox"]', '[aria-haspopup="listbox"]', '.MuiSelect-select', '[role="button"]'];
+const looksLikeNetwork = (el) => /delta|dentist|network/i.test(readNetwork(el));
+
+function findNetworkControl() {
+    // The label's own text is exactly the caption; its ancestors also carry
+    // the selected network's name, so an exact match finds the label itself.
+    const label = Array.from(document.querySelectorAll("label, legend, p, span, div, h1, h2, h3, h4, h5, h6"))
+        .find(el => NETWORK_LABEL_RE.test(clean(el.innerText)));
+    let node = label;
+    for (let depth = 0; node && depth < 5; depth++, node = node.parentElement) {
+        for (const selector of NETWORK_CONTROL_SELECTORS) {
+            const control = Array.from(node.querySelectorAll(selector)).find(looksLikeNetwork);
+            if (control) return control;
+        }
+    }
+    // No caption found: a native dropdown that offers a non-Delta network.
+    return Array.from(document.querySelectorAll("select"))
+        .find(sel => Array.from(sel.options).some(o => OUT_OF_NETWORK_RE.test(o.text))) || null;
+}
+
+function readNetwork(control) {
+    if (!control) return "";
+    if (control.tagName === "SELECT") return clean(control.selectedOptions[0]?.text || "");
+    return clean(control.innerText || control.value || "");
+}
+
+function visibleNetworkOptions() {
+    return Array.from(document.querySelectorAll('[role="option"], [role="listbox"] li'))
+        .filter(el => el.offsetParent !== null);
+}
+
+// Choose the first option the predicate accepts. Returns the network now
+// showing, or "" when no option was accepted or the choice did not stick.
+async function chooseNetwork(predicate) {
+    const control = findNetworkControl();
+    if (!control) return "";
+
+    if (control.tagName === "SELECT") {
+        const option = Array.from(control.options).find(o => predicate(clean(o.text)));
+        if (!option) return "";
+        const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+        setter.call(control, option.value);
+        control.dispatchEvent(new Event("input", { bubbles: true }));
+        control.dispatchEvent(new Event("change", { bubbles: true }));
+    } else {
+        // Material UI opens its menu on mousedown; a plain click covers the rest.
+        control.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+        control.click();
+        await sleep(800);
+        const option = visibleNetworkOptions().find(el => predicate(clean(el.innerText)));
+        if (!option) {
+            document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+            await sleep(300);
+            return "";
+        }
+        option.click();
+    }
+    await sleep(1500);
+
+    // The control may have re-rendered; read the choice back from the page.
+    const now = readNetwork(findNetworkControl());
+    return predicate(now) ? now : "";
+}
+
+async function scrapeBenefitsSearchTab(planName) {
+    const result = { inNetwork: [], network: "", outOfNetwork: null, outOfNetworkLabel: "", error: "" };
+    const planWord = ((planName || "").match(/\b(PPO|Premier|DHMO|HMO|EPO)\b/i) || [])[1] || "";
+    const isInNetwork = (text) => !!text && !OUT_OF_NETWORK_RE.test(text);
+    // The plan's own network first ("Delta Dental PPO Dentist" for a PPO
+    // plan), and any other Delta network if that one is not offered.
+    const isPlanNetwork = (text) => isInNetwork(text) &&
+        (!planWord || new RegExp(`\\b${planWord}\\b`, "i").test(text));
+
+    let original = "";
+    try {
+        original = readNetwork(findNetworkControl());
+        if (!findNetworkControl()) {
+            result.error = "network dropdown not found";
+        } else if (!isPlanNetwork(original)) {
+            const chosen = await chooseNetwork(isPlanNetwork) || await chooseNetwork(isInNetwork);
+            if (!chosen) result.error = `could not switch from "${original}" to an in-network option`;
+        }
+    } catch (e) {
+        result.error = `network dropdown: ${e.message}`;
+    }
+
+    result.network = readNetwork(findNetworkControl());
+    result.inNetwork = await searchAllBatches(result.network);
+
+    if (findNetworkControl()) {
+        try {
+            const chosen = await chooseNetwork(text => OUT_OF_NETWORK_RE.test(text));
+            if (chosen) {
+                result.outOfNetworkLabel = chosen;
+                result.outOfNetwork = await searchAllBatches(chosen);
+            } else {
+                result.error = result.error || "no non-Delta network option could be chosen";
+            }
+        } catch (e) {
+            result.error = result.error || `out-of-network search: ${e.message}`;
+        }
+
+        // Leave the dropdown as the user had it.
+        try {
+            if (original && readNetwork(findNetworkControl()) !== original) {
+                await chooseNetwork(text => text === original);
+            }
+        } catch (e) { /* the scrape is already complete */ }
+    }
+
+    if (result.error) console.warn(`Out-of-network benefits not captured: ${result.error}`);
+    return result;
 }
 
 function triggerDeltaDentalDownload(auditData) {
@@ -1105,7 +1242,14 @@ async function runDeltaDentalCrawl() {
 }
 // Small buffer for React rendering
 await sleep(1500);
-auditData.tabs.benefits_search = await scrapeBenefitsSearchTab();
+const search = await scrapeBenefitsSearchTab(auditData.primary_patient?.plan);
+auditData.tabs.benefits_search = search.inNetwork;
+auditData.tabs.benefits_search_network = search.network;
+if (search.outOfNetwork) {
+    auditData.tabs.benefits_search_oon = search.outOfNetwork;
+    auditData.tabs.benefits_search_oon_network = search.outOfNetworkLabel;
+}
+if (search.error) auditData.tabs.benefits_search_oon_error = search.error;
         // TREATMENT HISTORY TAB
         console.log("Scraping Treatment History tab...");
         const historyTabClicked = await clickTab("treatmentHistoryTab");

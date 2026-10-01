@@ -14,6 +14,7 @@ from .parser import _MIN_MARKERS, parse_sabrina_pdf
 from .spec import _SPEC
 from .compare import _compare
 from .portal import _portal_breakdown, _portal_normalized, _portal_value
+from .carriers.delta_dental import _dd_network_export
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -62,6 +63,10 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     what each system says.
     """
     sab_fields = sabrina_parsed.get("fields", {})
+    # A Delta export carries Benefits Search for both networks; the sheet's
+    # own network decides which one it is audited against. Every other
+    # carrier's export passes through unchanged.
+    portal_raw = _dd_network_export(portal_raw, sab_fields.get("in_network"))
     bd = _portal_breakdown(portal_raw)
     # Derived readers work off the translated export, not the raw one.
     portal_norm = _portal_normalized(portal_raw)
@@ -169,6 +174,9 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             "labels_not_found": sabrina_parsed.get("labels_not_found", []),
             "marker_count": sabrina_parsed.get("marker_count"),
             "pdf_line_count": sabrina_parsed.get("line_count"),
+            # Delta only: the provider network the per-code rows were read under.
+            "portal_network": ((portal_raw or {}).get("tabs") or {}).get("benefits_search_network")
+                              if isinstance((portal_raw or {}).get("tabs"), dict) else None,
         },
     }
 
