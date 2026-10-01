@@ -85,7 +85,7 @@ _SPEC: list[dict] = [
     {"key": "oon_benefits", "label": "OON Benefits", "kind": "yesno", "section": "Insurance", "portal": "_oon_benefits",
      "aliases": ["OON Benefit", "Out of Network Benefits", "Out-of-Network Benefits"]},
 
-    {"key": "eff_date",        "label": "Patient Eff Date",            "kind": "date",  "section": "Insurance", "portal": "eff_date",
+    {"key": "eff_date",        "label": "Patient Eff Date",            "kind": "date",  "section": "Insurance", "portal": "_eff_date",
      "aliases": ["Patient Effective Date", "Eff Date", "Effective Date"]},
     {"key": "plan_year_start", "label": "Starting Month of Plan Year",  "kind": "month", "section": "Insurance", "portal": "plan_year_start",
      "aliases": ["Plan Year Start", "Benefit Year Start"]},
@@ -150,6 +150,18 @@ _SPEC: list[dict] = [
      "section": "Clauses", "portal": "porcelain_posterior_downgrade",
      "aliases": ["Are Posterior Crowns Downgraded",
                  "Are Porcelain Crowns Downgraded"]},
+
+    # Fixed per carrier rather than stated per patient (Cigna: Seat Date,
+    # Next Day). Carriers without a known answer read "not on portal".
+    {"key": "major_paid_on",
+     "label": "Are Major Services Paid on Prep or Seat date?", "kind": "text",
+     "section": "Clauses", "portal": "_major_paid_on",
+     "aliases": ["Are Major Services Paid on Prep or Seat date"]},
+    {"key": "perio_maint_after_srp",
+     "label": "When Is First Perio Maintenance Allowed After SRP ?", "kind": "text",
+     "section": "Clauses", "portal": "_perio_after_srp",
+     "aliases": ["When Is First Perio Maintenance Allowed After SRP?",
+                 "When Is First Perio Maintenance Allowed After SRP"]},
 
     # ── Coverage by CDT code ─────────────────────────────────────────────────
     # Each row compares a coverage percentage. Where Sabrina's label names one
@@ -231,9 +243,10 @@ _ASPECT_SECTION = "Coverage by CDT Code"
 # Age Limit and History are only meaningful for a handful of procedures, and
 # Frequency is not expected for a few. Generating rows for the rest produced ~70
 # "blank on the sheet" flags that were nothing of the kind — the sheet is right
-# to leave those cells empty. Note D4341 is in the history list but NOT the age
-# list: Sabrina puts the quadrant count in its Age Limit column, not an age.
-_AGE_LIMIT_CODES = {"D1206", "D1208", "D1351", "D1510", "D8080"}
+# to leave those cells empty. D4341 is in the age list for a different reason:
+# Sabrina puts the QUADRANT COUNT in its Age Limit column, not an age, so that
+# row is compared as "Quads" against `_d4341_quads` (see _build_aspect_spec).
+_AGE_LIMIT_CODES = {"D1206", "D1208", "D1351", "D1510", "D8080", "D4341"}
 
 
 _HISTORY_CODES = {
@@ -271,9 +284,14 @@ def _build_aspect_spec() -> list[dict]:
             portal_source = ("codefield", portal_field) + codes
             if suffix == "age" and primary == "D8080":
                 portal_source = "_ortho_age"
+            row_title = title
+            if suffix == "age" and primary == "D4341":
+                # Sabrina's Age Limit cell on D4341 holds the number of quads.
+                portal_source = "_d4341_quads"
+                row_title = "Quads"
             out.append({
                 "key":     f'{field["key"]}__{suffix}',
-                "label":   f'{field["label"]} · {title}',
+                "label":   f'{field["label"]} · {row_title}',
                 "kind":    kind,
                 "section": _ASPECT_SECTION,
                 "portal":  portal_source,

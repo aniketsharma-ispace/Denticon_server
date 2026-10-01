@@ -11,15 +11,17 @@ from __future__ import annotations
 
 import re
 from .common import _UNLIMITED_MAX
-from .vocabulary import _blank, _coalesce_keys, _norm_network, _num_cob, _num_money
+from .vocabulary import (_blank, _coalesce_keys, _norm_network, _num_cob, _num_money,
+                         _num_yesno)
 from .carriers.cigna import (
     _cigna_annual_max_classes,
     _cigna_code_override,
     _cigna_export,
+    _cigna_initial_coverage_date,
     _cigna_oon_benefits,
     _cigna_ortho_deductible,
+    _cigna_standard_answer,
 )
-from .carriers.metlife import _metlife_provider_network
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -156,14 +158,10 @@ def _portal_in_network(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
     The network type, confirmed against what the plan actually pays under.
 
-    A MetLife export from extension v1.38+ states the office's own status — the
-    selected provider's network sticker — and that is taken as the answer; see
-    `_metlife_provider_network`.
-
-    Otherwise the portal does NOT reliably state whether this particular office
-    is in or out of network — `provider_info.provider_network_status` was
-    scraped by matching the first element whose text is exactly "IN-NETWORK"
-    or "OUT-OF-NETWORK", and the plan-details page renders both of those as
+    The portal does NOT reliably state whether this particular office is in or
+    out of network — `provider_info.provider_network_status` is scraped by
+    matching the first element whose text is exactly "IN-NETWORK" or
+    "OUT-OF-NETWORK", and the plan-details page renders both of those as
     coverage-panel headings, so it reads "In-Network" for every patient. It is
     deliberately not used here.
 
@@ -174,10 +172,6 @@ def _portal_in_network(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     Where the plan pays under both — the common case — either claim is valid and
     this correctly reports agreement.
     """
-    metlife = _metlife_provider_network(portal_raw)
-    if metlife:
-        return metlife
-
     pays_in, pays_out, stated = _network_coverage(portal_raw)
 
     if stated:
@@ -438,6 +432,53 @@ def _portal_oon_benefits(bd: dict, portal_raw: dict, sab_raw=None) -> str | None
     return None
 
 
+def _portal_eff_date(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """
+    Patient effective date. Cigna: the Initial Coverage Date (business rule).
+    Other carriers: the breakdown's effective date, as before.
+    """
+    initial = _cigna_initial_coverage_date(portal_raw)
+    if initial:
+        return initial
+    value = bd.get("eff_date")
+    return None if _blank(value) else str(value)
+
+
+def _portal_major_paid_on(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """
+    Whether major services are paid on the prep or the seat date.
+
+    Cigna: always "Seat Date" (Cigna standard value). Other carriers: taken
+    from the breakdown's prep/seat answers where the portal states them.
+    """
+    standard = _cigna_standard_answer(portal_raw, "major_paid_on")
+    if standard:
+        return standard
+    if _num_yesno(bd.get("or_seat")) == "YES":
+        return "Seat Date"
+    if _num_yesno(bd.get("major_on_prep")) == "YES":
+        return "Prep Date"
+    return None
+
+
+def _portal_perio_after_srp(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """When the first perio maintenance is allowed after SRP (Cigna: "Next Day")."""
+    return _cigna_standard_answer(portal_raw, "perio_maint_after_srp")
+
+
+def _portal_d4341_quads(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """
+    D4341 number of quadrants — the figure Sabrina prints in D4341's Age Limit
+    column. Cigna: always 4 (Cigna standard value). Other carriers: the
+    breakdown's count when it is a number ("Pre-D" and dashes are not).
+    """
+    standard = _cigna_standard_answer(portal_raw, "d4341_quads")
+    if standard:
+        return standard
+    value = str(bd.get("d4341_number_of_quads") or "").strip()
+    return value if value.isdigit() else None
+
+
 # Portal values that must be computed rather than read from one breakdown key.
 # All three share the (breakdown, raw_portal) signature so `_portal_value` can
 # call them uniformly, even where one of the two arguments isn't needed.
@@ -452,6 +493,10 @@ _DERIVED = {
     "_in_network": _portal_in_network,
     "_oon_benefits": _portal_oon_benefits,
     "_yearly_max_paid": _portal_yearly_max_paid,
+    "_major_paid_on": _portal_major_paid_on,
+    "_eff_date": _portal_eff_date,
+    "_perio_after_srp": _portal_perio_after_srp,
+    "_d4341_quads": _portal_d4341_quads,
 }
 
 

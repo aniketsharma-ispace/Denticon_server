@@ -357,12 +357,32 @@ def _cigna_general_annual_record(records, selected_network):
     )
 
 
+def _cigna_is_ortho_only(record):
+    """True only when a financial record belongs to orthodontics alone (class 4).
+
+    Cigna often bundles orthodontics into the general deductible, e.g.
+    classCode "2,3,4,5" / "Basic Restorative,Major Restorative,Orthodontics,TMJ".
+    That is the general deductible, not a separate orthodontic one, so a
+    record that merely MENTIONS ortho must not be reported as the ortho value.
+    """
+    classes = _cigna_class_codes(record)
+    if classes:
+        return classes == {'4'}
+    parts = [
+        part.strip()
+        for part in str(record.get('classDesc', '')).lower().split(',')
+        if part.strip()
+    ]
+    if parts:
+        return all('ortho' in part for part in parts)
+    return 'ortho' in str(record.get('desc', '')).lower()
+
+
 def _cigna_ortho_max_record(records, selected_network):
     return next(
         (
             record for record in _cigna_matching_records(records, selected_network)
-            if 'ortho' in str(record.get('classDesc', '')).lower()
-            or 'ortho' in str(record.get('desc', '')).lower()
+            if _cigna_is_ortho_only(record)
         ),
         {},
     )
@@ -372,8 +392,7 @@ def _cigna_ortho_deductible_record(records, selected_network):
     return next(
         (
             record for record in _cigna_matching_records(records, selected_network)
-            if 'ortho' in str(record.get('classDesc', '')).lower()
-            or 'ortho' in str(record.get('desc', '')).lower()
+            if _cigna_is_ortho_only(record)
         ),
         {},
     )
@@ -569,6 +588,9 @@ def _normalize_cigna_portal(raw):
         age = (
             limitation.get('age_summary')
             or proc.get('age_limitation')
+            # The extension's compact export keeps the procedure's own age
+            # limit here ("Exclude after age 18") rather than in `limitation`.
+            or api_details.get('age_limit')
             or ''
         )
         if str(age).upper() in ('N/A', 'NA', 'NONE'):
@@ -969,8 +991,10 @@ def _apply_cigna_output_rules(data, normalized):
     # Business rule: the exact Cigna alternate-benefit phrase means Yes. A
     # successfully resolved response without that phrase means No. Failed or
     # unresolved lookups remain unknown.
+    # Posterior composites are judged on D2391 (posterior composite) — NOT
+    # D2140, which is amalgam and carries the phrase on almost every plan.
     for code, output_key in (
-        ('D2140', 'posterior_composite_downgrade'),
+        ('D2391', 'posterior_composite_downgrade'),
         ('D2740', 'porcelain_posterior_downgrade'),
     ):
         proc = procs.get(code) or {}

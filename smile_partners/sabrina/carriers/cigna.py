@@ -8,6 +8,7 @@ way this sheet records the answer. Cigna's export is translated by
 
 from __future__ import annotations
 
+import re
 from ..vocabulary import _blank, _coalesce_keys, _num_pct
 
 
@@ -119,6 +120,35 @@ def _cigna_code_override(field: dict, value, bd: dict, portal_raw: dict,
     return False, value
 
 
+# Cigna standard values — answers that are the same on every Cigna plan and
+# that the portal does not state per patient. Agreed with the business team;
+# the sheet is audited against these rather than left as "not on portal".
+_CIGNA_STANDARD_ANSWERS = {
+    "major_paid_on": "Seat Date",            # Are Major Services Paid on Prep or Seat date?
+    "perio_maint_after_srp": "Next Day",     # When Is First Perio Maintenance Allowed After SRP?
+    "d4341_quads": "4",                      # D4341 Scaling Root Planing — number of quads
+}
+
+
+def _cigna_standard_answer(portal_raw: dict, key: str) -> str | None:
+    """The Cigna standard answer for `key`, or None when the export isn't Cigna's."""
+    if not _cigna_export(portal_raw):
+        return None
+    return _CIGNA_STANDARD_ANSWERS.get(key)
+
+
+def _cigna_initial_coverage_date(portal_raw: dict) -> str | None:
+    """
+    Cigna's Initial Coverage Date, which is what the sheet's Patient Eff Date
+    records (business rule) — not the Current Coverage "from" date.
+    """
+    raw = _cigna_export(portal_raw)
+    if not raw:
+        return None
+    value = (raw.get("plan_details") or {}).get("initial_coverage_date")
+    return None if _blank(value) else str(value).strip()
+
+
 def _cigna_export(portal_raw: dict) -> dict | None:
     """The original Cigna export, when this portal came from Cigna."""
     if str((portal_raw or {}).get("_source_insurer", "")).lower() != "cigna":
@@ -149,52 +179,93 @@ def _cigna_annual_max_classes(portal_raw: dict) -> str:
     return str(record.get("classDesc") or "")
 
 
+# Keys the extension may use for the Plan View network dropdown's options.
+_CIGNA_NETWORK_OPTION_KEYS = ("network_options", "available_networks", "networks")
+
+
+def _cigna_network_options(raw: dict) -> list[str] | None:
+    """
+    The option labels of Cigna's "Plan View" network dropdown
+    (e.g. ["ADVANTAGE", "TOTAL", "Out-of-Network"]), or None when the export
+    does not carry them.
+    """
+    for holder in (raw, raw.get("plan_details") or {}):
+        for key in _CIGNA_NETWORK_OPTION_KEYS:
+            options = holder.get(key)
+            if not isinstance(options, list):
+                continue
+            labels = []
+            for option in options:
+                if isinstance(option, dict):
+                    option = _coalesce_keys(option, "label", "name", "dropdown_label", "id")
+                if not _blank(option):
+                    labels.append(str(option).strip())
+            return labels
+    return None
+
+
+def _is_oon_label(value) -> bool:
+    text = str(value or "").upper().replace("-", " ")
+    return "OUT OF NETWORK" in text or "OONET" in text or text.strip() == "OON"
+
+
+_CIGNA_OON_NOTE_RE = re.compile(r"\bin\s+and\s+out[\s-]+of[\s-]+network\b", re.IGNORECASE)
+
+
 def _cigna_oon_benefits(portal_raw: dict) -> str | None:
     """
     Whether the plan has out-of-network benefits.
 
-    Cigna answers this with the network affiliation dropdown: a plan that
-    offers "Out-of-Network" alongside its in-network option has OON benefits,
-    and one that does not, does not. The export carries that as a set of
-    coinsurance rows tagged OONET, so the presence of any such row is the
-    dropdown option — the percentages on those rows are a separate question and
-    do not decide it.
+    Business rule: the plan has OON benefits when Cigna's "Plan View" network
+    dropdown offers an "Out-of-Network" option.
+
+      1. Dropdown options exported → Yes if one is Out-of-Network, else No.
+      2. Older exports without the options: coinsurance rows tagged for an
+         out-of-network affiliation also prove the option exists → Yes.
+      3. Otherwise, Cigna's plan note about accumulators shared "between in
+         and out of network" (printed on plans that pay OON) → Yes.
+      4. Nothing conclusive → None (not stated), never a guessed "No".
     """
     raw = _cigna_export(portal_raw)
     if not raw:
         return None
-    rows = raw.get("coinsurance") or []
-    if not rows:
-        return None
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        network = " ".join(str(_coalesce_keys(row, "network", "network_id") or "")
-                           for _ in (0,)).upper()
-        if "OON" in network or "OUT-OF-NETWORK" in network or "OUT OF NETWORK" in network:
+
+    options = _cigna_network_options(raw)
+    if options:
+        return "Yes" if any(_is_oon_label(option) for option in options) else "No"
+
+    for row in raw.get("coinsurance") or []:
+        if isinstance(row, dict) and _is_oon_label(
+                _coalesce_keys(row, "network", "network_id")):
             return "Yes"
-    return "No"
+
+    plan_notes = (raw.get("notes") or {}).get("plan_notes") or []
+    if any(_CIGNA_OON_NOTE_RE.search(str(note)) for note in plan_notes):
+        return "Yes"
+    return None
 
 
 def _cigna_ortho_deductible(portal_raw: dict) -> str | None:
     """
-    Cigna's orthodontic deductible.
+    Cigna's SEPARATE orthodontic deductible, for the sheet's Orthodontics
+    Deductible Amount / Met Amount rows.
 
-    The export states which classes carry a deductible at all; when
-    orthodontics is not among them there is no ortho deductible, so the
-    sheet's 0 is right and the row should compare rather than read as unstated.
+    Only a deductible record for orthodontics alone (class 4) is a separate
+    ortho deductible. Ortho being one of the classes the general deductible
+    applies to (classCode "2,3,4,5") is not one, and the sheet records 0.
+
+    portal.py reaches this only when portals/cigna.py found no ortho-only
+    record, so an export that carries deductible records answers 0.00.
     """
     raw = _cigna_export(portal_raw)
     if not raw:
         return None
-    applicability = (raw.get("financials") or {}).get("deductible_applicability")
-    if not isinstance(applicability, dict):
-        return None
-    if applicability.get("orthodontic") is False:
-        return "0.00"
-    codes = applicability.get("class_codes")
-    descriptions = " ".join(str(d) for d in (applicability.get("class_descriptions") or []))
-    if isinstance(codes, list) and codes and "4" not in [str(c) for c in codes] \
-            and "ortho" not in descriptions.lower():
-        return "0.00"
-    return None
+    records = (raw.get("financials") or {}).get("deductible_records")
+    if not isinstance(records, list):
+        return None                 # no deductible data at all → not stated
+
+    from ...portals.cigna import _cigna_ortho_deductible_record
+    network = (raw.get("plan_details") or {}).get("network") or {}
+    if _cigna_ortho_deductible_record(records, network):
+        return None                 # a real ortho deductible exists; bd has it
+    return "0.00"
