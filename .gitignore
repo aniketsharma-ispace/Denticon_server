@@ -12,6 +12,7 @@ env/
 *.log
 .env
 .env.*
+smile_partners.zip
 
 # ── Appointment scheduler runtime state / local config (created on first run) ─
 processed_history.json
