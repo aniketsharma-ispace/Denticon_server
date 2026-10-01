@@ -59,10 +59,8 @@ _OTHER_SHEET_LABELS = {_norm_label(s) for s in (
     "PPO / Indemnity / HMO Plan?",
     # Coverage block
     "Applies To", "Period", "Ortho Maximum Covered", "Ortho Payment Timing",
-    "Are Major Services Paid on Prep or Seat date?", "Pre-Authorize over",
+    "Pre-Authorize over",
     "Dependent Age Limit",
-    # Benefit Details question rows that this audit does not compare
-    "When Is First Perio Maintenance Allowed After SRP ?",
     # Section + table headers
     "Demographics", "Office Information", "Patient/Subscriber Information",
     "Insurance Information", "Coverage", "Benefit Details", "Benefit Name",
@@ -104,12 +102,12 @@ _TRIM = " \t:-–—=|"
 
 
 # A Benefit Details "Frequency" cell — "2X1Year", "1X12Months", "1XLifetime",
-# "No Frequency", "NC", "Pre-D". These sit between a CDT label and its
+# "No Frequency", "Frequency not available", "NC", "Pre-D". These sit between a CDT label and its
 # Percentage cell and must be stepped over when the field being read is a
 # coverage percentage.
 _FREQ_RE = re.compile(
     r"^(?:\d+\s*x\s*\d*\s*(?:year|month|lifetime|day|week|visit)s?"
-    r"|no\s+frequency|nc|n/c|pre[\s-]?d(?:etermination)?)$",
+    r"|no\s+frequency|frequency\s+not\s+available|nc|n/c|pre[\s-]?d(?:etermination)?)$",
     re.IGNORECASE,
 )
 
@@ -173,6 +171,21 @@ def _reflow_wrapped(lines: list[str]) -> list[str]:
 # Page furniture that sits directly after the last table row.
 _BOILERPLATE_RE = re.compile(
     r"^\s*(?:©|\(c\))|all rights reserved|verification date", re.IGNORECASE)
+
+
+def _is_stop_line(line: str) -> bool:
+    """
+    Whether a line ends the cells of the field being read: a label, a header,
+    or page furniture.
+
+    A Frequency cell is never one, even though "Frequency not available"
+    begins with the word "Frequency" — the table's own column header. Without
+    this exception every row with that cell stops reading at it and the
+    percentage after it is lost.
+    """
+    if _FREQ_RE.match(line.strip()):
+        return False
+    return not _looks_like_value(line) or _any_label_at(line.split(), 0)
 
 
 def _looks_like_value(candidate: str) -> bool:
@@ -333,7 +346,7 @@ def _capture_benefit_rows(lines: list[str]) -> dict[str, dict]:
 
         cells = []
         for m in range(at + 1, min(at + 8, len(lines))):
-            if _any_label_at(lines[m].split(), 0) or not _looks_like_value(lines[m]):
+            if _is_stop_line(lines[m]):
                 break
             cells.append(lines[m])
         rows[field["key"]] = _classify_row_cells(cells)
@@ -417,7 +430,7 @@ def _find_value(lines: list[str], field: dict, cursor: dict[int, int]
                     cand = _SEP_RE.sub("", lines[m]).strip(_TRIM)
                     if not cand:
                         continue
-                    if not _looks_like_value(cand) or _any_label_at(lines[m].split(), 0):
+                    if _is_stop_line(cand):
                         break          # next label reached — no more cells for this field
                     cands.append((m, cand))
 

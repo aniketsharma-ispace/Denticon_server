@@ -296,6 +296,7 @@ def _select_frequency_clause(value: str, age: int | None) -> tuple[str, str]:
 _FREQ_NO_LIMIT_WORDS = {
     "not applicable", "n/a", "na", "no frequency", "no limitation",
     "no limitations", "unlimited", "none",
+    "frequency not available",          # Sabrina's newer wording of "No Frequency"
 }
 
 
@@ -327,6 +328,7 @@ def _parse_single_frequency(v) -> tuple | None:
     # "Not Applicable" is how Cigna states a procedure with no frequency
     # limit; the sheet writes "No Frequency" for the same thing.
     if ("no limitation" in s or "no frequency" in s or "unlimited" in s
+            or "frequency not available" in s
             or s in ("not applicable", "n/a", "na")):
         return _FREQ_UNLIMITED
     # A benefit decided case by case rather than capped — the sheet's "Pre-D"
