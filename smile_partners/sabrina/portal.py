@@ -22,7 +22,8 @@ from .carriers.cigna import (
     _cigna_ortho_deductible,
     _cigna_standard_answer,
 )
-from .carriers.delta_dental import _dd_export, _dd_major_paid_on, _dd_perio_after_srp
+from .carriers.delta_dental import (_dd_code_override, _dd_export, _dd_major_paid_on,
+                                    _dd_perio_after_srp)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -528,6 +529,8 @@ def _portal_value(field: dict, bd: dict, portal_raw: dict, sab_raw=None) -> str 
         value = _procfield_from_procs(bd.get("procs", {}), src[1], src[2:])
         handled, corrected = _cigna_code_override(
             field, value, bd, portal_raw, src[2:], src[1])
+        if not handled:
+            handled, corrected = _dd_code_override(value, portal_raw, src[2:], src[1], sab_raw)
         return corrected if handled else value
     if isinstance(src, str) and src in _DERIVED:
         return _DERIVED[src](bd, portal_raw, sab_raw)

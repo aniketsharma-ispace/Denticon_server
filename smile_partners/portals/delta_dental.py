@@ -423,7 +423,42 @@ def _dd_money(value):
     return text if text and text.upper() != 'N/A' else ''
 
 
-def _dd_maximum(maximums, *, lifetime):
+def _dd_network_kind(label):
+    """Which provider network a Delta label names: ppo, premier, non-delta, …"""
+    low = str(label or '').lower()
+    if re.search(r'non[-\s]?delta', low):
+        return 'non-delta'
+    for kind in ('ppo', 'premier', 'dpo', 'dhmo', 'hmo', 'epo'):
+        if re.search(rf'\b{kind}\b', low):
+            return kind
+    return ''
+
+
+def _dd_for_network(records, network):
+    """
+    The records that apply to the network being audited.
+
+    Delta may split a maximum by provider network — $1,700 for "Delta Dental
+    PPO Dentist" beside $1,500 for "Delta Dental Premier Dentist" and
+    "Non-Delta Dental Dentist" — and the sheet records the one for the network
+    Benefits Search was answered under. Where the network is unknown, or no
+    record names it, every record stays in play.
+    """
+    kind = _dd_network_kind(network)
+    if not kind:
+        return records
+    matching = [r for r in records
+                if any(_dd_network_kind(n) == kind for n in (r.get('networks') or []))]
+    return matching or records
+
+
+def _dd_amount(value):
+    """A printed dollar amount as a number, for choosing between records."""
+    m = re.search(r'\d[\d,]*(?:\.\d+)?', str(value or ''))
+    return float(m.group(0).replace(',', '')) if m else 0.0
+
+
+def _dd_maximum(maximums, *, lifetime, network=''):
     """
     The annual or lifetime maximum record.
 
@@ -435,7 +470,15 @@ def _dd_maximum(maximums, *, lifetime):
     single category (Diagnostic, $1,250) beside the general one covering every
     service the plan pays for (eleven categories, $2,500). The sheet's "Yearly
     Max" is the general one, so the record naming the most treatment types
-    wins; where there is only one maximum this is simply that maximum.
+    wins; where there is only one maximum this is simply that maximum. Where
+    the maximum is split by provider network, only the network being audited
+    is considered (`_dd_for_network`).
+
+    The lifetime maximum the sheet records is the orthodontic one. A plan may
+    list several — TMJ $500, and Orthodontics $1,500 beside another
+    Orthodontics $500 — and the sheet takes the highest of those naming
+    Orthodontics. A plan whose lifetime maximums name no orthodontics gives
+    its first lifetime maximum, as before.
     """
     candidates = []
     for record in maximums or []:
@@ -443,12 +486,19 @@ def _dd_maximum(maximums, *, lifetime):
             continue
         kind = str(record.get('type', '')).lower()
         if lifetime and 'lifetime' in kind:
-            return record
+            candidates.append(record)
         if not lifetime and 'lifetime' not in kind and 'maximum' in kind:
             candidates.append(record)
     if not candidates:
         return {}
-    return max(candidates, key=lambda r: len(r.get('treatment_types') or []))
+    if lifetime:
+        ortho = [r for r in candidates
+                 if any('orthodont' in str(t).lower() for t in (r.get('treatment_types') or []))]
+        if not ortho:
+            return candidates[0]
+        return max(_dd_for_network(ortho, network), key=lambda r: _dd_amount(r.get('amount')))
+    return max(_dd_for_network(candidates, network),
+               key=lambda r: len(r.get('treatment_types') or []))
 
 
 def _normalize_dd_portal(raw):
@@ -524,8 +574,15 @@ def _normalize_dd_portal(raw):
 
     # ── maximums and deductibles ───────────────────────────────────────────
     maximums = overview.get('maximums') or []
-    annual = _dd_maximum(maximums, lifetime=False)
-    lifetime = _dd_maximum(maximums, lifetime=True)
+    # The network Benefits Search was answered under — the plan's own, or
+    # "Non-Delta Dental Dentist" for an out-of-network office — also decides
+    # which maximum applies where Delta splits them by network. An export made
+    # before the network was recorded was searched under the plan's own
+    # network ("Delta Dental PPO" → PPO), which is what the extension's
+    # in-network pass still chooses.
+    network = str(tabs.get('benefits_search_network') or patient.get('plan') or '')
+    annual = _dd_maximum(maximums, lifetime=False, network=network)
+    lifetime = _dd_maximum(maximums, lifetime=True, network=network)
 
     # The treatment types the annual maximum covers answer "Preventative
     # Included in Yearly Max?" the same way MetLife's Annual card does.

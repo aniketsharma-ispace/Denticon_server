@@ -1665,6 +1665,75 @@ check("history: the Delta audit shows both D1110 dates on the Sabrina side",
 check("history: and they match the portal exactly",
       (_dd_hist_rows["d1110__hist"]["status"], _dd_hist_rows["d1110__hist"]["note"]), ("match", ""))
 
+# Delta Dental INS (Cristina Gomez): maximums split by network, several
+# orthodontic lifetime maximums, and a code Delta does not recognise.
+_ALL_TYPES = ["Diagnostic", "Preventive", "Restorative", "Endodontics"]
+_PPO = "Delta Dental PPO Dentist"
+_PREMIER = "Delta Dental Premier Dentist"
+_NON_DELTA = "Non-Delta Dental Dentist (Benefits based on contract allowance)"
+
+
+def _dd_max(kind, types, networks, amount):
+    return {"type": kind, "treatment_types": types, "networks": networks,
+            "amount": amount, "used": "$0.00", "remaining": amount}
+
+
+_GOMEZ_MAXIMUMS = [
+    _dd_max("Calendar Individual Maximum Accumulation period for this program (1/1/2026 - 12/31/2026)",
+            _ALL_TYPES, [_PREMIER, _NON_DELTA], "$1,500.00"),
+    _dd_max("Calendar Individual Maximum Accumulation period for this program (1/1/2026 - 12/31/2026)",
+            _ALL_TYPES, [_PPO], "$1,700.00"),
+    _dd_max("Lifetime Individual Maximum", ["Adjunctive General Services", "Temporomandibular Joint (TMJ)"],
+            [_PPO, _PREMIER, _NON_DELTA], "$500.00"),
+    _dd_max("Lifetime Individual Maximum", ["Orthodontics", "Oral & Maxillofacial Surgery"],
+            [_PPO, _PREMIER, _NON_DELTA], "$1,500.00"),
+    _dd_max("Lifetime Individual Maximum", ["Orthodontics", "Oral & Maxillofacial Surgery"],
+            [_PPO, _PREMIER, _NON_DELTA], "$500.00"),
+]
+
+
+def _gomez(network, maximums=_GOMEZ_MAXIMUMS, plan=""):
+    tabs = {"overview": {"maximums": maximums}, "benefits_search": []}
+    if network:
+        tabs["benefits_search_network"] = network
+    fin = _normalize_dd_portal({"source": "Delta Dental", "primary_patient": {"name": "X", "plan": plan},
+                                "tabs": tabs})["metlife_data"]["financials"]
+    return fin["annual_max"]["total"], fin["ortho_lifetime"]["total"]
+
+
+check("delta annual max: a PPO search takes the PPO-only maximum",
+      _gomez(_PPO)[0], "$1,700.00")
+check("delta annual max: an out-of-network search takes the Premier / Non-Delta maximum",
+      _gomez("Non-Delta Dental Dentist")[0], "$1,500.00")
+check("delta annual max: no network recorded keeps the old choice",
+      _gomez("")[0], "$1,500.00")
+check("delta annual max: an older export without the network uses the plan's (PPO)",
+      _gomez("", plan="Delta Dental PPO"), ("$1,700.00", "$1,500.00"))
+check("delta ortho lifetime max: the highest naming Orthodontics, not the TMJ one",
+      _gomez(_PPO)[1], "$1,500.00")
+check("delta ortho lifetime max: no orthodontic maximum keeps the first lifetime one",
+      _gomez(_PPO, _GOMEZ_MAXIMUMS[:3])[1], "$500.00")
+
+_D1351_UNRECOGNISED = {"code": "D1351", "benefit_level": "N/A",
+                       "rows": [{"description": "This procedure code could not be recognized.",
+                                 "limitation": "None", "age_limits": "None"}]}
+
+
+def _d1351_age(sheet_age):
+    audit = sc.compare_sabrina_to_portal(
+        {"fields": {"d1351": "0", "d1351__age": sheet_age}, "benefit_rows": {}},
+        {"source": "Delta Dental", "primary_patient": {"name": "X"},
+         "tabs": {"benefits_search": [_D1351_UNRECOGNISED]}})
+    row = {r["key"]: r for s in audit["sections"] for r in s["rows"]}["d1351__age"]
+    return row["status"], row["portal"]
+
+
+check("delta age: a code Delta does not cover is age 0, not 99", _d1351_age("0"), ("match", "0"))
+check("delta age: a blank sheet age agrees for a code Delta does not cover",
+      _d1351_age(None), ("not_stated", None))
+check("delta age: a sheet reading 99 for an uncovered code is a mismatch",
+      _d1351_age("99"), ("mismatch", "0"))
+
 # Only a Delta export gets these answers.
 check("major paid on: a non-Delta export is unchanged",
       _portal_major_paid_on({}, {"metlife_data": {}}), None)

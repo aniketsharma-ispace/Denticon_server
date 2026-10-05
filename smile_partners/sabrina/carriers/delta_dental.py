@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from ..vocabulary import _norm_network
+from ..vocabulary import _blank, _norm_network
 
 
 def _dd_export(portal_raw: dict) -> bool:
@@ -49,6 +49,25 @@ def _dd_procedure(portal_raw: dict, code: str) -> dict | None:
         if isinstance(proc, dict) and str(proc.get("procedure_code", "")).upper() == code:
             return proc
     return None
+
+
+def _dd_code_override(value, portal_raw: dict, codes: tuple, what: str, sab_raw=None):
+    """
+    Correct a per-code value for a code Delta does not cover.
+
+    Returns (handled, value), as `_cigna_code_override` does. Delta prints
+    "None" in the Age limits column of a code it does not pay for, which reads
+    as no age restriction (99). The sheet records such a code's age as 0 or
+    leaves it blank, and either is right: a 0 is compared against 0, and a
+    blank is left with nothing to compare.
+    """
+    if what != "age_limit" or not _dd_export(portal_raw):
+        return False, value
+    proc = next((p for p in (_dd_procedure(portal_raw, str(c).upper()) for c in codes) if p), None)
+    level = str((proc or {}).get("benefit_level") or "").lower()
+    if "not covered" not in level:
+        return False, value
+    return True, (None if _blank(sab_raw) else "0")
 
 
 def _dd_major_paid_on(portal_raw: dict) -> str | None:
