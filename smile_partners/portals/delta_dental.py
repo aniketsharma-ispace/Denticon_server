@@ -167,12 +167,18 @@ def _dd_frequency(limitation):
     return ''
 
 
+# An age range: "age 6 to 18", "ages 6 - 18", "6 through 18".
+_DD_AGE_RANGE_RE = re.compile(
+    r'(\d{1,3})\s*(?:to|through|thru|-|–)\s*(?:age\s*)?(\d{1,3})\b', re.IGNORECASE)
+
+
 def _dd_age_limit(text):
     """
     Delta Dental's age wording as a bound the audit can compare.
 
     "None" is no age restriction; "Child up to and not including age 14" and
-    "12 years and older" both name the number the sheet records.
+    "12 years and older" both name the number the sheet records. A range —
+    "age 6 to 18" — is recorded by its highest age, 18.
     """
     raw = str(text or '').strip()
     if not raw or raw.lower() == 'n/a':
@@ -181,6 +187,9 @@ def _dd_age_limit(text):
     # breakdown sheet records as 99.
     if raw.lower() == 'none':
         return '99'
+    span = _DD_AGE_RANGE_RE.search(raw)
+    if span:
+        return str(max(int(span.group(1)), int(span.group(2))))
     m = re.search(r'age\s+(\d{1,3})', raw, re.IGNORECASE)
     if m:
         return m.group(1)
@@ -320,6 +329,9 @@ def _dd_age_ceiling(text):
     raw = str(text or '').strip()
     if not raw or raw.lower() in ('none', 'n/a'):
         return float('inf')
+    span = _DD_AGE_RANGE_RE.search(raw)
+    if span:
+        return max(int(span.group(1)), int(span.group(2)))
     m = re.search(r'up to(?:\s+and\s+not\s+including)?\s+age\s+(\d{1,3})', raw, re.IGNORECASE)
     if m:
         return int(m.group(1))
@@ -760,6 +772,10 @@ def _normalize_dd_portal(raw):
                                      else service_date),
             'deductible': str(entry.get('deductible') or ''),
             'limitation': str(row.get('limitation') or ''),
+            # Paid only at another code's benefit — D2391 "is not a benefit of
+            # the member's plan … the applicable amalgam benefit will be
+            # applied". The downgrade question reads this.
+            'alternate_benefit': _dd_alternate_benefit(row),
         })
 
     # A downgraded procedure carries the benefit of the code it is downgraded
@@ -893,7 +909,16 @@ def _apply_dd_output_rules(data, normalized):
     # is downgraded to its amalgam equivalent exactly when the plan pays for
     # one of the pair and not the other, so both codes have to be stated
     # before the question can be answered at all.
-    amalgam, composite = _covered('D2160'), _covered('D2391')
+    #
+    # A composite Delta pays only at the amalgam benefit is not a benefit of
+    # the plan in its own right — it is exactly the downgrade being asked
+    # about — even though its percentage is filled in from the amalgam code.
+    def _paid_as_itself(code):
+        if (procedures.get(code) or {}).get('alternate_benefit'):
+            return False
+        return _covered(code)
+
+    amalgam, composite = _paid_as_itself('D2160'), _paid_as_itself('D2391')
     if amalgam is not None and composite is not None:
         data['posterior_composite_downgrade'] = 'No' if (amalgam and composite) else 'Yes'
 

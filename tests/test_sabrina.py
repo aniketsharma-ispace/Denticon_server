@@ -1734,6 +1734,40 @@ check("delta age: a blank sheet age agrees for a code Delta does not cover",
 check("delta age: a sheet reading 99 for an uncovered code is a mismatch",
       _d1351_age("99"), ("mismatch", "0"))
 
+# Delta Dental INS (Mohsen Moghaddam): a composite paid only at the amalgam
+# benefit is a downgrade, and an age range is recorded by its highest age.
+_D2160_COVERED = _dd_entry("D2160", "80%", "Benefit is limited to once per surface, per tooth "
+                                           "within a 24 month period Limitations apply")
+_D2140_COVERED = _dd_entry("D2140", "80%", "Benefit is limited to once per surface, per tooth "
+                                           "within a 24 month period")
+_D2391_ALTERNATE = _dd_entry("D2391", "N/A",
+                             "When this procedure does not display in Benefit Details, it is not "
+                             "a benefit of the member's plan. When amalgam restorations are a "
+                             "benefit, the applicable amalgam benefit will be applied.")
+_D2391_COVERED = _dd_entry("D2391", "80%", "Benefit is limited to once per surface, per tooth "
+                                           "within a 24 month period")
+
+
+def _downgrade(*entries):
+    return sc._portal_breakdown({"source": "Delta Dental", "primary_patient": {"name": "X"},
+                                 "tabs": {"benefits_search": list(entries)}}
+                                ).get("posterior_composite_downgrade")
+
+
+check("delta downgrade: D2391 paid at the amalgam benefit -> Yes",
+      _downgrade(_D2160_COVERED, _D2140_COVERED, _D2391_ALTERNATE), "Yes")
+check("delta downgrade: also when D2140 was not searched",
+      _downgrade(_D2160_COVERED, _D2391_ALTERNATE), "Yes")
+check("delta downgrade: both covered in their own right -> No",
+      _downgrade(_D2160_COVERED, _D2140_COVERED, _D2391_COVERED), "No")
+
+check("delta age: a range is recorded by its highest age", _dd_age_limit("age 6 to 18"), "18")
+check("delta age: a hyphenated range too", _dd_age_limit("Ages 6-18"), "18")
+check("delta age: the sheet's 18 matches 'age 6 to 18'",
+      sc._compare("agelimit", "18", _dd_age_limit("age 6 to 18"))[0], True)
+check("delta age: an upper bound alone is unchanged",
+      _dd_age_limit("Child up to and not including age 19"), "19")
+
 # Only a Delta export gets these answers.
 check("major paid on: a non-Delta export is unchanged",
       _portal_major_paid_on({}, {"metlife_data": {}}), None)
