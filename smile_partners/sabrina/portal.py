@@ -22,6 +22,7 @@ from .carriers.cigna import (
     _cigna_ortho_deductible,
     _cigna_standard_answer,
 )
+from .carriers.delta_dental import _dd_export, _dd_major_paid_on, _dd_perio_after_srp
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -448,12 +449,15 @@ def _portal_major_paid_on(bd: dict, portal_raw: dict, sab_raw=None) -> str | Non
     """
     Whether major services are paid on the prep or the seat date.
 
-    Cigna: always "Seat Date" (Cigna standard value). Other carriers: taken
-    from the breakdown's prep/seat answers where the portal states them.
+    Cigna: always "Seat Date" (Cigna standard value). Delta Dental: "Seat
+    Date" where D2740 is covered, otherwise blank. Other carriers: taken from
+    the breakdown's prep/seat answers where the portal states them.
     """
     standard = _cigna_standard_answer(portal_raw, "major_paid_on")
     if standard:
         return standard
+    if _dd_export(portal_raw):
+        return _dd_major_paid_on(portal_raw)
     if _num_yesno(bd.get("or_seat")) == "YES":
         return "Seat Date"
     if _num_yesno(bd.get("major_on_prep")) == "YES":
@@ -462,8 +466,18 @@ def _portal_major_paid_on(bd: dict, portal_raw: dict, sab_raw=None) -> str | Non
 
 
 def _portal_perio_after_srp(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
-    """When the first perio maintenance is allowed after SRP (Cigna: "Next Day")."""
-    return _cigna_standard_answer(portal_raw, "perio_maint_after_srp")
+    """
+    When the first perio maintenance is allowed after SRP.
+
+    Cigna: always "Next Day" (Cigna standard value). Delta Dental: the
+    post-operative period D4910's limitation names.
+    """
+    standard = _cigna_standard_answer(portal_raw, "perio_maint_after_srp")
+    if standard:
+        return standard
+    if _dd_export(portal_raw):
+        return _dd_perio_after_srp(portal_raw)
+    return None
 
 
 def _portal_d4341_quads(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:

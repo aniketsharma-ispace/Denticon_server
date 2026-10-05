@@ -443,6 +443,12 @@ ROW_CASES = [
     # page furniture after the final row must never be taken for a cell
     (["No Frequency", "100%", "© 2026 iSpace, Inc."],
                                               ("No Frequency", "100%", None, None)),
+    # a History cell listing two dates wraps after the comma (Mccoy's D1110)
+    (["2X1Year", "100%", "06/10/2026,", "01/29/2026"],
+                                              ("2X1Year", "100%", None, "06/10/2026, 01/29/2026")),
+    # a date after a finished History cell is not part of it
+    (["1X1Year", "100%", "01/06/2026", "02/02/2026"],
+                                              ("1X1Year", "100%", None, "01/06/2026")),
 ]
 for cells, want in ROW_CASES:
     got = sc._classify_row_cells(list(cells))
@@ -1560,6 +1566,53 @@ for prose, compact in [
         ("Benefit is limited to once within two contract periods", "1X2Years"),
 ]:
     check(f"delta frequency contract period {compact}", _dd_frequency(prose), compact)
+
+# Delta does not state the two clause answers; the sheet derives them from
+# D2740's coverage and D4910's limitation.
+from smile_partners.sabrina.portal import _portal_major_paid_on, _portal_perio_after_srp
+
+
+def _dd_codes(*entries):
+    return _normalize_dd_portal({"source": "Delta Dental", "primary_patient": {"name": "X"},
+                                 "tabs": {"benefits_search": list(entries)}})
+
+
+def _dd_entry(code, level, limitation):
+    return {"code": code, "benefit_level": level,
+            "rows": [{"description": "x", "limitation": limitation}]}
+
+
+_D4910_30_DAYS = ("Benefit is limited to two of any prophylaxis procedures within a calendar "
+                  "year for codes D1110, D1120, D4346, D4355, and D4910. Prophylaxis procedures "
+                  "are a benefit following active periodontal therapy once a 30 day "
+                  "post-operative period has completed.")
+
+check("delta major paid on: D2740 covered -> Seat Date",
+      _portal_major_paid_on({}, _dd_codes(_dd_entry("D2740", "50%", "once per tooth within a 7 year period"))),
+      "Seat Date")
+check("delta major paid on: D2740 not a benefit -> blank",
+      _portal_major_paid_on({}, _dd_codes(_dd_entry(
+          "D2740", "N/A", "This procedure is not a benefit of most Delta Dental plans."))),
+      None)
+check("delta major paid on: D2740 never searched -> blank",
+      _portal_major_paid_on({}, _dd_codes(_dd_entry("D0120", "100%", "None"))), None)
+check("delta perio after SRP: D4910 names a 30 day post-operative period",
+      _portal_perio_after_srp({}, _dd_codes(_dd_entry("D4910", "100%", _D4910_30_DAYS))), "30 Days")
+check("delta perio after SRP: the sheet's '30 days' agrees",
+      sc._compare("text", "30 days",
+                  _portal_perio_after_srp({}, _dd_codes(_dd_entry("D4910", "100%", _D4910_30_DAYS))))[0],
+      True)
+check("delta perio after SRP: D4910 names no period -> Not available in website",
+      _portal_perio_after_srp({}, _dd_codes(_dd_entry(
+          "D4910", "100%", "Benefit is limited to two within a calendar year"))),
+      "Not available in website")
+check("delta perio after SRP: D4910 never searched -> not stated",
+      _portal_perio_after_srp({}, _dd_codes(_dd_entry("D0120", "100%", "None"))), None)
+# Only a Delta export gets these answers.
+check("major paid on: a non-Delta export is unchanged",
+      _portal_major_paid_on({}, {"metlife_data": {}}), None)
+check("perio after SRP: a non-Delta export is unchanged",
+      _portal_perio_after_srp({}, {"metlife_data": {}}), None)
 
 # The period belongs to the limit that states it. The labial-veneer note names
 # twelve months and five years in exclusions that describe other procedures

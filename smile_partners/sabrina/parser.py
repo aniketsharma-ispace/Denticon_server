@@ -311,6 +311,11 @@ def _classify_row_cells(cells: list[str]) -> dict[str, str | None]:
             continue
         if hist is None and (_num_date(s) is not None or s.lower() in _HISTORY_NONE):
             hist = s
+        elif hist is not None and hist.endswith(",") and _num_date(s) is not None:
+            # A History cell listing several dates wraps after a comma —
+            # "06/10/2026," then "01/29/2026" — and the rest of the list is
+            # still that cell.
+            hist = f"{hist} {s}"
         elif age is None and re.fullmatch(r"\d{1,3}", s):
             age = s
     return {"frequency": freq, "percentage": pct, "age_limit": age, "history": hist}
