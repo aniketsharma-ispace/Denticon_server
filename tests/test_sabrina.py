@@ -443,17 +443,28 @@ ROW_CASES = [
     # page furniture after the final row must never be taken for a cell
     (["No Frequency", "100%", "© 2026 iSpace, Inc."],
                                               ("No Frequency", "100%", None, None)),
-    # a History cell listing two dates wraps after the comma (Mccoy's D1110)
+    # a History cell listing two dates wraps after the comma (Mccoy's D1110);
+    # `history` keeps the first line for every carrier
     (["2X1Year", "100%", "06/10/2026,", "01/29/2026"],
-                                              ("2X1Year", "100%", None, "06/10/2026, 01/29/2026")),
-    # a date after a finished History cell is not part of it
-    (["1X1Year", "100%", "01/06/2026", "02/02/2026"],
-                                              ("1X1Year", "100%", None, "01/06/2026")),
+                                              ("2X1Year", "100%", None, "06/10/2026,")),
 ]
 for cells, want in ROW_CASES:
     got = sc._classify_row_cells(list(cells))
     check(f"row cells {cells}",
           (got["frequency"], got["percentage"], got["age_limit"], got["history"]), want)
+
+# The whole wrapped list is kept beside it, for the Delta audit to read.
+check("row cells: a wrapped History list is kept whole",
+      sc._classify_row_cells(["2X1Year", "100%", "06/10/2026,", "01/29/2026"])["history_wrapped"],
+      "06/10/2026, 01/29/2026")
+check("row cells: three dates wrapping twice are kept whole",
+      sc._classify_row_cells(["100%", "06/10/2026,", "01/29/2026,", "07/01/2025"])["history_wrapped"],
+      "06/10/2026, 01/29/2026, 07/01/2025")
+check("row cells: a date after a finished History cell is not part of it",
+      sc._classify_row_cells(["1X1Year", "100%", "01/06/2026", "02/02/2026"])["history_wrapped"],
+      None)
+check("row cells: nothing wrapped, nothing kept",
+      sc._classify_row_cells(["2X1Year", "100%", "NH"])["history_wrapped"], None)
 
 # Frequency equivalence across the two vocabularies.
 FREQ_PAIRS = [
@@ -1608,6 +1619,38 @@ check("delta perio after SRP: D4910 names no period -> Not available in website"
       "Not available in website")
 check("delta perio after SRP: D4910 never searched -> not stated",
       _portal_perio_after_srp({}, _dd_codes(_dd_entry("D0120", "100%", "None"))), None)
+# A wrapped History cell is read in full in a Delta audit and nowhere else.
+from smile_partners.sabrina.carriers.delta_dental import _dd_wrapped_history
+
+_WRAPPED_SHEET = {
+    "fields": {"d1110__hist": "06/10/2026,"},
+    "benefit_rows": {"d1110": {"history": "06/10/2026,",
+                               "history_wrapped": "06/10/2026, 01/29/2026"}},
+}
+_D1110_TWO_VISITS = {"code": "D1110", "benefit_level": "100%",
+                     "rows": [{"description": "Prophylaxis (cleaning) - adult",
+                               "limitation": "Benefit is limited to two within a calendar year",
+                               "service_date": "06/10/2026, 01/29/2026"}]}
+
+check("history: a Delta audit reads the wrapped D1110 cell in full",
+      _dd_wrapped_history(_WRAPPED_SHEET["fields"], _WRAPPED_SHEET["benefit_rows"],
+                          _dd_codes(_D1110_TWO_VISITS))["d1110__hist"],
+      "06/10/2026, 01/29/2026")
+check("history: a non-Delta audit keeps the first line",
+      _dd_wrapped_history(_WRAPPED_SHEET["fields"], _WRAPPED_SHEET["benefit_rows"],
+                          {"metlife_data": {}})["d1110__hist"],
+      "06/10/2026,")
+check("history: the parsed sheet itself is not changed",
+      _WRAPPED_SHEET["fields"]["d1110__hist"], "06/10/2026,")
+_dd_hist_audit = sc.compare_sabrina_to_portal(
+    _WRAPPED_SHEET, {"source": "Delta Dental", "primary_patient": {"name": "X"},
+                     "tabs": {"benefits_search": [_D1110_TWO_VISITS]}})
+_dd_hist_rows = {r["key"]: r for s in _dd_hist_audit["sections"] for r in s["rows"]}
+check("history: the Delta audit shows both D1110 dates on the Sabrina side",
+      _dd_hist_rows["d1110__hist"]["sabrina"], "06/10/2026, 01/29/2026")
+check("history: and they match the portal exactly",
+      (_dd_hist_rows["d1110__hist"]["status"], _dd_hist_rows["d1110__hist"]["note"]), ("match", ""))
+
 # Only a Delta export gets these answers.
 check("major paid on: a non-Delta export is unchanged",
       _portal_major_paid_on({}, {"metlife_data": {}}), None)

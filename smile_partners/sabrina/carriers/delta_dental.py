@@ -22,6 +22,27 @@ def _dd_export(portal_raw: dict) -> bool:
     return str((portal_raw or {}).get("_source_insurer", "")).lower() == "delta dental"
 
 
+def _dd_wrapped_history(sab_fields: dict, benefit_rows: dict | None, portal_norm: dict) -> dict:
+    """
+    The sheet's fields with every wrapped History cell read in full, for a
+    Delta Dental audit.
+
+    Where a History cell lists several dates and wraps after a comma, the
+    parser keeps the first line as the cell and the whole list as
+    `history_wrapped`. A Delta audit compares and shows the whole list —
+    Mccoy's D1110 "06/10/2026, 01/29/2026" rather than "06/10/2026,". Every
+    other carrier's audit keeps the first line, as before.
+    """
+    if not _dd_export(portal_norm) or not isinstance(benefit_rows, dict):
+        return sab_fields
+    fields = dict(sab_fields)
+    for row_key, columns in benefit_rows.items():
+        wrapped = (columns or {}).get("history_wrapped")
+        if wrapped:
+            fields[f"{row_key}__hist"] = wrapped
+    return fields
+
+
 def _dd_procedure(portal_raw: dict, code: str) -> dict | None:
     """One code's translated Benefits Search entry; None where it was not searched."""
     for proc in ((portal_raw or {}).get("benefit_coverage") or {}).get("procedures") or []:

@@ -14,7 +14,7 @@ from .parser import _MIN_MARKERS, parse_sabrina_pdf
 from .spec import _SPEC
 from .compare import _compare
 from .portal import _portal_breakdown, _portal_normalized, _portal_value
-from .carriers.delta_dental import _dd_network_export
+from .carriers.delta_dental import _dd_network_export, _dd_wrapped_history
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -70,6 +70,8 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     bd = _portal_breakdown(portal_raw)
     # Derived readers work off the translated export, not the raw one.
     portal_norm = _portal_normalized(portal_raw)
+    # A Delta audit reads a History cell that wraps onto a second line in full.
+    sab_fields = _dd_wrapped_history(sab_fields, sabrina_parsed.get("benefit_rows"), portal_norm)
 
     # Some portal rules are stated per age band ("… TO AGE 19, … FOR ADULTS"),
     # so the patient's age decides which one governs. Taken as of today, which
