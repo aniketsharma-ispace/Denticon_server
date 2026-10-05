@@ -1578,6 +1578,20 @@ for prose, compact in [
 ]:
     check(f"delta frequency contract period {compact}", _dd_frequency(prose), compact)
 
+# Delta Dental INS (Sierjah Richards) limits D0140 over days.
+check("delta frequency: 30 day period -> 1X30Days",
+      _dd_frequency("Benefit is limited to one problem focused evaluation within a 30 day period"),
+      "1X30Days")
+check("delta frequency: the sheet's 1x30Days agrees",
+      sc._compare("frequency", "1x30Days",
+                  _dd_frequency("Benefit is limited to one problem focused evaluation "
+                                "within a 30 day period"))[0], True)
+check("delta frequency: a 1 day period -> 1X1Day",
+      _dd_frequency("Benefit is limited to once within a 1 day period"), "1X1Day")
+check("delta frequency: 'within 30 days of' another service is not a period",
+      _dd_frequency("Benefit is limited to once per tooth. Not a benefit within 30 days of "
+                    "root canal therapy"), "")
+
 # Delta does not state the two clause answers; the sheet derives them from
 # D2740's coverage and D4910's limitation.
 from smile_partners.sabrina.portal import _portal_major_paid_on, _portal_perio_after_srp

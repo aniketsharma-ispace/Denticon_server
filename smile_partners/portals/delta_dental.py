@@ -66,10 +66,15 @@ _DD_COUNT_RE = re.compile(
 # period is the plan's benefit year — the accumulation period printed on the
 # annual maximum — so it counts as a year, which is how the sheet records it
 # (2X1Year, 1X3Years).
+#
+# A few limits run over days: "limited to one problem focused evaluation
+# within a 30 day period" (1X30Days). Only "N day period" is read as one — a
+# bare "within 30 days of …" elsewhere in the prose is a condition on some
+# other service, not this code's limit.
 _DD_PERIOD_RE = re.compile(
     r'within\s+(?:a\s+|an\s+)?'
     r'(?:(one|two|three|four|five|six|seven|eight|nine|ten|\d+)[\s-]+)?'
-    r'(?:calendar\s+|consecutive\s+)?(year|month|contract\s+period)s?',
+    r'(?:calendar\s+|consecutive\s+)?(year|month|day(?=s?\s+period)|contract\s+period)s?',
     re.IGNORECASE)
 
 
@@ -89,6 +94,7 @@ def _dd_frequency(limitation):
     "limited to once per quadrant within two calendar years" -> 1X2Years
     "limited to one occlusal guard within 3 calendar years"  -> 1X3Years
     "limited to two within a contract period"                -> 2X1Year
+    "limited to one problem focused evaluation within a 30 day period" -> 1X30Days
     "limited to once per lifetime"                           -> 1XLifetime
     "limited to once per date of service"                    -> 1X1Day
     "this procedure has no frequency limitation"             -> No Frequency
@@ -148,8 +154,11 @@ def _dd_frequency(limitation):
             span = _DD_WORD_COUNTS.get(span_word, 0)
         if not span:
             return ''
-        if period.group(2).lower() == 'month':
+        unit = period.group(2).lower()
+        if unit == 'month':
             return f'{count}X{span}Months'
+        if unit == 'day':
+            return f'{count}X{span}Day' if span == 1 else f'{count}X{span}Days'
         return f'{count}X{span}Year' if span == 1 else f'{count}X{span}Years'
 
     # "once per date of service" is a limit of one a day.
