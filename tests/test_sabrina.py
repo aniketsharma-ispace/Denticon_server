@@ -443,28 +443,11 @@ ROW_CASES = [
     # page furniture after the final row must never be taken for a cell
     (["No Frequency", "100%", "© 2026 iSpace, Inc."],
                                               ("No Frequency", "100%", None, None)),
-    # a History cell listing two dates wraps after the comma (Mccoy's D1110);
-    # `history` keeps the first line for every carrier
-    (["2X1Year", "100%", "06/10/2026,", "01/29/2026"],
-                                              ("2X1Year", "100%", None, "06/10/2026,")),
 ]
 for cells, want in ROW_CASES:
     got = sc._classify_row_cells(list(cells))
     check(f"row cells {cells}",
           (got["frequency"], got["percentage"], got["age_limit"], got["history"]), want)
-
-# The whole wrapped list is kept beside it, for the Delta audit to read.
-check("row cells: a wrapped History list is kept whole",
-      sc._classify_row_cells(["2X1Year", "100%", "06/10/2026,", "01/29/2026"])["history_wrapped"],
-      "06/10/2026, 01/29/2026")
-check("row cells: three dates wrapping twice are kept whole",
-      sc._classify_row_cells(["100%", "06/10/2026,", "01/29/2026,", "07/01/2025"])["history_wrapped"],
-      "06/10/2026, 01/29/2026, 07/01/2025")
-check("row cells: a date after a finished History cell is not part of it",
-      sc._classify_row_cells(["1X1Year", "100%", "01/06/2026", "02/02/2026"])["history_wrapped"],
-      None)
-check("row cells: nothing wrapped, nothing kept",
-      sc._classify_row_cells(["2X1Year", "100%", "NH"])["history_wrapped"], None)
 
 # Frequency equivalence across the two vocabularies.
 FREQ_PAIRS = [
@@ -530,12 +513,12 @@ _by_aspect = {a: sorted(f["row_key"] for f in _derived if f["aspect"] == a)
 
 check("age limit compared only for D1206/D1208/D1351/D1510/D8080",
       _by_aspect["age"], ["d1206", "d1208", "d1351", "d1510", "ortho_coverage"])
-# Thirteen codes: the requirements matrix (Material/Smile/JSON Requirment.pdf)
-# adds D0150 to the History column alongside the twelve listed earlier.
-check("history compared only for the thirteen listed codes",
+# Twelve codes, the ones Sabrina generates a history for. D1510 was dropped
+# from the list (Oct 2026): the sheet does not carry a history for it.
+check("history compared only for the twelve listed codes",
       _by_aspect["hist"],
       ["d0120", "d0140", "d0150", "d0210", "d0274", "d0330", "d1110",
-       "d1206", "d1208", "d1351", "d1510", "d4341", "d4910"])
+       "d1206", "d1208", "d1351", "d4341", "d4910"])
 _cdt_keys = {f["key"] for f in sc._SPEC
              if f["section"] == "Coverage by CDT Code" and not f.get("derived")}
 check("frequency skipped for D3310/D7140/D7210/D9230/D9243/D8080/D8090",
@@ -1422,24 +1405,6 @@ check("delta frequency: 'Limitations apply' states no countable limit",
       _dd_frequency("Limitations apply"), "")
 check("delta frequency: professional determination is the sheet's Pre-D",
       _dd_frequency("Benefit is based on professional determination"), "Pre-D")
-# Caleb Phillips' D0150: the "Limitations apply" panel adds a per-provider
-# lifetime sentence after the calendar-year limit, and the year limit stands.
-check("delta frequency: a later per-provider lifetime sentence does not win",
-      _dd_frequency("Benefit is limited to two of any oral evaluation procedure "
-                    "within a calendar year This procedure is a benefit once per "
-                    "provider per lifetime."), "2X1Year")
-check("delta frequency: a lifetime stated before any period still wins",
-      _dd_frequency("Benefit is limited to once per lifetime"), "1XLifetime")
-
-# Delta states only that the deductible does NOT apply; a card that is silent
-# means it applies, once the export carries the footnote reader's keys at all.
-from smile_partners.portals.delta_dental import _dd_deductible_applies
-check("delta deductible: footnoted out of the deductible",
-      _dd_deductible_applies({"code": "D0120", "applies_to_deductible": "No"}), "No")
-check("delta deductible: no footnote on the search means it applies",
-      _dd_deductible_applies({"code": "D0120", "applies_to_deductible": ""}), "Yes")
-check("delta deductible: an export older than the footnote reader stays unstated",
-      _dd_deductible_applies({"code": "D0120"}), "")
 # The compact form Delta yields must compare equal to the sheet's wording.
 check("delta frequency: 5 year period matches the sheet's 1X5Years",
       sc._compare("frequency",
@@ -1578,202 +1543,6 @@ for prose, compact in [
 ]:
     check(f"delta frequency contract period {compact}", _dd_frequency(prose), compact)
 
-# Delta Dental INS (Sierjah Richards) limits D0140 over days.
-check("delta frequency: 30 day period -> 1X30Days",
-      _dd_frequency("Benefit is limited to one problem focused evaluation within a 30 day period"),
-      "1X30Days")
-check("delta frequency: the sheet's 1x30Days agrees",
-      sc._compare("frequency", "1x30Days",
-                  _dd_frequency("Benefit is limited to one problem focused evaluation "
-                                "within a 30 day period"))[0], True)
-check("delta frequency: a 1 day period -> 1X1Day",
-      _dd_frequency("Benefit is limited to once within a 1 day period"), "1X1Day")
-check("delta frequency: 'within 30 days of' another service is not a period",
-      _dd_frequency("Benefit is limited to once per tooth. Not a benefit within 30 days of "
-                    "root canal therapy"), "")
-
-# Delta does not state the two clause answers; the sheet derives them from
-# D2740's coverage and D4910's limitation.
-from smile_partners.sabrina.portal import _portal_major_paid_on, _portal_perio_after_srp
-
-
-def _dd_codes(*entries):
-    return _normalize_dd_portal({"source": "Delta Dental", "primary_patient": {"name": "X"},
-                                 "tabs": {"benefits_search": list(entries)}})
-
-
-def _dd_entry(code, level, limitation):
-    return {"code": code, "benefit_level": level,
-            "rows": [{"description": "x", "limitation": limitation}]}
-
-
-_D4910_30_DAYS = ("Benefit is limited to two of any prophylaxis procedures within a calendar "
-                  "year for codes D1110, D1120, D4346, D4355, and D4910. Prophylaxis procedures "
-                  "are a benefit following active periodontal therapy once a 30 day "
-                  "post-operative period has completed.")
-
-check("delta major paid on: D2740 covered -> Seat Date",
-      _portal_major_paid_on({}, _dd_codes(_dd_entry("D2740", "50%", "once per tooth within a 7 year period"))),
-      "Seat Date")
-check("delta major paid on: D2740 not a benefit -> blank",
-      _portal_major_paid_on({}, _dd_codes(_dd_entry(
-          "D2740", "N/A", "This procedure is not a benefit of most Delta Dental plans."))),
-      None)
-check("delta major paid on: D2740 never searched -> blank",
-      _portal_major_paid_on({}, _dd_codes(_dd_entry("D0120", "100%", "None"))), None)
-check("delta perio after SRP: D4910 names a 30 day post-operative period",
-      _portal_perio_after_srp({}, _dd_codes(_dd_entry("D4910", "100%", _D4910_30_DAYS))), "30 Days")
-check("delta perio after SRP: the sheet's '30 days' agrees",
-      sc._compare("text", "30 days",
-                  _portal_perio_after_srp({}, _dd_codes(_dd_entry("D4910", "100%", _D4910_30_DAYS))))[0],
-      True)
-check("delta perio after SRP: D4910 names no period -> Not available in website",
-      _portal_perio_after_srp({}, _dd_codes(_dd_entry(
-          "D4910", "100%", "Benefit is limited to two within a calendar year"))),
-      "Not available in website")
-check("delta perio after SRP: D4910 never searched -> not stated",
-      _portal_perio_after_srp({}, _dd_codes(_dd_entry("D0120", "100%", "None"))), None)
-# A wrapped History cell is read in full in a Delta audit and nowhere else.
-from smile_partners.sabrina.carriers.delta_dental import _dd_wrapped_history
-
-_WRAPPED_SHEET = {
-    "fields": {"d1110__hist": "06/10/2026,"},
-    "benefit_rows": {"d1110": {"history": "06/10/2026,",
-                               "history_wrapped": "06/10/2026, 01/29/2026"}},
-}
-_D1110_TWO_VISITS = {"code": "D1110", "benefit_level": "100%",
-                     "rows": [{"description": "Prophylaxis (cleaning) - adult",
-                               "limitation": "Benefit is limited to two within a calendar year",
-                               "service_date": "06/10/2026, 01/29/2026"}]}
-
-check("history: a Delta audit reads the wrapped D1110 cell in full",
-      _dd_wrapped_history(_WRAPPED_SHEET["fields"], _WRAPPED_SHEET["benefit_rows"],
-                          _dd_codes(_D1110_TWO_VISITS))["d1110__hist"],
-      "06/10/2026, 01/29/2026")
-check("history: a non-Delta audit keeps the first line",
-      _dd_wrapped_history(_WRAPPED_SHEET["fields"], _WRAPPED_SHEET["benefit_rows"],
-                          {"metlife_data": {}})["d1110__hist"],
-      "06/10/2026,")
-check("history: the parsed sheet itself is not changed",
-      _WRAPPED_SHEET["fields"]["d1110__hist"], "06/10/2026,")
-_dd_hist_audit = sc.compare_sabrina_to_portal(
-    _WRAPPED_SHEET, {"source": "Delta Dental", "primary_patient": {"name": "X"},
-                     "tabs": {"benefits_search": [_D1110_TWO_VISITS]}})
-_dd_hist_rows = {r["key"]: r for s in _dd_hist_audit["sections"] for r in s["rows"]}
-check("history: the Delta audit shows both D1110 dates on the Sabrina side",
-      _dd_hist_rows["d1110__hist"]["sabrina"], "06/10/2026, 01/29/2026")
-check("history: and they match the portal exactly",
-      (_dd_hist_rows["d1110__hist"]["status"], _dd_hist_rows["d1110__hist"]["note"]), ("match", ""))
-
-# Delta Dental INS (Cristina Gomez): maximums split by network, several
-# orthodontic lifetime maximums, and a code Delta does not recognise.
-_ALL_TYPES = ["Diagnostic", "Preventive", "Restorative", "Endodontics"]
-_PPO = "Delta Dental PPO Dentist"
-_PREMIER = "Delta Dental Premier Dentist"
-_NON_DELTA = "Non-Delta Dental Dentist (Benefits based on contract allowance)"
-
-
-def _dd_max(kind, types, networks, amount):
-    return {"type": kind, "treatment_types": types, "networks": networks,
-            "amount": amount, "used": "$0.00", "remaining": amount}
-
-
-_GOMEZ_MAXIMUMS = [
-    _dd_max("Calendar Individual Maximum Accumulation period for this program (1/1/2026 - 12/31/2026)",
-            _ALL_TYPES, [_PREMIER, _NON_DELTA], "$1,500.00"),
-    _dd_max("Calendar Individual Maximum Accumulation period for this program (1/1/2026 - 12/31/2026)",
-            _ALL_TYPES, [_PPO], "$1,700.00"),
-    _dd_max("Lifetime Individual Maximum", ["Adjunctive General Services", "Temporomandibular Joint (TMJ)"],
-            [_PPO, _PREMIER, _NON_DELTA], "$500.00"),
-    _dd_max("Lifetime Individual Maximum", ["Orthodontics", "Oral & Maxillofacial Surgery"],
-            [_PPO, _PREMIER, _NON_DELTA], "$1,500.00"),
-    _dd_max("Lifetime Individual Maximum", ["Orthodontics", "Oral & Maxillofacial Surgery"],
-            [_PPO, _PREMIER, _NON_DELTA], "$500.00"),
-]
-
-
-def _gomez(network, maximums=_GOMEZ_MAXIMUMS, plan=""):
-    tabs = {"overview": {"maximums": maximums}, "benefits_search": []}
-    if network:
-        tabs["benefits_search_network"] = network
-    fin = _normalize_dd_portal({"source": "Delta Dental", "primary_patient": {"name": "X", "plan": plan},
-                                "tabs": tabs})["metlife_data"]["financials"]
-    return fin["annual_max"]["total"], fin["ortho_lifetime"]["total"]
-
-
-check("delta annual max: a PPO search takes the PPO-only maximum",
-      _gomez(_PPO)[0], "$1,700.00")
-check("delta annual max: an out-of-network search takes the Premier / Non-Delta maximum",
-      _gomez("Non-Delta Dental Dentist")[0], "$1,500.00")
-check("delta annual max: no network recorded keeps the old choice",
-      _gomez("")[0], "$1,500.00")
-check("delta annual max: an older export without the network uses the plan's (PPO)",
-      _gomez("", plan="Delta Dental PPO"), ("$1,700.00", "$1,500.00"))
-check("delta ortho lifetime max: the highest naming Orthodontics, not the TMJ one",
-      _gomez(_PPO)[1], "$1,500.00")
-check("delta ortho lifetime max: no orthodontic maximum keeps the first lifetime one",
-      _gomez(_PPO, _GOMEZ_MAXIMUMS[:3])[1], "$500.00")
-
-_D1351_UNRECOGNISED = {"code": "D1351", "benefit_level": "N/A",
-                       "rows": [{"description": "This procedure code could not be recognized.",
-                                 "limitation": "None", "age_limits": "None"}]}
-
-
-def _d1351_age(sheet_age):
-    audit = sc.compare_sabrina_to_portal(
-        {"fields": {"d1351": "0", "d1351__age": sheet_age}, "benefit_rows": {}},
-        {"source": "Delta Dental", "primary_patient": {"name": "X"},
-         "tabs": {"benefits_search": [_D1351_UNRECOGNISED]}})
-    row = {r["key"]: r for s in audit["sections"] for r in s["rows"]}["d1351__age"]
-    return row["status"], row["portal"]
-
-
-check("delta age: a code Delta does not cover is age 0, not 99", _d1351_age("0"), ("match", "0"))
-check("delta age: a blank sheet age agrees for a code Delta does not cover",
-      _d1351_age(None), ("not_stated", None))
-check("delta age: a sheet reading 99 for an uncovered code is a mismatch",
-      _d1351_age("99"), ("mismatch", "0"))
-
-# Delta Dental INS (Mohsen Moghaddam): a composite paid only at the amalgam
-# benefit is a downgrade, and an age range is recorded by its highest age.
-_D2160_COVERED = _dd_entry("D2160", "80%", "Benefit is limited to once per surface, per tooth "
-                                           "within a 24 month period Limitations apply")
-_D2140_COVERED = _dd_entry("D2140", "80%", "Benefit is limited to once per surface, per tooth "
-                                           "within a 24 month period")
-_D2391_ALTERNATE = _dd_entry("D2391", "N/A",
-                             "When this procedure does not display in Benefit Details, it is not "
-                             "a benefit of the member's plan. When amalgam restorations are a "
-                             "benefit, the applicable amalgam benefit will be applied.")
-_D2391_COVERED = _dd_entry("D2391", "80%", "Benefit is limited to once per surface, per tooth "
-                                           "within a 24 month period")
-
-
-def _downgrade(*entries):
-    return sc._portal_breakdown({"source": "Delta Dental", "primary_patient": {"name": "X"},
-                                 "tabs": {"benefits_search": list(entries)}}
-                                ).get("posterior_composite_downgrade")
-
-
-check("delta downgrade: D2391 paid at the amalgam benefit -> Yes",
-      _downgrade(_D2160_COVERED, _D2140_COVERED, _D2391_ALTERNATE), "Yes")
-check("delta downgrade: also when D2140 was not searched",
-      _downgrade(_D2160_COVERED, _D2391_ALTERNATE), "Yes")
-check("delta downgrade: both covered in their own right -> No",
-      _downgrade(_D2160_COVERED, _D2140_COVERED, _D2391_COVERED), "No")
-
-check("delta age: a range is recorded by its highest age", _dd_age_limit("age 6 to 18"), "18")
-check("delta age: a hyphenated range too", _dd_age_limit("Ages 6-18"), "18")
-check("delta age: the sheet's 18 matches 'age 6 to 18'",
-      sc._compare("agelimit", "18", _dd_age_limit("age 6 to 18"))[0], True)
-check("delta age: an upper bound alone is unchanged",
-      _dd_age_limit("Child up to and not including age 19"), "19")
-
-# Only a Delta export gets these answers.
-check("major paid on: a non-Delta export is unchanged",
-      _portal_major_paid_on({}, {"metlife_data": {}}), None)
-check("perio after SRP: a non-Delta export is unchanged",
-      _portal_perio_after_srp({}, {"metlife_data": {}}), None)
-
 # The period belongs to the limit that states it. The labial-veneer note names
 # twelve months and five years in exclusions that describe other procedures
 # before stating the veneer's own limit.
@@ -1796,93 +1565,6 @@ check("delta: a covered code whose prose mentions an exclusion is still covered"
       _dd_not_covered({"benefit_level": "60%"},
                       {"limitation": "They are not a benefit within 12 months "
                                      "of a basic restoration."}), False)
-# Anshunette Mccoy / Caleb Phillips: D5899 is priced only by report, with no
-# benefit level — the sheet's 0% and NC.
-_BY_REPORT = ("This procedures requires a narrative report and description of "
-              "the services provided to determine possible benefits.")
-check("delta: a by-report code with no benefit level is not covered",
-      _dd_not_covered({"benefit_level": "N/A"}, {"limitation": _BY_REPORT}), True)
-check("delta: a by-report code that states a benefit level keeps it",
-      _dd_not_covered({"benefit_level": "50%"}, {"limitation": _BY_REPORT}), False)
-
-# Caleb Phillips: the extension searches every code under the plan's network
-# and again under "Non-Delta Dental Dentist", and the sheet's "In Network"
-# decides which one the codes are audited against.
-import copy as _copy_net
-
-
-def _dd_card(code, level, limitation):
-    return {"code": code, "benefit_level": level, "deductible": "Applies",
-            "applies_to_deductible": "", "applies_to_maximum": "",
-            "rows": [{"description": code, "limitation": limitation,
-                      "service_date": "None", "age_limits": "None",
-                      "pre_approval": "None"}]}
-
-
-_net_in = [
-    _dd_card("D0120", "100%", "Benefit is limited to two of any oral evaluation "
-                              "procedure within a calendar year"),
-    _dd_card("D0150", "100%", "Benefit is limited to two of any oral evaluation "
-                              "procedure within a calendar year This procedure "
-                              "is a benefit once per provider per lifetime."),
-    _dd_card("D5899", "N/A", _BY_REPORT),
-]
-_net_oon = _copy_net.deepcopy(_net_in)
-_net_oon[1]["benefit_level"] = "50%"
-_net_export = {
-    "source": "Delta Dental",
-    "primary_patient": {"name": "CALEB PHILLIPS", "plan": "Delta Dental PPO",
-                        "static_fields": {"Member type": "Dependent",
-                                          "Date of birth": "11/20/2007"}},
-    "tabs": {
-        "overview": {"benefits_overview": [
-            {"treatment_type": "Diagnostic Oral Exams and X-Rays",
-             "contract_benefit_level": "80% - 100%", "non_delta_dental": "50%"}]},
-        "benefits_search": _net_in,
-        "benefits_search_network": "Delta Dental PPO Dentist",
-        "benefits_search_oon": _net_oon,
-        "benefits_search_oon_network": "Non-Delta Dental Dentist",
-    },
-}
-
-
-def _net_audit(in_network, export=_net_export):
-    sheet = {"fields": {"in_network": in_network, "d0150": "50%",
-                        "d0150__freq": "2X1Year", "d5899": "0",
-                        "d5899__freq": "NC", "ded_prev": "Yes"}}
-    res = sc.compare_sabrina_to_portal(sheet, export)
-    return res, {r["key"]: r for s in res["sections"] for r in s["rows"]}
-
-
-_res_out, _rows_out = _net_audit("Out")
-check("delta network: an out-of-network sheet reads the non-Delta percentage",
-      (_rows_out["d0150"]["portal"], _rows_out["d0150"]["status"]), ("50%", "match"))
-check("delta network: and says which network it read",
-      _res_out["diagnostics"]["portal_network"], "Non-Delta Dental Dentist")
-check("delta network: the plan pays out of network, so 'Out' agrees",
-      _rows_out["in_network"]["status"], "match")
-check("delta network: D0150's per-provider lifetime does not override the year",
-      (_rows_out["d0150__freq"]["portal"], _rows_out["d0150__freq"]["status"]),
-      ("2X1Year", "match"))
-check("delta network: D5899 by report is not covered",
-      (_rows_out["d5899"]["portal"], _rows_out["d5899__freq"]["portal"]),
-      ("Not Covered", "NC"))
-check("delta network: no deductible footnote on D0120 means it applies",
-      (_rows_out["ded_prev"]["portal"], _rows_out["ded_prev"]["status"]), ("Yes", "match"))
-
-_res_in, _rows_in = _net_audit("In")
-check("delta network: an in-network sheet keeps the plan network's percentage",
-      _rows_in["d0150"]["portal"], "100%")
-check("delta network: and says so",
-      _res_in["diagnostics"]["portal_network"], "Delta Dental PPO Dentist")
-
-_net_old = _copy_net.deepcopy(_net_export)
-del _net_old["tabs"]["benefits_search_oon"]
-_res_old, _rows_old = _net_audit("Out", _net_old)
-check("delta network: without the second search the plan network still answers",
-      _rows_old["d0150"]["portal"], "100%")
-check("delta network: the export passed in is not altered",
-      _net_export["tabs"]["benefits_search"][1]["benefit_level"], "100%")
 
 # Two annual maximums: a narrow one and the one covering every service.
 check("delta: the annual maximum is the one covering all services",

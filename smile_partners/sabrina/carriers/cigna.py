@@ -149,6 +149,27 @@ def _cigna_initial_coverage_date(portal_raw: dict) -> str | None:
     return None if _blank(value) else str(value).strip()
 
 
+def _cigna_in_network(portal_raw: dict) -> str | None:
+    """
+    In / Out from the network chosen in Cigna's Plan View dropdown when the
+    crawl ran: "Out" when it was Out-of-Network (OONET), "In" for any named
+    network (ADVANTAGE, TOTAL, ...). None when the export records no choice.
+    """
+    raw = _cigna_export(portal_raw)
+    if not raw:
+        return None
+    for selected in (raw.get("selected_network"),
+                     (raw.get("plan_details") or {}).get("network")):
+        if not isinstance(selected, dict):
+            continue
+        labels = [selected.get(key) for key in ("label", "dropdown_label", "name", "id")]
+        labels = [label for label in labels if not _blank(label)]
+        if not labels:
+            continue
+        return "Out" if any(_is_oon_label(label) for label in labels) else "In"
+    return None
+
+
 def _cigna_export(portal_raw: dict) -> dict | None:
     """The original Cigna export, when this portal came from Cigna."""
     if str((portal_raw or {}).get("_source_insurer", "")).lower() != "cigna":

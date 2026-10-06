@@ -13,8 +13,8 @@ from .vocabulary import _blank_for, _blank_means_no_limit, _num_date
 from .parser import _MIN_MARKERS, parse_sabrina_pdf
 from .spec import _SPEC
 from .compare import _compare
-from .portal import _portal_breakdown, _portal_normalized, _portal_value
-from .carriers.delta_dental import _dd_network_export, _dd_wrapped_history
+from .portal import (_breakdown_for_sheet, _portal_breakdown, _portal_for_sheet,
+                     _portal_normalized, _portal_value)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -63,15 +63,13 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     what each system says.
     """
     sab_fields = sabrina_parsed.get("fields", {})
-    # A Delta export carries Benefits Search for both networks; the sheet's
-    # own network decides which one it is audited against. Every other
-    # carrier's export passes through unchanged.
-    portal_raw = _dd_network_export(portal_raw, sab_fields.get("in_network"))
+    # Pick what the sheet should be read against (Aetna: the network its
+    # In Network field names). Other carriers pass through unchanged.
+    portal_raw = _portal_for_sheet(portal_raw, sab_fields)
     bd = _portal_breakdown(portal_raw)
     # Derived readers work off the translated export, not the raw one.
     portal_norm = _portal_normalized(portal_raw)
-    # A Delta audit reads a History cell that wraps onto a second line in full.
-    sab_fields = _dd_wrapped_history(sab_fields, sabrina_parsed.get("benefit_rows"), portal_norm)
+    bd = _breakdown_for_sheet(bd, portal_norm)
 
     # Some portal rules are stated per age band ("… TO AGE 19, … FOR ADULTS"),
     # so the patient's age decides which one governs. Taken as of today, which
@@ -176,9 +174,6 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             "labels_not_found": sabrina_parsed.get("labels_not_found", []),
             "marker_count": sabrina_parsed.get("marker_count"),
             "pdf_line_count": sabrina_parsed.get("line_count"),
-            # Delta only: the provider network the per-code rows were read under.
-            "portal_network": ((portal_raw or {}).get("tabs") or {}).get("benefits_search_network")
-                              if isinstance((portal_raw or {}).get("tabs"), dict) else None,
         },
     }
 

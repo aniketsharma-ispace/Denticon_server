@@ -17,13 +17,39 @@ from .carriers.cigna import (
     _cigna_annual_max_classes,
     _cigna_code_override,
     _cigna_export,
+    _cigna_in_network,
     _cigna_initial_coverage_date,
     _cigna_oon_benefits,
     _cigna_ortho_deductible,
     _cigna_standard_answer,
 )
-from .carriers.delta_dental import (_dd_code_override, _dd_export, _dd_major_paid_on,
-                                    _dd_perio_after_srp)
+from .carriers.aetna import (
+    _aetna_code_override,
+    _aetna_in_network_unverifiable,
+    _aetna_breakdown_for_sheet,
+    _aetna_oon_benefits,
+    _aetna_ortho_age,
+    _aetna_portal_for_sheet,
+)
+
+
+def _portal_for_sheet(portal_raw: dict, sab_fields: dict) -> dict:
+    """
+    The portal export as this sheet should read it.
+
+    Aetna's export carries in-network and out-of-network benefits side by
+    side; the sheet's In Network field decides which one is audited. Every
+    other carrier's export passes through unchanged.
+    """
+    return _aetna_portal_for_sheet(portal_raw, sab_fields)
+
+
+def _breakdown_for_sheet(bd: dict, portal_norm: dict) -> dict:
+    """
+    The breakdown with the answers this sheet reads differently from the
+    New Plan PDF (Aetna only). Other carriers pass through unchanged.
+    """
+    return _aetna_breakdown_for_sheet(bd, portal_norm)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -158,6 +184,10 @@ def _network_coverage(portal_raw: dict) -> tuple[bool, bool, bool]:
 
 def _portal_in_network(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
+    Cigna: decided by the network selected in the Plan View dropdown —
+    Out-of-Network means "Out", any named network means "In".
+
+    Other carriers:
     The network type, confirmed against what the plan actually pays under.
 
     The portal does NOT reliably state whether this particular office is in or
@@ -174,6 +204,15 @@ def _portal_in_network(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     Where the plan pays under both — the common case — either claim is valid and
     this correctly reports agreement.
     """
+    cigna = _cigna_in_network(portal_raw)
+    if cigna:
+        return cigna
+
+    # Aetna lists the plan's networks, never whether this office is in one.
+    # The sheet's answer is used to pick the benefits, not checked.
+    if _aetna_in_network_unverifiable(portal_raw):
+        return None
+
     pays_in, pays_out, stated = _network_coverage(portal_raw)
 
     if stated:
@@ -302,6 +341,9 @@ def _portal_ortho_age(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
             if not age:
                 continue
             return "99" if age.lower() in ("none", "no limit", "n/a") else age
+    aetna = _aetna_ortho_age(portal_raw)
+    if aetna:
+        return aetna
     procs = bd.get("procs", {})
     return _procfield_from_procs(procs, "age_limit", ("D8080", "D8090", "D8010"))
 
@@ -398,6 +440,10 @@ def _portal_oon_benefits(bd: dict, portal_raw: dict, sab_raw=None) -> str | None
     if cigna:
         return cigna
 
+    aetna = _aetna_oon_benefits(portal_raw)
+    if aetna:
+        return aetna
+
     ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
 
     services = ml.get("covered_services")
@@ -450,15 +496,12 @@ def _portal_major_paid_on(bd: dict, portal_raw: dict, sab_raw=None) -> str | Non
     """
     Whether major services are paid on the prep or the seat date.
 
-    Cigna: always "Seat Date" (Cigna standard value). Delta Dental: "Seat
-    Date" where D2740 is covered, otherwise blank. Other carriers: taken from
-    the breakdown's prep/seat answers where the portal states them.
+    Cigna: always "Seat Date" (Cigna standard value). Other carriers: taken
+    from the breakdown's prep/seat answers where the portal states them.
     """
     standard = _cigna_standard_answer(portal_raw, "major_paid_on")
     if standard:
         return standard
-    if _dd_export(portal_raw):
-        return _dd_major_paid_on(portal_raw)
     if _num_yesno(bd.get("or_seat")) == "YES":
         return "Seat Date"
     if _num_yesno(bd.get("major_on_prep")) == "YES":
@@ -467,18 +510,8 @@ def _portal_major_paid_on(bd: dict, portal_raw: dict, sab_raw=None) -> str | Non
 
 
 def _portal_perio_after_srp(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
-    """
-    When the first perio maintenance is allowed after SRP.
-
-    Cigna: always "Next Day" (Cigna standard value). Delta Dental: the
-    post-operative period D4910's limitation names.
-    """
-    standard = _cigna_standard_answer(portal_raw, "perio_maint_after_srp")
-    if standard:
-        return standard
-    if _dd_export(portal_raw):
-        return _dd_perio_after_srp(portal_raw)
-    return None
+    """When the first perio maintenance is allowed after SRP (Cigna: "Next Day")."""
+    return _cigna_standard_answer(portal_raw, "perio_maint_after_srp")
 
 
 def _portal_d4341_quads(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
@@ -529,8 +562,10 @@ def _portal_value(field: dict, bd: dict, portal_raw: dict, sab_raw=None) -> str 
         value = _procfield_from_procs(bd.get("procs", {}), src[1], src[2:])
         handled, corrected = _cigna_code_override(
             field, value, bd, portal_raw, src[2:], src[1])
-        if not handled:
-            handled, corrected = _dd_code_override(value, portal_raw, src[2:], src[1], sab_raw)
+        if handled:
+            return corrected
+        handled, corrected = _aetna_code_override(
+            field, value, bd, portal_raw, src[2:], src[1])
         return corrected if handled else value
     if isinstance(src, str) and src in _DERIVED:
         return _DERIVED[src](bd, portal_raw, sab_raw)

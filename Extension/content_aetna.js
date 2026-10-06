@@ -9,11 +9,11 @@ const clean = (s) => (s || "").trim().replace(/\s+/g, ' ');
 // ══════════════════════════════════════════════════════════════════════════
 
 const PROCEDURE_CODES = [
-    "D0180", "D0120", "D0140", "D0150", "D0210", "D0220", "D0230", "D0240", "D0274", "D0330",
-    "D1510", "D1110", "D1120", "D1206", "D1351", "D2140", "D2331", "D2620", "D2740", "D2950",
-    "D2991", "D3347", "D3310", "D3330", "D4260", "D4341", "D4355", "D4381", "D4910", "D5860",
-    "D5110", "D5740", "D5982", "D6194", "D6010", "D6056", "D6065", "D6245", "D7259", "D7140",
-    "D7240", "D8010", "D8080", "D8090", "D9430", "D9110", "D9222", "D9239", "D9310", "D9944"
+    "D0220","D0120","D0140","D0150","D0210","D0330","D0274","D1110","D1206",
+    "D1208","D1351","D1510","D2160","D2391","D2740","D2950","D2980","D3310",
+    "D4260","D4341","D4346","D4355","D4381","D4910","D5110","D5212","D5899",
+    "D6010","D6750","D7140","D7210","D9110","D9230","D9243","D9944","D5995",
+    "D6057","D6058","D9310","D8080","D8090"
 ];
 
 const CLAIMCONNECT_CRAWL_KEY = "__claimconnect_aetna_crawl_state_v1";
@@ -370,187 +370,178 @@ function getMultiTabValues(labelText) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// MAXIMUMS / DEDUCTIBLES — legend-anchored extraction
+// BENEFIT TABLES — legend-anchored, split by network
 // ══════════════════════════════════════════════════════════════════════════
-// Aetna renders each Maximums/Deductibles block as:
-//   <div class="well well-white wraper wraper-mini">
-//     <legend class="legend">Maximums - In Network</legend>
+// Every benefit table sits under a legend that names its type and network:
+//   <div class="well ...">
+//     <legend class="legend">Co-Insurance - In Network</legend>
 //     <div><table>...rows...</table></div>
 //   </div>
-// Plans may show 1 or 2 Maximums tables (In Network / Out of Network split)
-// plus a Deductibles table, in any order. Header-counting to tell them apart
-// breaks the moment a plan has more than one Maximums table (2 headers before
-// the Deductibles table's header instead of 1), so we anchor on the legend
-// text directly instead — robust to however many tables exist or what order
-// they appear in.
 //
-// Per policy: only IN-NETWORK maximums are used for patient notes. Out of
-// Network maximums are read (and can be inspected) but intentionally
-// excluded from the returned maximums array.
+// Types:    Maximums, Deductibles, Co-Insurance, Service Level Benefits
+// Networks: "In Network", "In and Out of Network", "Out of Network"
+//
+// Output has two buckets, in_network and out_of_network. A row from an
+// "In and Out of Network" table applies to both, so it goes into BOTH
+// buckets. Each row keeps a "source" field ("in", "in_and_out", "out")
+// so you can still tell which table it came from.
+//
+// A legend with a type but no network wording is treated as applying to
+// both networks, with source "unlabeled".
 
-function _rowsFromLegend(legendEl) {
+function _legendKind(text) {
+    if (/service\s+level\s+benefits/i.test(text)) return "service_level_benefits";
+    if (/co-?\s*insurance/i.test(text))           return "co_insurance";
+    if (/maximums?/i.test(text))                  return "maximums";
+    if (/deductibles?/i.test(text))               return "deductibles";
+    return null;
+}
+
+function _legendNetwork(text) {
+    // "in and out of network" is checked FIRST, because "out of network"
+    // is a plain substring of it.
+    if (/in\s+and\s+out\s+of\s+network/i.test(text)) return "in_and_out";
+    if (/out\s*of\s*network/i.test(text))            return "out";
+    if (/in\s*network/i.test(text))                  return "in";
+    return "unlabeled";
+}
+
+function _tableRowsUnderLegend(legendEl) {
     var container = legendEl.parentElement;
     var table = container ? container.querySelector("table") : null;
-    if (!table) return [];
-    var rows = table.querySelectorAll("tr");
+    return table ? Array.from(table.querySelectorAll("tr")) : [];
+}
+
+// Maximums / Deductibles: Type | Coverage | Amount | Remaining | Message
+function _parseAmountRows(rows) {
     var out = [];
     rows.forEach(function(r) {
         var cells = r.querySelectorAll("td");
-        if (cells.length >= 4) {
-            var t = clean(cells[0].innerText);
-            if (t && !t.match(/^D\d{4}/)) {
-                out.push({
-                    type:      t,
-                    coverage:  clean(cells[1].innerText),
-                    amount:    clean(cells[2].innerText),
-                    remaining: clean(cells[3].innerText),
-                    message:   clean(cells[4] ? cells[4].innerText : "")
-                });
-            }
-        }
+        if (cells.length < 4) return;
+        var t = clean(cells[0].innerText);
+        if (!t || t === "Type" || /^D\d{4}/.test(t)) return;
+        out.push({
+            type:      t,
+            coverage:  clean(cells[1].innerText),
+            amount:    clean(cells[2].innerText),
+            remaining: clean(cells[3].innerText),
+            message:   clean(cells[4] ? cells[4].innerText : "")
+        });
     });
     return out;
 }
 
-function scrapeMaximumsAndDeductibles() {
-    var legends = document.querySelectorAll("legend");
-    var maxInNetwork  = [];
-    var maxOutNetwork = [];
-    var deductibles   = [];
+// Co-Insurance: Type | Percentage (Pat% / Ins%)
+function _parseCoInsuranceRows(rows) {
+    var out = [];
+    rows.forEach(function(r) {
+        var cells = r.querySelectorAll("td");
+        if (cells.length < 2) return;
+        var t = clean(cells[0].innerText);
+        if (!t || t === "Type") return;
+        out.push({
+            type:       t,
+            percentage: clean(cells[1].innerText)
+        });
+    });
+    return out;
+}
 
-    legends.forEach(function(lg) {
+// Service Level Benefits: Procedure Code | Percentage | Frequency & Limitations | Message
+function _parseServiceRows(rows) {
+    var out = [];
+    for (var i = 0; i < rows.length; i++) {
+        var text = rows[i].innerText.trim();
+        var cols = rows[i].querySelectorAll("td");
+
+        if (text.includes("Procedure Code") && text.includes("Percentage")) continue; // header
+        if (text.includes("PAYMENT IS BASED")) break;                                // footer
+        if (cols.length < 2) continue;
+
+        var code = clean(cols[0].innerText);
+        if (!code) continue;
+
+        var freqText = cols[2] ? cols[2].innerText : "";
+        var col3Text = cols[3] ? cols[3].innerText : "";
+        var sharesMatch = col3Text.match(/Shares frequency with\s*([^\n]+)/i);
+        out.push({
+            procedure_code:         code,
+            percentage_copay:       clean(cols[1].innerText),
+            frequency:              (freqText.match(/Frequency:\s*([^\n]+)/) || [])[1] || "N/A",
+            history:                (freqText.match(/History:\s*([^\n]+)/)   || [])[1] || "N/A",
+            age_limit:              (freqText.match(/Age Limitation:\s*([^\n]+)/) || [])[1] || "N/A",
+            shares_frequency_with:  sharesMatch ? clean(sharesMatch[1]) : "",
+            message:                clean(col3Text)
+        });
+    }
+    return out;
+}
+
+function _emptyBucket() {
+    return { maximums: [], deductibles: [], co_insurance: [], service_level_benefits: [] };
+}
+
+function scrapeBenefitTables() {
+    var inNet  = _emptyBucket();
+    var outNet = _emptyBucket();
+    var sectionsFound = [];
+
+    document.querySelectorAll("legend").forEach(function(lg) {
         var text = clean(lg.textContent);
-        var isMaximums   = /maximums/i.test(text);
-        var isDeductible = /deductibles/i.test(text);
-        // "in and out of network" is checked FIRST and explicitly, because
-        // "out of network" is a plain substring of it — checking the
-        // out-of-network-only pattern first would wrongly swallow this
-        // combined-table case (as it did for a plan using this exact
-        // legend wording, which zeroed out In-Network maximums entirely).
-        var isCombined  = /in\s+and\s+out\s+of\s+network/i.test(text);
-        var isOutOnly   = !isCombined && /out\s*of\s*network/i.test(text);
-        var isInOnly    = !isCombined && !isOutOnly && /in\s*network/i.test(text);
+        var kind = _legendKind(text);
+        if (!kind) return;
 
-        if (isMaximums && (isCombined || isInOnly)) {
-            // Combined table applies to both networks; the same row is the
-            // correct In-Network figure, so it goes into maxInNetwork.
-            maxInNetwork = maxInNetwork.concat(_rowsFromLegend(lg));
-        }
-        if (isMaximums && (isCombined || isOutOnly)) {
-            maxOutNetwork = maxOutNetwork.concat(_rowsFromLegend(lg));
-        }
-        if (isDeductible) {
-            deductibles = deductibles.concat(_rowsFromLegend(lg));
-        }
+        var network = _legendNetwork(text);
+        var rows = _tableRowsUnderLegend(lg);
+        var parsed;
+        if (kind === "service_level_benefits") parsed = _parseServiceRows(rows);
+        else if (kind === "co_insurance")      parsed = _parseCoInsuranceRows(rows);
+        else                                   parsed = _parseAmountRows(rows);
+
+        parsed.forEach(function(row) { row.source = network; });
+        sectionsFound.push({ legend: text, kind: kind, network: network, rows: parsed.length });
+
+        var goesIn  = network !== "out";
+        var goesOut = network !== "in";
+        if (goesIn)  inNet[kind]  = inNet[kind].concat(parsed.map(function(r) { return Object.assign({}, r); }));
+        if (goesOut) outNet[kind] = outNet[kind].concat(parsed.map(function(r) { return Object.assign({}, r); }));
     });
 
-    return {
-        maximums: maxInNetwork,               // In-Network only — used for patient notes
-        maximums_out_of_network: maxOutNetwork, // kept for reference/debugging, not used downstream
-        deductibles: deductibles
-    };
+    return { in_network: inNet, out_of_network: outNet, sections_found: sectionsFound };
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// MAIN TABLE SCRAPER
-// Single pass through all rows, categorizing by section
-// (Maximums/Deductibles handled separately above — this loop now just
-// SKIPS those header/data rows instead of trying to classify them, so they
-// can't leak into co_insurance/remarks or get misfiled.)
+// PLAN LEVEL REMARKS
+// Simple text rows that appear before the first benefit table header.
 // ══════════════════════════════════════════════════════════════════════════
 
-function scrapeTables() {
+function scrapeRemarks() {
     var allRows = document.querySelectorAll("tr");
     var remarks = [];
-    var coRows  = [];
-    var svcRows = [];
-
-    var section = "none";
 
     for (var i = 0; i < allRows.length; i++) {
         var text = allRows[i].innerText.trim();
         var cols = allRows[i].querySelectorAll("td");
 
-        // ── Section headers ──────────────────────────────────────────────
+        // Stop at the first benefit table header of any kind
+        var isSvcHeader = text.includes("Procedure Code") && text.includes("Percentage") &&
+                          text.includes("Frequency") && text.includes("Message");
+        var isCoHeader  = text.includes("Type") && text.includes("Pat%") && !text.includes("Procedure");
+        var isAmtHeader = text.includes("Type") && text.includes("Coverage") && text.includes("Amount") &&
+                          text.includes("Remaining") && text.includes("Message");
+        if (isSvcHeader || isCoHeader || isAmtHeader) break;
 
-        // 4-column service level table (the real one with percentages)
-        if (text.includes("Procedure Code") &&
-            text.includes("Percentage") &&
-            text.includes("Frequency") &&
-            text.includes("Message")) {
-            section = "svc";
-            continue;
-        }
-
-        // Stop service section at "PAYMENT IS BASED"
-        if (section === "svc" && text.includes("PAYMENT IS BASED")) {
-            section = "done";
-            continue;
-        }
-
-        // Co-insurance header
-        if (text.includes("Type") && text.includes("Pat%") && !text.includes("Procedure")) {
-            section = "co";
-            continue;
-        }
-
-        // Maximums/Deductibles header — already extracted via legend anchors
-        // above, so just skip past these rows (don't classify/collect them
-        // here, and don't fall through to remarks/co-insurance either).
-        if (text.includes("Type") && text.includes("Coverage") && text.includes("Amount") &&
-            text.includes("Remaining") && text.includes("Message") && !text.includes("Procedure")) {
-            section = "skip_max_ded";
-            continue;
-        }
-        if (section === "skip_max_ded") {
-            // stay skipped until we hit the next recognized header (svc/co)
-            // or a blank row signaling the table ended — either way, just
-            // don't collect this row into anything.
-            if (cols.length >= 4 || text === "") continue;
-        }
-
-        // Plan remarks — simple text rows before maximums
-        if (section === "none" && cols.length <= 1 && text.length > 3 &&
+        if (cols.length <= 1 && text.length > 3 &&
             !text.includes("Patient") && !text.includes("Payer") &&
             !text.includes("Dates") && !text.includes("Plan Begin") &&
             !text.includes("Information Type") && !text.includes("Related Entity") &&
             !text.includes("Name:") && !text.includes("Address:") &&
             !text.includes("Type") && text !== "Plan Level Remarks") {
             remarks.push(text);
-            continue;
-        }
-
-        // ── Data rows ────────────────────────────────────────────────────
-
-        if (section === "co" && cols.length >= 2) {
-            var ct = clean(cols[0].innerText);
-            if (ct && !ct.includes("Type")) {
-                coRows.push({
-                    type:       ct,
-                    percentage: clean(cols[1].innerText)
-                });
-            }
-        }
-
-        if (section === "svc" && cols.length >= 2) {
-            var code = clean(cols[0].innerText);
-            if (!code) continue;
-            var freqText = cols[2] ? cols[2].innerText : "";
-            var col3Text = cols[3] ? cols[3].innerText : "";
-            var sharesMatch = col3Text.match(/Shares frequency with\s*([^\n]+)/i);
-            svcRows.push({
-                procedure_code:         code,
-                percentage_copay:       clean(cols[1].innerText),
-                frequency:              (freqText.match(/Frequency:\s*([^\n]+)/) || [])[1] || "N/A",
-                history:                (freqText.match(/History:\s*([^\n]+)/)   || [])[1] || "N/A",
-                age_limit:              (freqText.match(/Age Limitation:\s*([^\n]+)/) || [])[1] || "N/A",
-                shares_frequency_with:  sharesMatch ? clean(sharesMatch[1]) : "",
-                message:                clean(col3Text)
-            });
         }
     }
 
-    return { remarks, coRows, svcRows };
+    return remarks;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -558,27 +549,25 @@ function scrapeTables() {
 // ══════════════════════════════════════════════════════════════════════════
 
 function buildAetnaPayload() {
-    var t   = scrapeTables();
-    var md  = scrapeMaximumsAndDeductibles();
+    var bt = scrapeBenefitTables();
+    var st = _getCrawlState();
     return {
         source:    "ClaimConnect - Extended Plan Benefits",
         timestamp: new Date().toISOString(),
         patient:   getMultiTabValues("Member ID or SSN:"),
         payer:     getMultiTabValues("Coverage:"),
         dates:     getMultiTabValues("Plan Begin:"),
-        subscriber:              _getCrawlState().subscriber || {},
-        eligibility_members:     _getCrawlState().eligibility_members || [],
-        selected_member:         _getCrawlState().selected_member || null,
-        patient_information:     _getCrawlState().patient_information || {},
-        provider_details:        _getCrawlState().provider_details || {},
-        coverage_details:        _getCrawlState().coverage_details || {},
-        requested_procedure_codes: _getCrawlState().requested_procedure_codes || PROCEDURE_CODES.slice(),
-        plan_level_remarks:      t.remarks,
-        maximums:                md.maximums,               // In-Network only
-        maximums_out_of_network: md.maximums_out_of_network, // reference only, not used in patient notes
-        deductibles:             md.deductibles,
-        co_insurance:            t.coRows,
-        service_level_benefits:  t.svcRows
+        subscriber:              st.subscriber || {},
+        eligibility_members:     st.eligibility_members || [],
+        selected_member:         st.selected_member || null,
+        patient_information:     st.patient_information || {},
+        provider_details:        st.provider_details || {},
+        coverage_details:        st.coverage_details || {},
+        requested_procedure_codes: st.requested_procedure_codes || PROCEDURE_CODES.slice(),
+        plan_level_remarks:      scrapeRemarks(),
+        in_network:              bt.in_network,      // In Network + In and Out of Network tables
+        out_of_network:          bt.out_of_network,  // Out of Network + In and Out of Network tables
+        sections_found:          bt.sections_found   // which legends were read, for checking
     };
 }
 
