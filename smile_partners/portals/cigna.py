@@ -840,6 +840,7 @@ def _normalize_cigna_portal(raw):
         'ortho_ded_total': ortho_ded.get('amount') or '',
         'ortho_ded_used': ortho_ded.get('met') or '',
         'network_name': network.get('name') or '',
+        'account_name': plan.get('account_name') or summary.get('group_name') or '',
         'plan_renews': plan.get('plan_renews') or '',
         'unresolved_codes': sorted(set(unresolved_codes)),
         'procedure_result_count': len(results),
@@ -870,6 +871,25 @@ def _apply_cigna_output_rules(data, normalized):
         meta.get('waiting_period')
     )
 
+    # Family deductible (business rules for Cigna):
+    #   - Family card on the portal -> its own total and used amount, as
+    #     stated. The individual's used amount is never copied onto it.
+    #   - No family card -> the family used amount is the individual used
+    #     amount, and the family total depends on the account:
+    #       * INDIVIDUAL account (account name contains "Individual", e.g.
+    #         "GA INDIVIDUAL 2"): the individual deductible total.
+    #       * Any other account: 3 x the individual deductible total.
+    individual_account = 'INDIVIDUAL' in str(meta.get('account_name', '')).upper()
+    if meta.get('family_deductible_present'):
+        family_ded = data.get('family_ded', '')
+        family_ded_paid = data.get('family_ded_paid', '')
+    else:
+        family_ded = (
+            data.get('indiv_ded', '') if individual_account
+            else _triple_individual_deductible(data.get('indiv_ded'))
+        )
+        family_ded_paid = data.get('indiv_ded_paid', '')
+
     data.update({
         'source_insurer': 'cigna',
         'ins_name': '(IN) CIGNA',
@@ -887,16 +907,8 @@ def _apply_cigna_output_rules(data, normalized):
             if 'CALENDAR' in str(meta.get('plan_renews', '')).upper()
             else _effective_date_month(data.get('eff_date')) or '-'
         ),
-        'family_ded': (
-            data.get('family_ded', '')
-            if meta.get('family_deductible_present')
-            else _triple_individual_deductible(data.get('indiv_ded'))
-        ),
-        'family_ded_paid': (
-            data.get('family_ded_paid', '')
-            if meta.get('family_deductible_present')
-            else data.get('indiv_ded_paid', '')
-        ),
+        'family_ded': family_ded,
+        'family_ded_paid': family_ded_paid,
         'yearly_max': (
             data.get('yearly_max', '') if meta.get('annual_max_present') else '-'
         ),

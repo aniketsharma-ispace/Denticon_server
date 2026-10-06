@@ -1,0 +1,144 @@
+diff --git a/smile_partners/sabrina/audit.py b/smile_partners/sabrina/audit.py
+index c005710..3c67c7a 100644
+--- a/smile_partners/sabrina/audit.py
++++ b/smile_partners/sabrina/audit.py
+@@ -13,7 +13,8 @@ from .vocabulary import _blank_for, _blank_means_no_limit, _num_date
+ from .parser import _MIN_MARKERS, parse_sabrina_pdf
+ from .spec import _SPEC
+ from .compare import _compare
+-from .portal import _portal_breakdown, _portal_normalized, _portal_value
++from .portal import (_breakdown_for_sheet, _portal_breakdown, _portal_for_sheet,
++                     _portal_normalized, _portal_value)
+ 
+ 
+ # ══════════════════════════════════════════════════════════════════════════════
+@@ -62,9 +63,13 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
+     what each system says.
+     """
+     sab_fields = sabrina_parsed.get("fields", {})
++    # Pick what the sheet should be read against (Aetna: the network its
++    # In Network field names). Other carriers pass through unchanged.
++    portal_raw = _portal_for_sheet(portal_raw, sab_fields)
+     bd = _portal_breakdown(portal_raw)
+     # Derived readers work off the translated export, not the raw one.
+     portal_norm = _portal_normalized(portal_raw)
++    bd = _breakdown_for_sheet(bd, portal_norm)
+ 
+     # Some portal rules are stated per age band ("… TO AGE 19, … FOR ADULTS"),
+     # so the patient's age decides which one governs. Taken as of today, which
+diff --git a/smile_partners/sabrina/portal.py b/smile_partners/sabrina/portal.py
+index d2d64b0..1290a8f 100644
+--- a/smile_partners/sabrina/portal.py
++++ b/smile_partners/sabrina/portal.py
+@@ -23,6 +23,33 @@ from .carriers.cigna import (
+     _cigna_ortho_deductible,
+     _cigna_standard_answer,
+ )
++from .carriers.aetna import (
++    _aetna_code_override,
++    _aetna_in_network_unverifiable,
++    _aetna_breakdown_for_sheet,
++    _aetna_oon_benefits,
++    _aetna_ortho_age,
++    _aetna_portal_for_sheet,
++)
++
++
++def _portal_for_sheet(portal_raw: dict, sab_fields: dict) -> dict:
++    """
++    The portal export as this sheet should read it.
++
++    Aetna's export carries in-network and out-of-network benefits side by
++    side; the sheet's In Network field decides which one is audited. Every
++    other carrier's export passes through unchanged.
++    """
++    return _aetna_portal_for_sheet(portal_raw, sab_fields)
++
++
++def _breakdown_for_sheet(bd: dict, portal_norm: dict) -> dict:
++    """
++    The breakdown with the answers this sheet reads differently from the
++    New Plan PDF (Aetna only). Other carriers pass through unchanged.
++    """
++    return _aetna_breakdown_for_sheet(bd, portal_norm)
+ 
+ 
+ # ══════════════════════════════════════════════════════════════════════════════
+@@ -181,6 +208,11 @@ def _portal_in_network(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+     if cigna:
+         return cigna
+ 
++    # Aetna lists the plan's networks, never whether this office is in one.
++    # The sheet's answer is used to pick the benefits, not checked.
++    if _aetna_in_network_unverifiable(portal_raw):
++        return None
++
+     pays_in, pays_out, stated = _network_coverage(portal_raw)
+ 
+     if stated:
+@@ -309,6 +341,9 @@ def _portal_ortho_age(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+             if not age:
+                 continue
+             return "99" if age.lower() in ("none", "no limit", "n/a") else age
++    aetna = _aetna_ortho_age(portal_raw)
++    if aetna:
++        return aetna
+     procs = bd.get("procs", {})
+     return _procfield_from_procs(procs, "age_limit", ("D8080", "D8090", "D8010"))
+ 
+@@ -405,6 +440,10 @@ def _portal_oon_benefits(bd: dict, portal_raw: dict, sab_raw=None) -> str | None
+     if cigna:
+         return cigna
+ 
++    aetna = _aetna_oon_benefits(portal_raw)
++    if aetna:
++        return aetna
++
+     ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
+ 
+     services = ml.get("covered_services")
+@@ -523,6 +562,10 @@ def _portal_value(field: dict, bd: dict, portal_raw: dict, sab_raw=None) -> str
+         value = _procfield_from_procs(bd.get("procs", {}), src[1], src[2:])
+         handled, corrected = _cigna_code_override(
+             field, value, bd, portal_raw, src[2:], src[1])
++        if handled:
++            return corrected
++        handled, corrected = _aetna_code_override(
++            field, value, bd, portal_raw, src[2:], src[1])
+         return corrected if handled else value
+     if isinstance(src, str) and src in _DERIVED:
+         return _DERIVED[src](bd, portal_raw, sab_raw)
+diff --git a/smile_partners/sabrina/spec.py b/smile_partners/sabrina/spec.py
+index 275350a..b9b79bf 100644
+--- a/smile_partners/sabrina/spec.py
++++ b/smile_partners/sabrina/spec.py
+@@ -251,7 +251,7 @@ _AGE_LIMIT_CODES = {"D1206", "D1208", "D1351", "D1510", "D8080", "D4341"}
+ 
+ _HISTORY_CODES = {
+     "D0120", "D0140", "D0150", "D0210", "D0274", "D0330", "D1110",
+-    "D1206", "D1208", "D1351", "D1510", "D4341", "D4910",
++    "D1206", "D1208", "D1351", "D4341", "D4910",
+ }
+ 
+ 
+diff --git a/tests/test_sabrina.py b/tests/test_sabrina.py
+index 1a1a1d9..b574920 100644
+--- a/tests/test_sabrina.py
++++ b/tests/test_sabrina.py
+@@ -513,12 +513,12 @@ _by_aspect = {a: sorted(f["row_key"] for f in _derived if f["aspect"] == a)
+ 
+ check("age limit compared only for D1206/D1208/D1351/D1510/D8080",
+       _by_aspect["age"], ["d1206", "d1208", "d1351", "d1510", "ortho_coverage"])
+-# Thirteen codes: the requirements matrix (Material/Smile/JSON Requirment.pdf)
+-# adds D0150 to the History column alongside the twelve listed earlier.
+-check("history compared only for the thirteen listed codes",
++# Twelve codes, the ones Sabrina generates a history for. D1510 was dropped
++# from the list (Oct 2026): the sheet does not carry a history for it.
++check("history compared only for the twelve listed codes",
+       _by_aspect["hist"],
+       ["d0120", "d0140", "d0150", "d0210", "d0274", "d0330", "d1110",
+-       "d1206", "d1208", "d1351", "d1510", "d4341", "d4910"])
++       "d1206", "d1208", "d1351", "d4341", "d4910"])
+ _cdt_keys = {f["key"] for f in sc._SPEC
+              if f["section"] == "Coverage by CDT Code" and not f.get("derived")}
+ check("frequency skipped for D3310/D7140/D7210/D9230/D9243/D8080/D8090",

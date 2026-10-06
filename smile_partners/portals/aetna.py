@@ -19,6 +19,43 @@ def _aetna_network_label(value):
     return re.sub(r'\s*,\s*', ', ', raw)
 
 
+# The extension splits every benefit table by network:
+#   raw["in_network"]     = In Network tables + In and Out of Network tables
+#   raw["out_of_network"] = Out of Network tables + In and Out of Network tables
+# each holding maximums / deductibles / co_insurance / service_level_benefits.
+# Older exports had those four lists flat at the top level, with every
+# network mixed together.
+_AETNA_BUCKET_KEYS = ('maximums', 'deductibles', 'co_insurance', 'service_level_benefits')
+
+
+def _aetna_has_network_buckets(raw):
+    """True for an export from the extension that splits tables by network."""
+    return (
+        isinstance(raw, dict)
+        and isinstance(raw.get('in_network'), dict)
+        and isinstance(raw.get('out_of_network'), dict)
+    )
+
+
+def _aetna_network_view(raw, network='in'):
+    """
+    The export with one network's tables at the top level.
+
+    Everything below reads the four flat lists, so this lifts the chosen
+    bucket up to where they expect it. `network` is "in" or "out"; anything
+    else reads as "in". An old flat export passes through unchanged.
+    """
+    if not _aetna_has_network_buckets(raw):
+        return raw
+    network = 'out' if str(network or '').strip().lower() == 'out' else 'in'
+    bucket = raw['out_of_network'] if network == 'out' else raw['in_network']
+    view = dict(raw)
+    for key in _AETNA_BUCKET_KEYS:
+        view[key] = list(bucket.get(key) or [])
+    view['_aetna_network'] = network
+    return view
+
+
 def _is_aetna_portal(raw):
     """Recognize the ClaimConnect/Aetna payload without affecting other carriers."""
     if not isinstance(raw, dict):
@@ -41,6 +78,7 @@ def _is_aetna_portal(raw):
 
     return (
         'aetna' in payer_name
+        or ('claimconnect' in source and _aetna_has_network_buckets(raw))
         or (
             'claimconnect' in source
             and isinstance(raw.get('service_level_benefits'), list)
@@ -262,6 +300,9 @@ def _aetna_has_alternate_benefit(proc):
 
 def _normalize_aetna_portal(raw):
     """Translate the ClaimConnect payload into the existing Portal contract."""
+    # Read one network's tables. In network unless the caller already picked
+    # (the Sabrina audit picks from the sheet's In Network field).
+    raw = _aetna_network_view(raw, raw.get('_aetna_network') or 'in')
     patient = raw.get('patient') if isinstance(raw.get('patient'), dict) else {}
     selected = (
         raw.get('selected_member')
