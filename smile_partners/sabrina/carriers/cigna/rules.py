@@ -9,7 +9,7 @@ way this sheet records the answer. Cigna's export is translated by
 from __future__ import annotations
 
 import re
-from ..vocabulary import _blank, _coalesce_keys, _num_pct
+from .vocabulary import _blank, _coalesce_keys, _num_pct
 
 
 # Cigna reports these three as "not covered" on the per-code lookup even
@@ -190,7 +190,7 @@ def _cigna_annual_max_classes(portal_raw: dict) -> str:
     raw = _cigna_export(portal_raw)
     if not raw:
         return ""
-    from ...portals.cigna import _cigna_general_annual_record
+    from ....portals.cigna import _cigna_general_annual_record
     records = ((raw.get("financials") or {}).get("maximum_records")) or []
     network = (raw.get("plan_details") or {}).get("network") or {}
     try:
@@ -285,7 +285,7 @@ def _cigna_ortho_deductible(portal_raw: dict) -> str | None:
     if not isinstance(records, list):
         return None                 # no deductible data at all → not stated
 
-    from ...portals.cigna import _cigna_ortho_deductible_record
+    from ....portals.cigna import _cigna_ortho_deductible_record
     network = (raw.get("plan_details") or {}).get("network") or {}
     if _cigna_ortho_deductible_record(records, network):
         return None                 # a real ortho deductible exists; bd has it

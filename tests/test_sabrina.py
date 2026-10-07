@@ -1016,18 +1016,22 @@ else:
 print("── 1h. CIGNA PAIRING (Matthew Herzwurm) ──")
 
 # Unit-level: the pieces that were broken, independent of the fixture files.
+# This is Cigna's wording, so it is checked against Cigna's own copy of the
+# vocabulary — the one a Cigna audit uses.
+from smile_partners.sabrina.carriers.cigna import compare as cg_compare, vocabulary as cg_vocab
+
 check("cigna: 'Not Applicable' means no frequency limit",
-      sc._num_frequency("Not Applicable"), ("unlimited",))
+      cg_vocab._num_frequency("Not Applicable"), ("unlimited",))
 check("cigna: and is not treated as a blank for a frequency",
-      sc._blank_for("frequency", "Not Applicable"), False)
+      cg_vocab._blank_for("frequency", "Not Applicable"), False)
 check("cigna: it still reads as blank for other kinds",
-      sc._blank_for("money", "Not Applicable"), True)
+      cg_vocab._blank_for("money", "Not Applicable"), True)
 check("cigna: 'No benefits for this service' is not-covered, not no-limit",
-      sc._num_frequency("No benefits for this service"), ("not covered",))
+      cg_vocab._num_frequency("No benefits for this service"), ("not covered",))
 check("cigna: 'Exclude after age 18' is an upper bound of 18",
-      sc._num_agelimit("Exclude after age 18"), 18)
+      cg_vocab._num_agelimit("Exclude after age 18"), 18)
 check("cigna: sheet 18 matches an 'Exclude after age 18' limit",
-      sc._compare("agelimit", "18", "Exclude after age 18")[0], True)
+      cg_compare._compare("agelimit", "18", "Exclude after age 18")[0], True)
 
 # A multi-class annual maximum must survive the ortho/implant exclusion.
 from smile_partners.portals.cigna import _cigna_general_annual_record as _annual
@@ -1594,7 +1598,7 @@ check("delta frequency: 'within 30 days of' another service is not a period",
 
 # Delta does not state the two clause answers; the sheet derives them from
 # D2740's coverage and D4910's limitation.
-from smile_partners.sabrina.portal import _portal_major_paid_on, _portal_perio_after_srp
+from sabrina_compare import _portal_major_paid_on, _portal_perio_after_srp
 
 
 def _dd_codes(*entries):
@@ -1634,7 +1638,7 @@ check("delta perio after SRP: D4910 names no period -> Not available in website"
 check("delta perio after SRP: D4910 never searched -> not stated",
       _portal_perio_after_srp({}, _dd_codes(_dd_entry("D0120", "100%", "None"))), None)
 # A wrapped History cell is read in full in a Delta audit and nowhere else.
-from smile_partners.sabrina.carriers.delta_dental import _dd_wrapped_history
+from smile_partners.sabrina.carriers.delta_dental.rules import _dd_wrapped_history
 
 _WRAPPED_SHEET = {
     "fields": {"d1110__hist": "06/10/2026,"},

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 
-from ..vocabulary import _norm_network
+from .vocabulary import _norm_network
 
 
 # The tables whose network label decides OON Benefits. Service Level
@@ -27,7 +27,7 @@ _OON_TABLES = ("maximums", "deductibles", "co_insurance")
 
 def _aetna_export(portal_raw: dict) -> dict | None:
     """The raw Aetna export with network buckets, bare or wrapped."""
-    from ...portals.aetna import _aetna_has_network_buckets, _is_aetna_portal
+    from ....portals.aetna import _aetna_has_network_buckets, _is_aetna_portal
 
     if not isinstance(portal_raw, dict):
         return None
@@ -50,7 +50,7 @@ def _aetna_portal_for_sheet(portal_raw: dict, sab_fields: dict) -> dict:
     every reader downstream sees only that network's benefits. Anything that
     is not an Aetna export with network buckets passes through unchanged.
     """
-    from ...portals.aetna import _aetna_network_view
+    from ....portals.aetna import _aetna_network_view
 
     raw = _aetna_export(portal_raw)
     if raw is None:
@@ -95,7 +95,7 @@ def _aetna_in_network_unverifiable(portal_raw: dict) -> bool:
     says whether this office is in one of them, so the sheet's In Network
     field cannot be checked against it.
     """
-    from ...portals.aetna import _is_aetna_portal
+    from ....portals.aetna import _is_aetna_portal
 
     if not isinstance(portal_raw, dict):
         return False

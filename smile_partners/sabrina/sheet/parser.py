@@ -303,7 +303,7 @@ def _classify_row_cells(cells: list[str]) -> dict[str, str | None]:
     A History cell listing several dates wraps after a comma — "06/10/2026,"
     then "01/29/2026". `history` stays the first line, as it always has been;
     the whole list is kept beside it as `history_wrapped`, which only a Delta
-    Dental audit reads (see `carriers.delta_dental._dd_wrapped_history`).
+    Dental audit reads (see `carriers/delta_dental/rules.py`).
     """
     freq = pct = age = hist = wrapped = None
     for cell in cells:

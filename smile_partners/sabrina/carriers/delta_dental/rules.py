@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from ..vocabulary import _blank, _norm_network
+from .vocabulary import _blank, _norm_network
 
 
 def _dd_export(portal_raw: dict) -> bool:

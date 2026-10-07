@@ -317,6 +317,10 @@ async def sabrina_compare_endpoint(
     The portal side may arrive either as `portal_data` (a JSON string — the
     portal export, or the output of /api/parse-pdf) or as `portal_file` (a
     carrier PDF, parsed here). Returns per-field statuses plus a mismatch list.
+
+    The audit is run by the folder of the carrier whose export this is
+    (`sabrina/carriers/<carrier>/`), named in the result as `carrier`; an
+    export from a portal with no folder is refused with a 422.
     """
     _key, spec = resolve_client(client, "sabrina_audit")
     audit = client_module(spec, "sabrina")

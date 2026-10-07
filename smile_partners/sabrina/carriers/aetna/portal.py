@@ -1,10 +1,12 @@
 """
-Reading the portal side of each field.
+Reading the portal side of each field, for an Aetna export.
 
 Most fields come straight out of the shared breakdown that `portals/` produces.
 The ones here need more than a lookup — a maximum that belongs to another
-class, a network status stated only as a dropdown, a coordination rule worded
-five different ways.
+class, a network status the portal cannot state, a frequency worded in units.
+
+Only an Aetna export reaches this module, so the only carrier rules it calls
+are Aetna's own, in `rules.py`.
 """
 
 from __future__ import annotations
@@ -13,17 +15,7 @@ import re
 from .common import _UNLIMITED_MAX
 from .vocabulary import (_blank, _coalesce_keys, _norm_network, _num_cob, _num_money,
                          _num_yesno)
-from .carriers.cigna import (
-    _cigna_annual_max_classes,
-    _cigna_code_override,
-    _cigna_export,
-    _cigna_in_network,
-    _cigna_initial_coverage_date,
-    _cigna_oon_benefits,
-    _cigna_ortho_deductible,
-    _cigna_standard_answer,
-)
-from .carriers.aetna import (
+from .rules import (
     _aetna_code_override,
     _aetna_in_network_unverifiable,
     _aetna_breakdown_for_sheet,
@@ -31,27 +23,22 @@ from .carriers.aetna import (
     _aetna_ortho_age,
     _aetna_portal_for_sheet,
 )
-from .carriers.delta_dental import (_dd_code_override, _dd_export, _dd_major_paid_on,
-                                    _dd_network_export, _dd_perio_after_srp)
 
 
 def _portal_for_sheet(portal_raw: dict, sab_fields: dict) -> dict:
     """
     The portal export as this sheet should read it.
 
-    Aetna's and Delta Dental's exports both carry in-network and
-    out-of-network benefits side by side; the sheet's In Network field decides
-    which one is audited. Every other carrier's export passes through
-    unchanged.
+    Aetna's export carries in-network and out-of-network benefits side by
+    side; the sheet's In Network field decides which one is audited.
     """
-    portal_raw = _dd_network_export(portal_raw, (sab_fields or {}).get("in_network"))
     return _aetna_portal_for_sheet(portal_raw, sab_fields)
 
 
 def _breakdown_for_sheet(bd: dict, portal_norm: dict) -> dict:
     """
     The breakdown with the answers this sheet reads differently from the
-    New Plan PDF (Aetna only). Other carriers pass through unchanged.
+    New Plan PDF.
     """
     return _aetna_breakdown_for_sheet(bd, portal_norm)
 
@@ -64,20 +51,14 @@ def _portal_normalized(portal_raw: dict) -> dict:
     """
     The portal export in the shape the derived readers expect.
 
-    Cigna and Aetna exports carry their own layout, and this client's portal
-    readers already
-    translates both into the standard contract — patient / plan_details /
+    Aetna's export carries its own layout, which `portals/aetna.py`
+    translates into the standard contract — patient / plan_details /
     financials / covered_services / provisions under `metlife_data`. The readers
     below look for exactly that, so they run against the translation rather than
-    the raw export; without this every derived field reads "not on portal" for
-    those two carriers no matter what the portal actually said.
-
-    A MetLife export is already in the contract shape and passes through
-    untouched.
+    the raw export; without this every derived field reads "not on portal" no
+    matter what the portal actually said.
     """
-    from ..portals.aetna import _is_aetna_portal, _normalize_aetna_portal
-    from ..portals.cigna import _is_cigna_portal, _normalize_cigna_portal
-    from ..portals.delta_dental import _is_dd_portal, _normalize_dd_portal
+    from ....portals.aetna import _is_aetna_portal, _normalize_aetna_portal
 
     # The export may arrive bare or wrapped by the extension.
     candidates = [portal_raw]
@@ -91,13 +72,7 @@ def _portal_normalized(portal_raw: dict) -> dict:
         if not isinstance(candidate, dict):
             continue
         try:
-            normalized = None
-            if _is_cigna_portal(candidate):
-                normalized = _normalize_cigna_portal(candidate)
-            elif _is_aetna_portal(candidate):
-                normalized = _normalize_aetna_portal(candidate)
-            elif _is_dd_portal(candidate):
-                normalized = _normalize_dd_portal(candidate)
+            normalized = _normalize_aetna_portal(candidate) if _is_aetna_portal(candidate) else None
             if normalized is not None:
                 # A few answers live in carrier-specific corners of the export
                 # that the shared contract has no room for, so keep the
@@ -118,7 +93,7 @@ def _portal_breakdown(portal_raw: dict) -> dict:
     LLM interpreter is skipped because every audited field is a hard portal
     fact.
     """
-    from ..breakdown import _extract as _extract_breakdown
+    from ....breakdown import _extract as _extract_breakdown
 
     payload = dict(portal_raw or {})
     payload["_skip_llm"] = True
@@ -188,10 +163,11 @@ def _network_coverage(portal_raw: dict) -> tuple[bool, bool, bool]:
 
 def _portal_in_network(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
-    Cigna: decided by the network selected in the Plan View dropdown —
-    Out-of-Network means "Out", any named network means "In".
+    Aetna: not checked. The portal lists the plan's networks, never whether
+    this office is in one, so the sheet's answer is used to pick the
+    benefits instead.
 
-    Other carriers:
+    Otherwise:
     The network type, confirmed against what the plan actually pays under.
 
     The portal does NOT reliably state whether this particular office is in or
@@ -208,10 +184,6 @@ def _portal_in_network(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     Where the plan pays under both — the common case — either claim is valid and
     this correctly reports agreement.
     """
-    cigna = _cigna_in_network(portal_raw)
-    if cigna:
-        return cigna
-
     # Aetna lists the plan's networks, never whether this office is in one.
     # The sheet's answer is used to pick the benefits, not checked.
     if _aetna_in_network_unverifiable(portal_raw):
@@ -269,10 +241,6 @@ def _portal_yearly_max_paid(bd: dict, portal_raw: dict, sab_raw=None) -> str | N
 def _portal_cob(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
     Coordination-of-benefits method as stated in the portal's provisions.
-
-    Cigna publishes no such provision — its export carries an empty provisions
-    list — and the agreed reading for Cigna is the Standard method, so that is
-    returned rather than leaving the row unstated.
     """
     ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
     for prov in (ml.get("provisions") or []):
@@ -287,8 +255,6 @@ def _portal_cob(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
         # raw text rather than silently claiming the portal said nothing.
         return str(prov.get("value", "")).strip() or None
 
-    if str((portal_raw or {}).get("_source_insurer", "")).lower() == "cigna":
-        return "Standard"
     return None
 
 
@@ -330,46 +296,27 @@ def _portal_ortho_age(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
     Orthodontic age limit.
 
-    Cigna states it in the plan's age-limit table ("Ortho Age Limitation",
-    age "None" where there is no cap) rather than on the D8080 procedure
-    record, so the procedure lookup finds nothing.
+    Aetna: as the service row states it ("Maximum Age: 99" -> 99), which the
+    shared reader blanks for the New Plan PDF.
     """
-    raw = _cigna_export(portal_raw)
-    if raw:
-        for row in raw.get("age_limits") or []:
-            if not isinstance(row, dict):
-                continue
-            if "ortho" not in str(row.get("type", "")).lower():
-                continue
-            age = str(row.get("age", "")).strip()
-            if not age:
-                continue
-            return "99" if age.lower() in ("none", "no limit", "n/a") else age
     aetna = _aetna_ortho_age(portal_raw)
     if aetna:
         return aetna
     procs = bd.get("procs", {})
     codes = ("D8080", "D8090", "D8010")
-    value = _procfield_from_procs(procs, "age_limit", codes)
-    # Delta Dental: orthodontics the plan does not cover is age 0 (or blank).
-    handled, corrected = _dd_code_override(value, portal_raw, codes, "age_limit", sab_raw)
-    return corrected if handled else value
+    return _procfield_from_procs(procs, "age_limit", codes)
 
 
 def _portal_ortho_ded(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
-    """Orthodontic deductible, or 0 where the plan has no ortho deductible."""
+    """Orthodontic deductible, as the breakdown states it."""
     value = bd.get("ortho_ded")
-    if not _blank(value):
-        return str(value)
-    return _cigna_ortho_deductible(portal_raw)
+    return None if _blank(value) else str(value)
 
 
 def _portal_ortho_ded_met(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
-    """Amount met against the orthodontic deductible, under the same rule."""
+    """Amount met against the orthodontic deductible, as the breakdown states it."""
     value = bd.get("ortho_ded_paid")
-    if not _blank(value):
-        return str(value)
-    return _cigna_ortho_deductible(portal_raw)
+    return None if _blank(value) else str(value)
 
 
 def _portal_ortho_max(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
@@ -420,9 +367,6 @@ def _portal_prev_in_max(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     applies = (_coalesce_keys(annual, "applies_to", "description")
                if isinstance(annual, dict) else None)
     if _blank(applies):
-        # Cigna states the same thing as the maximum's class description.
-        applies = _cigna_annual_max_classes(portal_raw)
-    if _blank(applies):
         return None
     text = str(applies).lower()
     return "Yes" if ("preventive" in text or "preventative" in text) else "No"
@@ -444,10 +388,6 @@ def _portal_oon_benefits(bd: dict, portal_raw: dict, sab_raw=None) -> str | None
     back to the provision text — and an in-network fee schedule is never taken
     to imply OON coverage.
     """
-    cigna = _cigna_oon_benefits(portal_raw)
-    if cigna:
-        return cigna
-
     aetna = _aetna_oon_benefits(portal_raw)
     if aetna:
         return aetna
@@ -489,13 +429,7 @@ def _portal_oon_benefits(bd: dict, portal_raw: dict, sab_raw=None) -> str | None
 
 
 def _portal_eff_date(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
-    """
-    Patient effective date. Cigna: the Initial Coverage Date (business rule).
-    Other carriers: the breakdown's effective date, as before.
-    """
-    initial = _cigna_initial_coverage_date(portal_raw)
-    if initial:
-        return initial
+    """Patient effective date, as the breakdown states it."""
     value = bd.get("eff_date")
     return None if _blank(value) else str(value)
 
@@ -504,15 +438,8 @@ def _portal_major_paid_on(bd: dict, portal_raw: dict, sab_raw=None) -> str | Non
     """
     Whether major services are paid on the prep or the seat date.
 
-    Cigna: always "Seat Date" (Cigna standard value). Delta Dental: "Seat
-    Date" where D2740 is covered, otherwise blank. Other carriers: taken from
-    the breakdown's prep/seat answers where the portal states them.
+    Taken from the breakdown's prep/seat answers where the portal states them.
     """
-    standard = _cigna_standard_answer(portal_raw, "major_paid_on")
-    if standard:
-        return standard
-    if _dd_export(portal_raw):
-        return _dd_major_paid_on(portal_raw)
     if _num_yesno(bd.get("or_seat")) == "YES":
         return "Seat Date"
     if _num_yesno(bd.get("major_on_prep")) == "YES":
@@ -522,28 +449,18 @@ def _portal_major_paid_on(bd: dict, portal_raw: dict, sab_raw=None) -> str | Non
 
 def _portal_perio_after_srp(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
-    When the first perio maintenance is allowed after SRP.
-
-    Cigna: always "Next Day" (Cigna standard value). Delta Dental: the
-    post-operative period D4910's limitation names.
+    When the first perio maintenance is allowed after SRP. Aetna does not
+    state it.
     """
-    standard = _cigna_standard_answer(portal_raw, "perio_maint_after_srp")
-    if standard:
-        return standard
-    if _dd_export(portal_raw):
-        return _dd_perio_after_srp(portal_raw)
     return None
 
 
 def _portal_d4341_quads(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
     D4341 number of quadrants — the figure Sabrina prints in D4341's Age Limit
-    column. Cigna: always 4 (Cigna standard value). Other carriers: the
-    breakdown's count when it is a number ("Pre-D" and dashes are not).
+    column: the breakdown's count when it is a number ("Pre-D" and dashes are
+    not).
     """
-    standard = _cigna_standard_answer(portal_raw, "d4341_quads")
-    if standard:
-        return standard
     value = str(bd.get("d4341_number_of_quads") or "").strip()
     return value if value.isdigit() else None
 
@@ -575,21 +492,11 @@ def _portal_value(field: dict, bd: dict, portal_raw: dict, sab_raw=None) -> str 
     if src is None:
         return None
     if isinstance(src, tuple) and src and src[0] == "code":
-        value = _pct_from_procs(bd.get("procs", {}), src[1:])
-        handled, corrected = _cigna_code_override(
-            field, value, bd, portal_raw, src[1:], "pct")
-        return corrected if handled else value
+        return _pct_from_procs(bd.get("procs", {}), src[1:])
     if isinstance(src, tuple) and src and src[0] == "codefield":
         value = _procfield_from_procs(bd.get("procs", {}), src[1], src[2:])
-        handled, corrected = _cigna_code_override(
-            field, value, bd, portal_raw, src[2:], src[1])
-        if handled:
-            return corrected
         handled, corrected = _aetna_code_override(
             field, value, bd, portal_raw, src[2:], src[1])
-        if handled:
-            return corrected
-        handled, corrected = _dd_code_override(value, portal_raw, src[2:], src[1], sab_raw)
         return corrected if handled else value
     if isinstance(src, str) and src in _DERIVED:
         return _DERIVED[src](bd, portal_raw, sab_raw)

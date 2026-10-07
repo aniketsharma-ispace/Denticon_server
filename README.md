@@ -28,19 +28,31 @@ smile_partners/          the Sabrina client
   portals/               its own copy of the same five readers
   breakdown.py           its own copy
   sabrina/               the breakdown sheet this client works from
-    spec.py                what the sheet contains, field by field
-    parser.py              reading the sheet out of the PDF
-    vocabulary.py          making a stated value comparable
-    compare.py             deciding whether two values agree
-    portal.py              where each answer is found on the portal
-    audit.py               the audit itself
-    carriers/              rules specific to one carrier AND this sheet
+    carriers/              one folder per insurance portal, each a whole audit
+      aetna/  cigna/  delta_dental/  metlife/
+        spec.py              what the sheet contains, field by field
+        parser.py            reading the sheet out of the PDF
+        vocabulary.py        making a stated value comparable
+        compare.py           deciding whether two values agree
+        portal.py            where each answer is found on the portal
+        rules.py             this carrier's own rules
+        audit.py             the audit itself
+    sheet/                 recognizing an uploaded sheet before the portal is known
+    cli.py                 tuning the parser against a real sheet
 ```
 
 **The two `portals/` trees are separate copies on purpose.** A fix made for one
 client cannot reach another — that is the point of the split, not an oversight.
 When you change one, say so, and decide deliberately whether the other should
 follow.
+
+**The same holds for each carrier under `sabrina/carriers/`.** The uploaded
+portal export decides which folder runs — an Aetna export is audited by
+`aetna/` and no other folder is even imported — so a fix belongs in the folder
+of the carrier it was reported for. An export from a portal with no folder
+(Guardian, DentaQuest) is refused with a 422 rather than audited by the
+nearest carrier's rules. `sheet/` only acknowledges the upload; a parsing fix
+for an audit goes in the carrier's own `parser.py`.
 
 Everything else supports those two:
 

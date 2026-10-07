@@ -11,7 +11,7 @@ reach another carrier. MetLife's side of the portal is `portals/metlife.py`.
 
 from __future__ import annotations
 
-from ..vocabulary import _norm_network
+from .vocabulary import _norm_network
 
 
 def _metlife_benefit_coverage(portal_raw: dict) -> dict | None:

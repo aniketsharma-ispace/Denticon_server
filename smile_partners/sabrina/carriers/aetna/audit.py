@@ -1,5 +1,5 @@
 """
-The audit itself.
+The audit itself, for a Aetna portal export.
 
 Parse the sheet, read the portal, compare field by field, and return a
 UI-ready result: per-section rows carrying both sides' raw values, a
@@ -15,7 +15,6 @@ from .spec import _SPEC
 from .compare import _compare
 from .portal import (_breakdown_for_sheet, _portal_breakdown, _portal_for_sheet,
                      _portal_normalized, _portal_value)
-from .carriers.delta_dental import _dd_wrapped_history
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -64,16 +63,13 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     what each system says.
     """
     sab_fields = sabrina_parsed.get("fields", {})
-    # Pick what the sheet should be read against (Aetna and Delta Dental: the
-    # network its In Network field names). Other carriers pass through
-    # unchanged.
+    # Pick what the sheet should be read against: the network its In Network
+    # field names.
     portal_raw = _portal_for_sheet(portal_raw, sab_fields)
     bd = _portal_breakdown(portal_raw)
     # Derived readers work off the translated export, not the raw one.
     portal_norm = _portal_normalized(portal_raw)
     bd = _breakdown_for_sheet(bd, portal_norm)
-    # A Delta audit reads a History cell that wraps onto a second line in full.
-    sab_fields = _dd_wrapped_history(sab_fields, sabrina_parsed.get("benefit_rows"), portal_norm)
 
     # Some portal rules are stated per age band ("… TO AGE 19, … FOR ADULTS"),
     # so the patient's age decides which one governs. Taken as of today, which
