@@ -898,6 +898,8 @@ def _normalize_dd_portal(raw):
             'ded_applies_preventative': _dd_deductible_applies(_by_code.get('D0120')),
             'ded_applies_diagnostic': _dd_deductible_applies(_by_code.get('D0220')),
             'ortho_deductible': _ortho_deductible(),
+            # The scraper found the Deductibles table (it may still be empty).
+            'deductible_table_read': isinstance(overview.get('deductibles'), list),
             'waiting_period_rows': _dd_waiting_rows(tabs.get('waiting_periods')),
             'claims_address_lines': address_lines,
             'procedure_count': len(procedures),
@@ -978,6 +980,21 @@ def _apply_dd_output_rules(data, normalized):
         answer = meta.get(source)
         if answer:
             data[key] = answer
+
+    # A plan whose deductible is $0 takes no deductible out of anything, so
+    # both answers are "No" whatever the footnotes say (Kaley Banta: an empty
+    # Deductibles table, and no "does not apply" footnote on D0120 / D0220).
+    # Only a deductible the portal states counts: an export with no
+    # Deductibles table at all (one the scraper did not find) leaves the
+    # footnote answer standing.
+    financials = ((normalized.get('metlife_data') or {}).get('financials') or {})
+    stated = [str((financials.get(k) or {}).get('total') or '').strip()
+              for k in ('deductible_ind', 'deductible_fam')]
+    stated = [s for s in stated if s and s.upper() not in ('N/A', 'NA')]
+    if (meta.get('deductible_table_read') and stated
+            and all(_dd_amount(s) == 0 for s in stated)):
+        data['ded_prev'] = 'No'
+        data['ded_diag'] = 'No'
 
     # A plan may hold a deductible for orthodontics alone, separate from the
     # one the general work draws on. Where there is none the shared default of

@@ -1886,6 +1886,29 @@ check("delta frequency: 'is a benefit once within a 3 year period' (D0150)",
       _dd_frequency("This procedure is a benefit once per provider per lifetime. This procedure "
                     "is a benefit once within a 3 year period and is included as part of the oral "
                     "evaluation limitations of your program"), "1X3Years")
+# Delta Dental INS (Kaley Banta, appointment 121581): a $0 deductible applies
+# to nothing, so Deductible Applies to Preventative / Diagnostic is "No" even
+# where no footnote exempts D0120 / D0220.
+_D0120_NO_FOOTNOTE = dict(_dd_entry("D0120", "100%", "Benefit is limited to two within a calendar year"),
+                          applies_to_deductible="Yes", applies_to_maximum="Yes")
+_D0220_NO_FOOTNOTE = dict(_dd_entry("D0220", "100%", "Benefit is limited to four within a calendar year"),
+                          applies_to_deductible="Yes", applies_to_maximum="Yes")
+
+
+def _ded_applies(deductibles):
+    bd = sc._portal_breakdown({"source": "Delta Dental", "primary_patient": {"name": "X"},
+                               "tabs": {"overview": {"deductibles": deductibles},
+                                        "benefits_search": [_D0120_NO_FOOTNOTE, _D0220_NO_FOOTNOTE]}})
+    return bd.get("ded_prev"), bd.get("ded_diag")
+
+
+check("delta deductible applies: no deductible at all -> No / No", _ded_applies([]), ("No", "No"))
+check("delta deductible applies: a stated $0 deductible -> No / No",
+      _ded_applies([_split_ded("Individual", _PPO_PREMIER, "$0.00")]), ("No", "No"))
+check("delta deductible applies: a real deductible keeps the footnote answer",
+      _ded_applies([_split_ded("Individual", _PPO_PREMIER, "$50.00")]), ("Yes", "Yes"))
+check("delta deductible applies: no Deductibles table scraped keeps the footnote answer",
+      _ded_applies(None), ("Yes", "Yes"))
 check("delta frequency: 'is not a benefit' is still not covered",
       _dd_frequency("This service is not a benefit of most Delta Dental plans."), "NC")
 
