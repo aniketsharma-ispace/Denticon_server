@@ -349,7 +349,11 @@ def _portal_ortho_age(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     if aetna:
         return aetna
     procs = bd.get("procs", {})
-    return _procfield_from_procs(procs, "age_limit", ("D8080", "D8090", "D8010"))
+    codes = ("D8080", "D8090", "D8010")
+    value = _procfield_from_procs(procs, "age_limit", codes)
+    # Delta Dental: orthodontics the plan does not cover is age 0 (or blank).
+    handled, corrected = _dd_code_override(value, portal_raw, codes, "age_limit", sab_raw)
+    return corrected if handled else value
 
 
 def _portal_ortho_ded(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:

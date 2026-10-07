@@ -1768,6 +1768,38 @@ check("delta age: the sheet's 18 matches 'age 6 to 18'",
 check("delta age: an upper bound alone is unchanged",
       _dd_age_limit("Child up to and not including age 19"), "19")
 
+# Delta Dental INS (Brady Wilson): a per-provider lifetime limit stated before
+# the yearly one, and orthodontics Delta does not recognise.
+_D9310_TWO_LIMITS = ("Benefit is limited to one occurrence per provider per lifetime Benefit is "
+                     "limited to two of any oral evaluation procedure within a calendar year")
+check("delta frequency: a yearly limit outranks a lifetime one stated before it",
+      _dd_frequency(_D9310_TWO_LIMITS), "2X1Year")
+check("delta frequency: and one stated after it (D0150)",
+      _dd_frequency("Benefit is limited to two of any oral evaluation procedure within a calendar "
+                    "year This procedure is a benefit once per provider per lifetime."), "2X1Year")
+check("delta frequency: a lifetime limit alone is still lifetime",
+      _dd_frequency("Benefit is limited to once per quadrant per lifetime"), "1XLifetime")
+check("delta frequency: a limit with no period beside a yearly one gives the yearly one",
+      _dd_frequency("Comprehensive evaluations are limited to once per provider. Benefit is "
+                    "limited to three of any oral evaluation procedure within a calendar year"),
+      "3X1Year")
+
+
+def _ortho_age(sheet_age):
+    unrecognised = {"code": "D8080", "benefit_level": "N/A",
+                    "rows": [{"description": "This procedure code could not be recognized.",
+                              "limitation": "None", "age_limits": "None"}]}
+    audit = sc.compare_sabrina_to_portal(
+        {"fields": {"ortho_coverage": "0", "ortho_coverage__age": sheet_age}, "benefit_rows": {}},
+        {"source": "Delta Dental", "primary_patient": {"name": "X"},
+         "tabs": {"benefits_search": [unrecognised]}})
+    row = {r["key"]: r for s in audit["sections"] for r in s["rows"]}["ortho_coverage__age"]
+    return row["status"], row["portal"]
+
+
+check("delta ortho age: orthodontics Delta does not cover is age 0", _ortho_age("0"), ("match", "0"))
+check("delta ortho age: a blank sheet age agrees", _ortho_age(None), ("not_stated", None))
+
 # Only a Delta export gets these answers.
 check("major paid on: a non-Delta export is unchanged",
       _portal_major_paid_on({}, {"metlife_data": {}}), None)

@@ -103,6 +103,11 @@ def _dd_frequency(limitation):
 
     A bare "Limitations apply" is the portal keeping the real sentence behind a
     link rather than stating a limit, and yields nothing rather than a guess.
+
+    Where the prose states several limits, each "limited to …" sentence is read
+    on its own, and a limit over a period outranks a lifetime one: D9310's
+    "limited to one occurrence per provider per lifetime" beside "limited to
+    two of any oral evaluation procedure within a calendar year" is 2X1Year.
     """
     text = re.sub(r'\s+', ' ', str(limitation or '')).strip()
     if not text:
@@ -111,6 +116,16 @@ def _dd_frequency(limitation):
 
     if 'no frequency limitation' in low:
         return 'No Frequency'
+
+    starts = [m.start() for m in _DD_COUNT_RE.finditer(text)]
+    if len(starts) > 1:
+        limits = [_dd_frequency(text[a:b]) for a, b in zip(starts, starts[1:] + [len(text)])]
+        limits = [f for f in limits if f]
+        periodic = [f for f in limits if not f.endswith('Lifetime')]
+        if periodic:
+            return periodic[0]
+        if limits:
+            return limits[0]
 
     match = _DD_COUNT_RE.search(text)
     word = match.group(1).lower() if match else ''
