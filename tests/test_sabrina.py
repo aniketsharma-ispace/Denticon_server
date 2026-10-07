@@ -1818,6 +1818,35 @@ def _ortho_age(sheet_age):
 check("delta ortho age: orthodontics Delta does not cover is age 0", _ortho_age("0"), ("match", "0"))
 check("delta ortho age: a blank sheet age agrees", _ortho_age(None), ("not_stated", None))
 
+# Delta Dental INS (appointment 120147, Frances Wilson): the orthodontic
+# deductible is a lifetime deductible that also names Diagnostic, beside the
+# lifetime maximum covering the same three types.
+from smile_partners.sabrina.carriers.delta_dental.compare import _compare as _dd_compare
+_GENERAL_TYPES = ["Diagnostic", "Endodontics", "Oral & Maxillofacial Surgery", "Restorative"]
+_LIFETIME_ORTHO_DED = {"type": "Lifetime Individual Deductible",
+                       "treatment_types": ["Diagnostic", "Orthodontics", "Oral & Maxillofacial Surgery"],
+                       "amount": "$50.00", "used": "$0.00", "remaining": "$50.00"}
+_CAL_INDIVIDUAL = {"type": "Calendar Individual Deductible Accumulation period for this program",
+                   "treatment_types": _GENERAL_TYPES, "amount": "$25.00", "used": "$25.00",
+                   "remaining": "$0.00"}
+
+
+def _ded_bd(deductibles):
+    return sc._portal_breakdown({"source": "Delta Dental", "primary_patient": {"name": "X"},
+                                 "tabs": {"overview": {"deductibles": deductibles},
+                                          "benefits_search": []}})
+
+
+_bd_120147 = _ded_bd([_CAL_INDIVIDUAL, _LIFETIME_ORTHO_DED])
+check("delta ortho deductible: a lifetime deductible naming Orthodontics is the ortho one",
+      (_bd_120147.get("ortho_ded"), _bd_120147.get("ortho_ded_paid")), ("50.00", "0.00"))
+check("delta ortho deductible: the calendar deductible is still the individual one",
+      _ded_bd([_LIFETIME_ORTHO_DED, _CAL_INDIVIDUAL]).get("indiv_ded"), "25.00")
+check("delta text: the sheet's '30days' is the portal's '30 Days'",
+      _dd_compare("text", "30days", "30 Days")[0], True)
+check("delta text: different numbers still differ",
+      _dd_compare("text", "60days", "30 Days")[0], False)
+
 # Only a Delta export gets these answers.
 check("major paid on: a non-Delta export is unchanged",
       _portal_major_paid_on({}, {"metlife_data": {}}), None)

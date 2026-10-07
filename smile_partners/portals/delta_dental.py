@@ -434,6 +434,24 @@ def _dd_ortho_only(record):
     return all('orthodont' in t or 'maxillofacial' in t for t in types)
 
 
+def _dd_ortho_deductible_record(record):
+    """
+    Whether a deductible record is the orthodontic deductible.
+
+    Either one standing for orthodontics alone (`_dd_ortho_only`), or a
+    lifetime deductible naming Orthodontics. The second sits beside the
+    lifetime orthodontic maximum and lists the same treatment types — "Lifetime
+    Individual Deductible: Diagnostic, Orthodontics, Oral & Maxillofacial
+    Surgery, $50" beside the $800 lifetime maximum (appointment 120147) — and
+    is not the calendar deductible the general work draws on.
+    """
+    if _dd_ortho_only(record):
+        return True
+    kind = str((record or {}).get('type', '')).lower()
+    types = [str(t).lower() for t in ((record or {}).get('treatment_types') or [])]
+    return 'lifetime' in kind and any('orthodont' in t for t in types)
+
+
 def _dd_static(patient, *labels):
     """A labelled value out of the portal's static field block."""
     fields = patient.get('static_fields') if isinstance(patient, dict) else None
@@ -642,7 +660,7 @@ def _normalize_dd_portal(raw):
         # treatment types. It is not the deductible the general work draws on,
         # so it is passed over here and read on its own below.
         for record in deductibles:
-            if not isinstance(record, dict) or _dd_ortho_only(record):
+            if not isinstance(record, dict) or _dd_ortho_deductible_record(record):
                 continue
             if kind in str(record.get('type', '')).lower():
                 return _as_amounts(record)
@@ -653,10 +671,10 @@ def _normalize_dd_portal(raw):
 
     def _ortho_deductible():
         individual = [r for r in deductibles
-                      if isinstance(r, dict) and _dd_ortho_only(r)
+                      if isinstance(r, dict) and _dd_ortho_deductible_record(r)
                       and 'individual' in str(r.get('type', '')).lower()]
         either = individual or [r for r in deductibles
-                                if isinstance(r, dict) and _dd_ortho_only(r)]
+                                if isinstance(r, dict) and _dd_ortho_deductible_record(r)]
         return _as_amounts(either[0]) if either else {}
 
     # ── category coverage, in and out of network ───────────────────────────

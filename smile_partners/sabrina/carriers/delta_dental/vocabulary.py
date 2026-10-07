@@ -479,6 +479,9 @@ def _norm_text(v) -> str | None:
     if _blank(v):
         return None
     s = re.sub(r"[^A-Z0-9 ]", " ", str(v).upper())
+    # A number run into its unit is the same answer: the sheet's "30days" is
+    # the portal's "30 Days" (When Is First Perio Maintenance Allowed After SRP).
+    s = re.sub(r"(\d)([A-Z])", r"\1 \2", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s or None
 
