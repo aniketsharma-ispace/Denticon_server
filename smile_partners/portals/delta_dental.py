@@ -49,9 +49,11 @@ def _is_dd_portal(raw):
         raw.get('primary_patient') and ('overview' in tabs or 'benefits_search' in tabs))
 
 
-# How many times, out of "limited to (either) (any) <count>".
+# How many times, out of "limited to (either) (any) <count>" — or "is a
+# benefit <count>", which some programmes write instead: "This procedure is a
+# benefit once within a 3 year period" (James Melear Jr's D0150).
 _DD_COUNT_RE = re.compile(
-    r'limited to\s+(?:either\s+)?(?:any\s+)?'
+    r'(?:limited to|is a benefit)\s+(?:either\s+)?(?:any\s+)?'
     r'(once|twice|thrice|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\b',
     re.IGNORECASE)
 
@@ -659,22 +661,26 @@ def _normalize_dd_portal(raw):
         # "Calendar Individual Deductible" naming Orthodontics among its
         # treatment types. It is not the deductible the general work draws on,
         # so it is passed over here and read on its own below.
-        for record in deductibles:
-            if not isinstance(record, dict) or _dd_ortho_deductible_record(record):
-                continue
-            if kind in str(record.get('type', '')).lower():
-                return _as_amounts(record)
+        #
+        # Like the maximum, a deductible may be split by provider network —
+        # $50 for "Delta Dental PPO Dentist" and "Delta Dental Premier Dentist"
+        # beside $75 for "Non-Delta Dental Dentist" (James Melear Jr) — and the
+        # sheet records the one for the network being audited.
+        matching = [r for r in deductibles
+                    if isinstance(r, dict) and not _dd_ortho_deductible_record(r)
+                    and kind in str(r.get('type', '')).lower()]
+        if matching:
+            return _as_amounts(_dd_for_network(matching, network)[0])
         # An empty deductible table is the portal stating there is none.
         if not deductibles:
             return {'total': '$0.00', 'used': '$0.00', 'remaining': '$0.00'}
         return {'total': '', 'used': '', 'remaining': ''}
 
     def _ortho_deductible():
-        individual = [r for r in deductibles
-                      if isinstance(r, dict) and _dd_ortho_deductible_record(r)
-                      and 'individual' in str(r.get('type', '')).lower()]
-        either = individual or [r for r in deductibles
-                                if isinstance(r, dict) and _dd_ortho_deductible_record(r)]
+        ortho = [r for r in deductibles
+                 if isinstance(r, dict) and _dd_ortho_deductible_record(r)]
+        individual = [r for r in ortho if 'individual' in str(r.get('type', '')).lower()]
+        either = _dd_for_network(individual or ortho, network)
         return _as_amounts(either[0]) if either else {}
 
     # ── category coverage, in and out of network ───────────────────────────

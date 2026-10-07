@@ -1847,6 +1847,48 @@ check("delta text: the sheet's '30days' is the portal's '30 Days'",
 check("delta text: different numbers still differ",
       _dd_compare("text", "60days", "30 Days")[0], False)
 
+# Delta Dental INS (James Melear Jr, appointment 113246): the deductible is
+# split by provider network, and the sheet records the out-of-network one for
+# an out-of-network office — as the percentages already are.
+_PPO_PREMIER = ["Delta Dental PPO Dentist", "Delta Dental Premier Dentist"]
+_NON_DELTA_ONLY = ["Non-Delta Dental Dentist (Benefits based on contract allowance)"]
+
+
+def _split_ded(kind, networks, amount):
+    return {"type": f"Calendar {kind} Deductible Accumulation period for this program",
+            "treatment_types": _GENERAL_TYPES, "networks": networks,
+            "amount": amount, "used": "$0.00", "remaining": amount}
+
+
+_MELEAR_DEDS = [_split_ded("Family", _PPO_PREMIER, "$150.00"),
+                _split_ded("Family", _NON_DELTA_ONLY, "$225.00"),
+                _split_ded("Individual", _PPO_PREMIER, "$50.00"),
+                _split_ded("Individual", _NON_DELTA_ONLY, "$75.00")]
+
+
+def _melear(network):
+    tabs = {"overview": {"deductibles": _MELEAR_DEDS}, "benefits_search": []}
+    if network:
+        tabs["benefits_search_network"] = network
+    bd = sc._portal_breakdown({"source": "Delta Dental",
+                               "primary_patient": {"name": "X", "plan": "Delta Dental PPO"},
+                               "tabs": tabs})
+    return bd.get("indiv_ded"), bd.get("family_ded")
+
+
+check("delta deductible: an out-of-network search takes the Non-Delta deductibles",
+      _melear("Non-Delta Dental Dentist"), ("75.00", "225.00"))
+check("delta deductible: a PPO search takes the PPO / Premier deductibles",
+      _melear("Delta Dental PPO Dentist"), ("50.00", "150.00"))
+check("delta deductible: no network recorded uses the plan's (PPO)",
+      _melear(""), ("50.00", "150.00"))
+check("delta frequency: 'is a benefit once within a 3 year period' (D0150)",
+      _dd_frequency("This procedure is a benefit once per provider per lifetime. This procedure "
+                    "is a benefit once within a 3 year period and is included as part of the oral "
+                    "evaluation limitations of your program"), "1X3Years")
+check("delta frequency: 'is not a benefit' is still not covered",
+      _dd_frequency("This service is not a benefit of most Delta Dental plans."), "NC")
+
 # Only a Delta export gets these answers.
 check("major paid on: a non-Delta export is unchanged",
       _portal_major_paid_on({}, {"metlife_data": {}}), None)
