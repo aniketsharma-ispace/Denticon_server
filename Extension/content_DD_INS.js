@@ -12,8 +12,9 @@ const BATCH_5 = ["D7259", "D8010", "D8080", "D8090", "D9110", "D9222", "D9230", 
 const BATCH_6 = ["D9944", "D0364", "D0431", "D2391", "D2962", "D4249"];
 // Codes the breakdown sheet audits that no earlier batch asked for. Without
 // them the audit has nothing to compare the sheet's rows against and reports
-// them as never stated by the portal.
-const BATCH_7 = ["D2160", "D2980", "D5212", "D5899", "D5995"];
+// them as never stated by the portal. D1208 has its own limit (Pre-D on Deion
+// Reid's plan) that the D1206 varnish row does not share.
+const BATCH_7 = ["D2160", "D2980", "D5212", "D5899", "D5995", "D1208"];
 console.log("Delta Dental scraper V2.0 initialized - Ready to audit benefits");
 
 // ══════════════════════════════════════════════════════════════════════════

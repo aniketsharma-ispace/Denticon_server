@@ -71,8 +71,11 @@ _DD_COUNT_RE = re.compile(
 # within a 30 day period" (1X30Days). Only "N day period" is read as one — a
 # bare "within 30 days of …" elsewhere in the prose is a condition on some
 # other service, not this code's limit.
+#
+# The article varies by programme: "within a contract period" and "within the
+# contract period" (Deion Reid) are the same benefit year.
 _DD_PERIOD_RE = re.compile(
-    r'within\s+(?:a\s+|an\s+)?'
+    r'within\s+(?:a\s+|an\s+|the\s+)?'
     r'(?:(one|two|three|four|five|six|seven|eight|nine|ten|\d+)[\s-]+)?'
     r'(?:calendar\s+|consecutive\s+)?(year|month|day(?=s?\s+period)|contract\s+period)s?',
     re.IGNORECASE)

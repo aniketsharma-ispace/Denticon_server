@@ -1781,6 +1781,20 @@ check("delta frequency: a yearly limit outranks a lifetime one stated before it"
 check("delta frequency: and one stated after it (D0150)",
       _dd_frequency("Benefit is limited to two of any oral evaluation procedure within a calendar "
                     "year This procedure is a benefit once per provider per lifetime."), "2X1Year")
+# Delta Dental INS (Deion Reid) says "within THE contract period".
+check("delta frequency: 'within the contract period' is a year",
+      _dd_frequency("Benefit is limited to any two oral evaluation procedures within the "
+                    "contract period. Comprehensive evaluations are limited to once per provider."),
+      "2X1Year")
+check("delta frequency: D0150's lifetime sentence does not override 'the contract period'",
+      _dd_frequency("Benefit is limited to any two oral evaluation procedures within the contract "
+                    "period. Comprehensive evaluations are limited to once per provider. This "
+                    "procedure is a benefit once per provider per lifetime."), "2X1Year")
+check("delta frequency: three prophylaxis procedures within the contract period",
+      _dd_frequency("Benefit is limited to three of any prophylaxis procedures within the contract "
+                    "period for codes D1110, D1120, D4346, D4355, and D4910. Prophylaxis procedures "
+                    "are a benefit following active periodontal therapy once a 30 day "
+                    "post-operative period has completed."), "3X1Year")
 check("delta frequency: a lifetime limit alone is still lifetime",
       _dd_frequency("Benefit is limited to once per quadrant per lifetime"), "1XLifetime")
 check("delta frequency: a limit with no period beside a yearly one gives the yearly one",
