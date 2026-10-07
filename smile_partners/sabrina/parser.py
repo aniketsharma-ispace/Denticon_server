@@ -299,8 +299,13 @@ def _classify_row_cells(cells: list[str]) -> dict[str, str | None]:
 
     A cell after the percentage that is none of these (the Coverage column, page
     furniture) is ignored rather than guessed at.
+
+    A History cell listing several dates wraps after a comma — "06/10/2026,"
+    then "01/29/2026". `history` stays the first line, as it always has been;
+    the whole list is kept beside it as `history_wrapped`, which only a Delta
+    Dental audit reads (see `carriers.delta_dental._dd_wrapped_history`).
     """
-    freq = pct = age = hist = None
+    freq = pct = age = hist = wrapped = None
     for cell in cells:
         s = cell.strip()
         if pct is None:
@@ -311,9 +316,13 @@ def _classify_row_cells(cells: list[str]) -> dict[str, str | None]:
             continue
         if hist is None and (_num_date(s) is not None or s.lower() in _HISTORY_NONE):
             hist = s
+        elif (hist is not None and (wrapped or hist).endswith(",")
+              and _num_date(s) is not None):
+            wrapped = f"{wrapped or hist} {s}"
         elif age is None and re.fullmatch(r"\d{1,3}", s):
             age = s
-    return {"frequency": freq, "percentage": pct, "age_limit": age, "history": hist}
+    return {"frequency": freq, "percentage": pct, "age_limit": age, "history": hist,
+            "history_wrapped": wrapped}
 
 
 def _capture_benefit_rows(lines: list[str]) -> dict[str, dict]:

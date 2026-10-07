@@ -31,16 +31,20 @@ from .carriers.aetna import (
     _aetna_ortho_age,
     _aetna_portal_for_sheet,
 )
+from .carriers.delta_dental import (_dd_code_override, _dd_export, _dd_major_paid_on,
+                                    _dd_network_export, _dd_perio_after_srp)
 
 
 def _portal_for_sheet(portal_raw: dict, sab_fields: dict) -> dict:
     """
     The portal export as this sheet should read it.
 
-    Aetna's export carries in-network and out-of-network benefits side by
-    side; the sheet's In Network field decides which one is audited. Every
-    other carrier's export passes through unchanged.
+    Aetna's and Delta Dental's exports both carry in-network and
+    out-of-network benefits side by side; the sheet's In Network field decides
+    which one is audited. Every other carrier's export passes through
+    unchanged.
     """
+    portal_raw = _dd_network_export(portal_raw, (sab_fields or {}).get("in_network"))
     return _aetna_portal_for_sheet(portal_raw, sab_fields)
 
 
@@ -496,12 +500,15 @@ def _portal_major_paid_on(bd: dict, portal_raw: dict, sab_raw=None) -> str | Non
     """
     Whether major services are paid on the prep or the seat date.
 
-    Cigna: always "Seat Date" (Cigna standard value). Other carriers: taken
-    from the breakdown's prep/seat answers where the portal states them.
+    Cigna: always "Seat Date" (Cigna standard value). Delta Dental: "Seat
+    Date" where D2740 is covered, otherwise blank. Other carriers: taken from
+    the breakdown's prep/seat answers where the portal states them.
     """
     standard = _cigna_standard_answer(portal_raw, "major_paid_on")
     if standard:
         return standard
+    if _dd_export(portal_raw):
+        return _dd_major_paid_on(portal_raw)
     if _num_yesno(bd.get("or_seat")) == "YES":
         return "Seat Date"
     if _num_yesno(bd.get("major_on_prep")) == "YES":
@@ -510,8 +517,18 @@ def _portal_major_paid_on(bd: dict, portal_raw: dict, sab_raw=None) -> str | Non
 
 
 def _portal_perio_after_srp(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
-    """When the first perio maintenance is allowed after SRP (Cigna: "Next Day")."""
-    return _cigna_standard_answer(portal_raw, "perio_maint_after_srp")
+    """
+    When the first perio maintenance is allowed after SRP.
+
+    Cigna: always "Next Day" (Cigna standard value). Delta Dental: the
+    post-operative period D4910's limitation names.
+    """
+    standard = _cigna_standard_answer(portal_raw, "perio_maint_after_srp")
+    if standard:
+        return standard
+    if _dd_export(portal_raw):
+        return _dd_perio_after_srp(portal_raw)
+    return None
 
 
 def _portal_d4341_quads(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
@@ -566,6 +583,9 @@ def _portal_value(field: dict, bd: dict, portal_raw: dict, sab_raw=None) -> str 
             return corrected
         handled, corrected = _aetna_code_override(
             field, value, bd, portal_raw, src[2:], src[1])
+        if handled:
+            return corrected
+        handled, corrected = _dd_code_override(value, portal_raw, src[2:], src[1], sab_raw)
         return corrected if handled else value
     if isinstance(src, str) and src in _DERIVED:
         return _DERIVED[src](bd, portal_raw, sab_raw)
