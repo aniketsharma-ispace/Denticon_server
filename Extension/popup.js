@@ -40,7 +40,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else if (isCigna) {
         status.innerText = "Cigna Data: Ready to Crawl.";
     } else if (isDenticon) {
-        status.innerText = `Denticon Ready: ${context.denticon_data.header?.patient_name || "Active"}`;
+        status.innerText = `Denticon Ready: ${context.denticon_data?.header?.patient_name || "Active"}`;
     } else if (isDeltaINS) {
         status.innerText = "DeltaDental_INS Data: Ready to Crawl.";
     } else if (isDeltaVA) {
