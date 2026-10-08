@@ -892,6 +892,11 @@ def _normalize_dd_portal(raw):
         },
         'benefit_coverage': {'procedures': procedures},
         '_dd_meta': {
+            # When the benefit year began ("(1/1/2026 - 12/31/2026)" on the
+            # annual maximum) and when the portal was read — the window a
+            # service date has to fall in to count against a frequency.
+            'benefit_period_start': period.group(1) if period else '',
+            'scraped_on': str(raw.get('timestamp') or ''),
             'annual_treatment_types': annual.get('treatment_types') or [],
             'lifetime_treatment_types': lifetime.get('treatment_types') or [],
             'deductible_applicability': overview.get('deductible_applicability') or {},

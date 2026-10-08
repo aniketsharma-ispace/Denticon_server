@@ -61,6 +61,8 @@ def _dd_code_override(value, portal_raw: dict, codes: tuple, what: str, sab_raw=
     leaves it blank, and either is right: a 0 is compared against 0, and a
     blank is left with nothing to compare.
     """
+    if what == "late_date_of_service" and _dd_export(portal_raw):
+        return _dd_history_in_window(value, portal_raw, codes)
     if what != "age_limit" or not _dd_export(portal_raw):
         return False, value
     proc = next((p for p in (_dd_procedure(portal_raw, str(c).upper()) for c in codes) if p), None)
@@ -68,6 +70,78 @@ def _dd_code_override(value, portal_raw: dict, codes: tuple, what: str, sab_raw=
     if "not covered" not in level:
         return False, value
     return True, (None if _blank(sab_raw) else "0")
+
+
+_DD_DATE_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b")
+_DD_FREQ_SPAN_RE = re.compile(r"^\d+X(\d+)(Year|Month|Day)s?$", re.IGNORECASE)
+
+
+def _dd_date(text):
+    """The first date in `text`, as a date; None where there is none."""
+    import datetime
+    m = _DD_DATE_RE.search(str(text or ""))
+    if not m:
+        m = re.search(r"(\d{4})-(\d{2})-(\d{2})", str(text or ""))
+        if not m:
+            return None
+        year, month, day = (int(g) for g in m.groups())
+    else:
+        month, day, year = (int(g) for g in m.groups())
+        year += 2000 if year < 100 else 0
+    try:
+        return datetime.date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _dd_history_in_window(value, portal_raw: dict, codes: tuple):
+    """
+    The service dates that count against the code's frequency.
+
+    The sheet's History records a date only where it affects the frequency
+    (agreed with the team): Deion Reid's bitewings were last taken
+    01/07/2020, which no longer counts against 1X1Year, so the sheet says NH.
+    A date counts when it falls inside the frequency's window, measured back
+    from the day the portal was read:
+
+        NX1Year      the current benefit year (from the maximum's
+                     accumulation period, e.g. 1/1/2026), else 12 months
+        NXkYears     the last k years
+        NXkMonths    the last k months
+        NXkDays      the last k days
+
+    A lifetime limit, Pre-D, NC or no stated frequency keeps every date. Where
+    no date counts, the portal side reads "—", the same as the sheet's NH.
+    """
+    import datetime
+    proc = next((p for p in (_dd_procedure(portal_raw, str(c).upper()) for c in codes) if p), None)
+    span = _DD_FREQ_SPAN_RE.match(str((proc or {}).get("frequency_limit") or "").strip())
+    dates = [(m.group(0), _dd_date(m.group(0))) for m in _DD_DATE_RE.finditer(str(value or ""))]
+    dates = [(text, d) for text, d in dates if d]
+    if not span or not dates:
+        return False, value
+
+    meta = (portal_raw or {}).get("_dd_meta") or {}
+    today = _dd_date(meta.get("scraped_on")) or datetime.date.today()
+    count, unit = int(span.group(1)), span.group(2).lower()
+
+    def _months_back(n):
+        y, m = divmod(today.year * 12 + today.month - 1 - n, 12)
+        return datetime.date(y, m + 1, min(today.day, 28))
+
+    if unit == "year" and count == 1:
+        start = _dd_date(meta.get("benefit_period_start"))
+        if not start or start > today:
+            start = _months_back(12)
+    elif unit == "year":
+        start = _months_back(12 * count)
+    elif unit == "month":
+        start = _months_back(count)
+    else:
+        start = today - datetime.timedelta(days=count)
+
+    kept = [text for text, d in dates if d >= start]
+    return True, (", ".join(kept) if kept else "—")
 
 
 def _dd_major_paid_on(portal_raw: dict) -> str | None:

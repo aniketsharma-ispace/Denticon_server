@@ -1909,6 +1909,36 @@ check("delta deductible applies: a real deductible keeps the footnote answer",
       _ded_applies([_split_ded("Individual", _PPO_PREMIER, "$50.00")]), ("Yes", "Yes"))
 check("delta deductible applies: no Deductibles table scraped keeps the footnote answer",
       _ded_applies(None), ("Yes", "Yes"))
+# History records only the service dates that affect the frequency (agreed
+# with the team after Deion Reid: bitewings last taken 01/07/2020 are NH).
+from smile_partners.sabrina.carriers.delta_dental.rules import _dd_history_in_window
+
+
+def _hist(limitation, dates, scraped="2026-10-06T18:29:37.364Z", period_start="1/1/2026"):
+    norm = _dd_codes(_dd_entry("D0274", "100%", limitation))
+    norm["_dd_meta"]["scraped_on"] = scraped
+    norm["_dd_meta"]["benefit_period_start"] = period_start
+    return _dd_history_in_window(dates, norm, ("D0274",))
+
+
+_YEARLY = "Benefit is limited to one within a calendar year"
+check("delta history: a date before this benefit year does not count against 1X1Year",
+      _hist(_YEARLY, "01/07/2020"), (True, "—"))
+check("delta history: only this benefit year's dates count",
+      _hist("Benefit is limited to any two oral evaluation procedures within the contract period",
+            "01/07/2020, 04/01/2026, 05/10/2018"), (True, "04/01/2026"))
+check("delta history: NX5Years keeps the last five years",
+      _hist("Benefit is limited to once within a 5 year period", "06/01/2020, 11/01/2021"),
+      (True, "11/01/2021"))
+check("delta history: NX24Months keeps the last 24 months",
+      _hist("Benefit is limited to once per quadrant within a 24 month period",
+            "04/21/2026, 03/22/2022, 11/02/2024"), (True, "04/21/2026, 11/02/2024"))
+check("delta history: a lifetime limit keeps every date",
+      _hist("Benefit is limited to once per tooth per lifetime", "01/07/2010"), (False, "01/07/2010"))
+check("delta history: no benefit year known falls back to the last 12 months",
+      _hist(_YEARLY, "11/15/2025, 01/07/2020", period_start=""), (True, "11/15/2025"))
+check("delta history: a sheet NH agrees once the old date drops out",
+      _dd_compare("history", "NH", _hist(_YEARLY, "01/07/2020")[1])[0], True)
 check("delta frequency: 'is not a benefit' is still not covered",
       _dd_frequency("This service is not a benefit of most Delta Dental plans."), "NC")
 
