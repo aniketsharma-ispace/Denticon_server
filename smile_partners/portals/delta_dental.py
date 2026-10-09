@@ -896,6 +896,9 @@ def _normalize_dd_portal(raw):
             # annual maximum) and when the portal was read — the window a
             # service date has to fall in to count against a frequency.
             'benefit_period_start': period.group(1) if period else '',
+            # "Calendar Individual Maximum …" — a calendar-year plan. Anything
+            # else (plan, fiscal or contract year) is not.
+            'benefit_period_calendar': 'calendar' in str(annual.get('type') or '').lower(),
             'scraped_on': str(raw.get('timestamp') or ''),
             'annual_treatment_types': annual.get('treatment_types') or [],
             'lifetime_treatment_types': lifetime.get('treatment_types') or [],

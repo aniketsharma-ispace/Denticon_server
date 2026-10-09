@@ -1914,10 +1914,12 @@ check("delta deductible applies: no Deductibles table scraped keeps the footnote
 from smile_partners.sabrina.carriers.delta_dental.rules import _dd_history_in_window
 
 
-def _hist(limitation, dates, scraped="2026-10-06T18:29:37.364Z", period_start="1/1/2026"):
+def _hist(limitation, dates, scraped="2026-10-06T18:29:37.364Z", period_start="1/1/2026",
+          calendar=True):
     norm = _dd_codes(_dd_entry("D0274", "100%", limitation))
     norm["_dd_meta"]["scraped_on"] = scraped
     norm["_dd_meta"]["benefit_period_start"] = period_start
+    norm["_dd_meta"]["benefit_period_calendar"] = calendar
     return _dd_history_in_window(dates, norm, ("D0274",))
 
 
@@ -1935,16 +1937,43 @@ check("delta history: NX24Months keeps the last 24 months",
             "04/21/2026, 03/22/2022, 11/02/2024"), (True, "04/21/2026, 11/02/2024"))
 check("delta history: a lifetime limit keeps every date",
       _hist("Benefit is limited to once per tooth per lifetime", "01/07/2010"), (False, "01/07/2010"))
-check("delta history: no benefit year known falls back to the last 12 months",
-      _hist(_YEARLY, "11/15/2025, 01/07/2020", period_start=""), (True, "11/15/2025"))
+check("delta history: a plan not marked calendar-year, no period printed -> last 12 months",
+      _hist(_YEARLY, "11/15/2025, 01/07/2020", period_start="", calendar=False),
+      (True, "11/15/2025"))
 check("delta history: a sheet NH agrees once the old date drops out",
       _dd_compare("history", "NH", _hist(_YEARLY, "01/07/2020")[1])[0], True)
+# Calendar-year plan: the current calendar year. Fiscal-year plan: the last
+# 12 months (agreed with the team). Read on 10/06/2026, a 11/15/2025 service
+# is last calendar year but within 12 months.
+check("delta history: a calendar-year plan counts only this calendar year",
+      _hist(_YEARLY, "11/15/2025"), (True, "—"))
+check("delta history: a fiscal-year plan counts the last 12 months",
+      _hist(_YEARLY, "11/15/2025", period_start="7/1/2026", calendar=False), (True, "11/15/2025"))
+check("delta history: a calendar-year plan with no period printed starts at 1 January",
+      _hist(_YEARLY, "11/15/2025, 02/03/2026", period_start=""), (True, "02/03/2026"))
+
+
+def _calendar_flag(kind):
+    raw = {"source": "Delta Dental", "primary_patient": {"name": "X"},
+           "tabs": {"overview": {"maximums": [
+               {"type": f"{kind} Individual Maximum Accumulation period for this program "
+                        "(7/1/2026 - 6/30/2027)", "treatment_types": ["Diagnostic"],
+                "amount": "$1,000.00", "used": "$0.00", "remaining": "$1,000.00"}]},
+                    "benefits_search": []}}
+    return _normalize_dd_portal(raw)["_dd_meta"]["benefit_period_calendar"]
+
+
+check("delta plan year: 'Calendar Individual Maximum' is a calendar-year plan",
+      _calendar_flag("Calendar"), True)
+check("delta plan year: any other maximum label is not",
+      _calendar_flag("Plan Year"), False)
 
 
 def _hist_vs_sheet(limitation, dates, sheet):
     norm = _dd_codes(_dd_entry("D0140", "100%", limitation))
     norm["_dd_meta"]["scraped_on"] = "2026-10-08T18:34:29.548Z"
     norm["_dd_meta"]["benefit_period_start"] = "1/1/2026"
+    norm["_dd_meta"]["benefit_period_calendar"] = True
     value = _dd_history_in_window(dates, norm, ("D0140",), sheet)[1]
     return value, _dd_compare("history", sheet, value)[0]
 

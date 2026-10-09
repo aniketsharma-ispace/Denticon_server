@@ -112,8 +112,9 @@ def _dd_history_in_window(value, portal_raw: dict, codes: tuple, sab_raw=None):
     against 1X1Year. The window is measured back from the day the portal was
     read:
 
-        NX1Year      the current benefit year (from the maximum's
-                     accumulation period, e.g. 1/1/2026), else 12 months
+        NX1Year      on a calendar-year plan, the current calendar year
+                     (from the maximum's accumulation period, e.g.
+                     1/1/2026); on a fiscal-year plan, the last 12 months
         NXkYears     the last k years
         NXkMonths    the last k months
         NXkDays      the last k days
@@ -141,7 +142,11 @@ def _dd_history_in_window(value, portal_raw: dict, codes: tuple, sab_raw=None):
         return datetime.date(y, m + 1, min(today.day, 28))
 
     if unit == "year" and count == 1:
-        start = _dd_date(meta.get("benefit_period_start"))
+        # A calendar-year plan counts the current calendar year; a fiscal-year
+        # (or any other) plan counts the last 12 months (agreed with the team).
+        start = None
+        if meta.get("benefit_period_calendar"):
+            start = _dd_date(meta.get("benefit_period_start")) or datetime.date(today.year, 1, 1)
         if not start or start > today:
             start = _months_back(12)
     elif unit == "year":
