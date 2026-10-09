@@ -1939,6 +1939,29 @@ check("delta history: no benefit year known falls back to the last 12 months",
       _hist(_YEARLY, "11/15/2025, 01/07/2020", period_start=""), (True, "11/15/2025"))
 check("delta history: a sheet NH agrees once the old date drops out",
       _dd_compare("history", "NH", _hist(_YEARLY, "01/07/2020")[1])[0], True)
+
+
+def _hist_vs_sheet(limitation, dates, sheet):
+    norm = _dd_codes(_dd_entry("D0140", "100%", limitation))
+    norm["_dd_meta"]["scraped_on"] = "2026-10-08T18:34:29.548Z"
+    norm["_dd_meta"]["benefit_period_start"] = "1/1/2026"
+    value = _dd_history_in_window(dates, norm, ("D0140",), sheet)[1]
+    return value, _dd_compare("history", sheet, value)[0]
+
+
+# A sheet that lists dates is held to every date the portal has (Sandra Low
+# Frigerio's D0140; appointment 120901's bitewings back to 2023).
+_THIRTY_DAYS = "Benefit is limited to one problem focused evaluation within a 30 day period"
+check("delta history: a sheet's date outside the window still matches (Sandra's D0140)",
+      _hist_vs_sheet(_THIRTY_DAYS, "08/30/2024", "08/30/2024"), ("08/30/2024", True))
+check("delta history: a sheet listing older years matches them (120901's D0274)",
+      _hist_vs_sheet(_YEARLY, "08/22/2025, 06/12/2025, 08/16/2024, 10/10/2023",
+                     "08/22/2025, 06/12/2025, 08/16/2024, 10/10/2023"),
+      ("08/22/2025, 06/12/2025, 08/16/2024, 10/10/2023", True))
+check("delta history: a blank sheet is held to the window like NH",
+      _hist_vs_sheet(_YEARLY, "01/07/2020", None)[0], "—")
+check("delta history: NH with a date inside the window is still a mismatch",
+      _hist_vs_sheet(_YEARLY, "05/26/2026", "NH"), ("05/26/2026", False))
 check("delta frequency: 'is not a benefit' is still not covered",
       _dd_frequency("This service is not a benefit of most Delta Dental plans."), "NC")
 

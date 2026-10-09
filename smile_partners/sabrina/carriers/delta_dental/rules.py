@@ -62,7 +62,7 @@ def _dd_code_override(value, portal_raw: dict, codes: tuple, what: str, sab_raw=
     blank is left with nothing to compare.
     """
     if what == "late_date_of_service" and _dd_export(portal_raw):
-        return _dd_history_in_window(value, portal_raw, codes)
+        return _dd_history_in_window(value, portal_raw, codes, sab_raw)
     if what != "age_limit" or not _dd_export(portal_raw):
         return False, value
     proc = next((p for p in (_dd_procedure(portal_raw, str(c).upper()) for c in codes) if p), None)
@@ -73,6 +73,8 @@ def _dd_code_override(value, portal_raw: dict, codes: tuple, what: str, sab_raw=
 
 
 _DD_DATE_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b")
+# How the sheet writes "no history".
+_HISTORY_NONE_WORDS = {"nh", "no history", "none", "n/h", "-", "--", "—", "–"}
 _DD_FREQ_SPAN_RE = re.compile(r"^\d+X(\d+)(Year|Month|Day)s?$", re.IGNORECASE)
 
 
@@ -94,15 +96,21 @@ def _dd_date(text):
         return None
 
 
-def _dd_history_in_window(value, portal_raw: dict, codes: tuple):
+def _dd_history_in_window(value, portal_raw: dict, codes: tuple, sab_raw=None):
     """
-    The service dates that count against the code's frequency.
+    The portal's History, as a sheet reading NH should be held to it.
 
-    The sheet's History records a date only where it affects the frequency
-    (agreed with the team): Deion Reid's bitewings were last taken
-    01/07/2020, which no longer counts against 1X1Year, so the sheet says NH.
-    A date counts when it falls inside the frequency's window, measured back
-    from the day the portal was read:
+    A sheet that lists service dates is compared against every date the
+    portal has — the team writes down whichever dates they judge relevant,
+    old ones included (Sandra Low Frigerio's D0140 08/30/2024 on a 30-day
+    limit; appointment 120901's bitewings back to 10/10/2023). Those pass
+    through untouched.
+
+    A sheet that says NH, or leaves the cell blank, is saying no service
+    affects the frequency. That is right when every portal date falls outside
+    the frequency's window — Deion Reid's bitewings, last taken 01/07/2020,
+    against 1X1Year. The window is measured back from the day the portal was
+    read:
 
         NX1Year      the current benefit year (from the maximum's
                      accumulation period, e.g. 1/1/2026), else 12 months
@@ -114,6 +122,9 @@ def _dd_history_in_window(value, portal_raw: dict, codes: tuple):
     no date counts, the portal side reads "—", the same as the sheet's NH.
     """
     import datetime
+    sheet = str(sab_raw or "").strip()
+    if sheet and sheet.lower() not in _HISTORY_NONE_WORDS and _DD_DATE_RE.search(sheet):
+        return False, value
     proc = next((p for p in (_dd_procedure(portal_raw, str(c).upper()) for c in codes) if p), None)
     span = _DD_FREQ_SPAN_RE.match(str((proc or {}).get("frequency_limit") or "").strip())
     dates = [(m.group(0), _dd_date(m.group(0))) for m in _DD_DATE_RE.finditer(str(value or ""))]
