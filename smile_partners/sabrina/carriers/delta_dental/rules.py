@@ -198,28 +198,64 @@ def _dd_perio_after_srp(portal_raw: dict) -> str | None:
     return f"{m.group(1)} Days" if m else "Not available in website"
 
 
-def _dd_network_export(portal_raw: dict, sheet_in_network) -> dict:
+# A Premier Lite fee schedule is written many ways — "Premier Lite", "#3 MI -
+# DD LITE Pr Reg6", "#203 MI - DD PremLT Perio" — and is audited against PPO.
+_DD_LITE_FEE_RE = re.compile(r"lite|prem\s*lt\b", re.IGNORECASE)
+# Any other fee schedule naming Premier — "GA - DD GP Premier B", "… Prem …" —
+# is audited against Premier.
+_DD_PREMIER_FEE_RE = re.compile(r"\bprem", re.IGNORECASE)
+
+
+def _dd_fee_schedule_network(fee_schedule) -> str:
+    """
+    The Delta network a sheet's fee schedule names: "premier", "ppo" for a
+    Premier Lite schedule, or "" where it names neither (agreed with the team).
+    Lite is checked first, since "PremLT" and "Premier Lite" also say Prem.
+    """
+    text = str(fee_schedule or "")
+    if _DD_LITE_FEE_RE.search(text):
+        return "ppo"
+    if _DD_PREMIER_FEE_RE.search(text):
+        return "premier"
+    return ""
+
+
+def _dd_network_export(portal_raw: dict, sheet_in_network, fee_schedule=None) -> dict:
     """
     The export with Benefits Search answered for the network the sheet records.
 
     Benefits Search states one network at a time, and the extension searches
-    every code under both: `benefits_search` for the plan's own network and
-    `benefits_search_oon` for "Non-Delta Dental Dentist". The sheet's "In
-    Network" field says which one this office is, so a sheet reading "Out" is
-    audited against the non-Delta answers — D0150 at 50% rather than 100%.
+    every code three times: `benefits_search` for the plan's own network,
+    `benefits_search_oon` for "Non-Delta Dental Dentist" and
+    `benefits_search_premier` for "Delta Dental Premier Dentist".
 
-    Anything else — a sheet reading "In" or nothing, an export from before the
-    second search, a search that did not run — leaves the export as it is.
+    - A sheet whose In Network reads "Out" is audited against the non-Delta
+      answers — D0150 at 50% rather than 100%.
+    - An in-network sheet whose fee schedule names Premier ("GA - DD GP
+      Premier B") is audited against the Premier answers. A Premier Lite
+      schedule ("DD LITE Pr", "PremLT") stays with PPO.
+
+    Anything else — an in-network PPO sheet, an export from before a search
+    was added, a search that did not run — leaves the export as it is.
     """
-    if not isinstance(portal_raw, dict) or _norm_network(sheet_in_network) != "OUT":
+    if not isinstance(portal_raw, dict):
         return portal_raw
     tabs = portal_raw.get("tabs")
     if not isinstance(tabs, dict):
         return portal_raw
-    oon = tabs.get("benefits_search_oon")
-    if not isinstance(oon, list) or not oon:
+
+    if _norm_network(sheet_in_network) == "OUT":
+        answers, label = tabs.get("benefits_search_oon"), tabs.get("benefits_search_oon_network")
+        default = "Non-Delta Dental Dentist"
+    elif _dd_fee_schedule_network(fee_schedule) == "premier":
+        answers, label = tabs.get("benefits_search_premier"), tabs.get("benefits_search_premier_network")
+        default = "Delta Dental Premier Dentist"
+    else:
+        return portal_raw
+
+    if not isinstance(answers, list) or not answers:
         return portal_raw
     chosen = dict(tabs)
-    chosen["benefits_search"] = oon
-    chosen["benefits_search_network"] = tabs.get("benefits_search_oon_network") or "Non-Delta Dental Dentist"
+    chosen["benefits_search"] = answers
+    chosen["benefits_search_network"] = label or default
     return {**portal_raw, "tabs": chosen}

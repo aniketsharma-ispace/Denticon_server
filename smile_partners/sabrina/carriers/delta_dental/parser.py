@@ -539,11 +539,19 @@ def parse_sabrina_text(text: str) -> dict:
         log.warning("Sabrina labels not found in PDF (%d): %s",
                     len(missing_labels), ", ".join(missing_labels))
 
+    # The fee schedule is not audited, but it says which Delta network an
+    # in-network office belongs to — "GA - DD GP Premier B" is Premier,
+    # "#3 MI - DD LITE Pr Reg6" is PPO — and so which Benefits Search the
+    # sheet is read against. Kept beside the fields, not among them.
+    fee_schedule, _ = _find_value(lines, {"key": "fee_schedule", "label": "Fee Schedule",
+                                          "kind": "text"}, cursor)
+
     return {
         "fields": values,
         "benefit_rows": benefit_rows,
         "labels_not_found": missing_labels,
         "line_count": len(lines),
+        "fee_schedule": fee_schedule,
     }
 
 

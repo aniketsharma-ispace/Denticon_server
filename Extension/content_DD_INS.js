@@ -998,9 +998,10 @@ async function searchAllBatches(networkLabel) {
 // the provider network" dropdown above the results. The same D0150 is 100%
 // for a Delta Dental PPO dentist and 50% for a non-Delta dentist, so an
 // out-of-network office needs the second answer. Every code is therefore
-// searched twice: once under the plan's own network, once under "Non-Delta
-// Dental Dentist". The audit uses whichever the breakdown sheet says the
-// office is.
+// searched three times: under the plan's own network, under "Non-Delta
+// Dental Dentist", and under "Delta Dental Premier Dentist". The audit uses
+// whichever the breakdown sheet says the office is — its In Network field,
+// and for an in-network office its fee schedule (Premier or PPO).
 //
 // The portal remembers the last network chosen, so the in-network pass picks
 // its network explicitly rather than trusting whatever is showing.
@@ -1079,22 +1080,36 @@ async function chooseNetwork(predicate) {
 }
 
 async function scrapeBenefitsSearchTab(planName) {
-    const result = { inNetwork: [], network: "", outOfNetwork: null, outOfNetworkLabel: "", error: "" };
+    const result = {
+        inNetwork: [], network: "",
+        outOfNetwork: null, outOfNetworkLabel: "",
+        premier: null, premierLabel: "", premierError: "",
+        error: "",
+    };
     const planWord = ((planName || "").match(/\b(PPO|Premier|DHMO|HMO|EPO)\b/i) || [])[1] || "";
     const isInNetwork = (text) => !!text && !OUT_OF_NETWORK_RE.test(text);
     // The plan's own network first ("Delta Dental PPO Dentist" for a PPO
     // plan), and any other Delta network if that one is not offered.
     const isPlanNetwork = (text) => isInNetwork(text) &&
         (!planWord || new RegExp(`\\b${planWord}\\b`, "i").test(text));
+    const isPremier = (text) => isInNetwork(text) && /\bpremier\b/i.test(text);
 
-    let original = "";
+    // The dropdown is drawn above a set of results, so before the first
+    // search of a patient there is nothing to read or set. One search is run
+    // to bring it up (its answers are not kept), and the plan's own network
+    // is then chosen explicitly — the portal remembers the last network
+    // picked, which may be another patient's Premier or non-Delta pass.
     try {
-        original = readNetwork(findNetworkControl());
+        if (!findNetworkControl()) {
+            await searchBenefitCodes(BATCH_1);
+            await sleep(1000);
+        }
+        const showing = readNetwork(findNetworkControl());
         if (!findNetworkControl()) {
             result.error = "network dropdown not found";
-        } else if (!isPlanNetwork(original)) {
+        } else if (!isPlanNetwork(showing)) {
             const chosen = await chooseNetwork(isPlanNetwork) || await chooseNetwork(isInNetwork);
-            if (!chosen) result.error = `could not switch from "${original}" to an in-network option`;
+            if (!chosen) result.error = `could not switch from "${showing}" to an in-network option`;
         }
     } catch (e) {
         result.error = `network dropdown: ${e.message}`;
@@ -1116,10 +1131,31 @@ async function scrapeBenefitsSearchTab(planName) {
             result.error = result.error || `out-of-network search: ${e.message}`;
         }
 
-        // Leave the dropdown as the user had it.
+        // "Delta Dental Premier Dentist": the audit uses these answers where
+        // the sheet's fee schedule is a Premier one. A Premier plan's own pass
+        // already is that search.
         try {
-            if (original && readNetwork(findNetworkControl()) !== original) {
-                await chooseNetwork(text => text === original);
+            if (isPremier(result.network)) {
+                result.premier = result.inNetwork;
+                result.premierLabel = result.network;
+            } else {
+                const chosen = await chooseNetwork(isPremier);
+                if (chosen) {
+                    result.premierLabel = chosen;
+                    result.premier = await searchAllBatches(chosen);
+                } else {
+                    result.premierError = "no Delta Dental Premier option could be chosen";
+                }
+            }
+        } catch (e) {
+            result.premierError = `premier search: ${e.message}`;
+        }
+
+        // Leave the dropdown on the plan's own network, where the next
+        // patient's first search — run before it can be read — should start.
+        try {
+            if (result.network && readNetwork(findNetworkControl()) !== result.network) {
+                await chooseNetwork(text => text === result.network);
             }
         } catch (e) { /* the scrape is already complete */ }
     }
@@ -1251,6 +1287,11 @@ if (search.outOfNetwork) {
     auditData.tabs.benefits_search_oon_network = search.outOfNetworkLabel;
 }
 if (search.error) auditData.tabs.benefits_search_oon_error = search.error;
+if (search.premier) {
+    auditData.tabs.benefits_search_premier = search.premier;
+    auditData.tabs.benefits_search_premier_network = search.premierLabel;
+}
+if (search.premierError) auditData.tabs.benefits_search_premier_error = search.premierError;
         // TREATMENT HISTORY TAB
         console.log("Scraping Treatment History tab...");
         const historyTabClicked = await clickTab("treatmentHistoryTab");

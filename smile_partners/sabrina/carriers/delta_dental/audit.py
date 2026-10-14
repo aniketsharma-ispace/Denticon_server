@@ -65,8 +65,9 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     """
     sab_fields = sabrina_parsed.get("fields", {})
     # Pick what the sheet should be read against: the network its In Network
-    # field names.
-    portal_raw = _portal_for_sheet(portal_raw, sab_fields)
+    # field names, and for an in-network office the one its fee schedule
+    # names (Premier, or PPO for Premier Lite).
+    portal_raw = _portal_for_sheet(portal_raw, sab_fields, sabrina_parsed.get("fee_schedule"))
     bd = _portal_breakdown(portal_raw)
     # Derived readers work off the translated export, not the raw one.
     portal_norm = _portal_normalized(portal_raw)

@@ -20,15 +20,15 @@ from .rules import (_dd_code_override, _dd_export, _dd_major_paid_on,
                     _dd_network_export, _dd_perio_after_srp)
 
 
-def _portal_for_sheet(portal_raw: dict, sab_fields: dict) -> dict:
+def _portal_for_sheet(portal_raw: dict, sab_fields: dict, fee_schedule=None) -> dict:
     """
     The portal export as this sheet should read it.
 
     Delta Dental's export carries the Benefits Search answers for the plan's
-    own network and for a non-Delta dentist side by side; the sheet's In
-    Network field decides which one is audited.
+    own network, a Premier dentist and a non-Delta dentist side by side; the
+    sheet's In Network field and fee schedule decide which one is audited.
     """
-    return _dd_network_export(portal_raw, (sab_fields or {}).get("in_network"))
+    return _dd_network_export(portal_raw, (sab_fields or {}).get("in_network"), fee_schedule)
 
 
 def _breakdown_for_sheet(bd: dict, portal_norm: dict) -> dict:

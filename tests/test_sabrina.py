@@ -1968,6 +1968,81 @@ check("delta plan year: 'Calendar Individual Maximum' is a calendar-year plan",
 check("delta plan year: any other maximum label is not",
       _calendar_flag("Plan Year"), False)
 
+# Delta Dental INS: an in-network office is audited against the Premier
+# Benefits Search when the sheet's fee schedule names Premier, and against PPO
+# when it is a Premier Lite schedule (agreed with the team, 2026-10-14).
+from smile_partners.sabrina.carriers.delta_dental.rules import (_dd_fee_schedule_network,
+                                                                _dd_network_export)
+for fee, want in [("GA - DD GP Premier B", "premier"),
+                  ("CO - DD Prem Reg 2", "premier"),
+                  ("#3 MI - DD LITE Pr Reg6", "ppo"),
+                  ("#203 MI - DD PremLT Perio", "ppo"),
+                  ("MI Delta Premier Lite Perio", "ppo"),
+                  ("#99 MI Delta Premier Lite Region 4", "ppo"),
+                  ("GA - DeltaDentaRC41", ""),
+                  ("GA - General UCR", ""),
+                  (None, "")]:
+    check(f"delta fee schedule {fee!r} -> {want or 'neither'}", _dd_fee_schedule_network(fee), want)
+
+_THREE_NETWORKS = {
+    "source": "Delta Dental", "primary_patient": {"name": "X", "plan": "Delta Dental PPO"},
+    "tabs": {
+        "overview": {"maximums": [
+            _dd_max("Calendar Individual Maximum Accumulation period for this program (1/1/2026 - 12/31/2026)",
+                    _ALL_TYPES, [_PPO], "$1,700.00"),
+            _dd_max("Calendar Individual Maximum Accumulation period for this program (1/1/2026 - 12/31/2026)",
+                    _ALL_TYPES, [_PREMIER, _NON_DELTA], "$1,500.00")]},
+        "benefits_search": [_dd_entry("D2160", "80%", "Benefit is limited to once per surface")],
+        "benefits_search_network": "Delta Dental PPO Dentist",
+        "benefits_search_oon": [_dd_entry("D2160", "50%", "Benefit is limited to once per surface")],
+        "benefits_search_oon_network": "Non-Delta Dental Dentist",
+        "benefits_search_premier": [_dd_entry("D2160", "70%", "Benefit is limited to once per surface")],
+        "benefits_search_premier_network": "Delta Dental Premier Dentist",
+    },
+}
+
+
+def _read_under(in_network, fee):
+    tabs = _dd_network_export(_THREE_NETWORKS, in_network, fee)["tabs"]
+    return tabs["benefits_search_network"], tabs["benefits_search"][0]["benefit_level"]
+
+
+check("delta network: in-network with a Premier fee schedule reads Premier",
+      _read_under("In", "GA - DD GP Premier B"), ("Delta Dental Premier Dentist", "70%"))
+check("delta network: in-network with a Premier Lite fee schedule reads PPO",
+      _read_under("In", "#203 MI - DD PremLT Perio"), ("Delta Dental PPO Dentist", "80%"))
+check("delta network: in-network with any other fee schedule reads PPO",
+      _read_under("In", "GA - DeltaDentaRC41"), ("Delta Dental PPO Dentist", "80%"))
+check("delta network: out of network reads Non-Delta whatever the fee schedule",
+      _read_under("Out", "GA - DD GP Premier B"), ("Non-Delta Dental Dentist", "50%"))
+import copy as _copy_premier
+_no_premier = _copy_premier.deepcopy(_THREE_NETWORKS)
+del _no_premier["tabs"]["benefits_search_premier"]
+check("delta network: an export without the Premier search stays with PPO",
+      _dd_network_export(_no_premier, "In", "GA - DD GP Premier B")["tabs"]["benefits_search_network"],
+      "Delta Dental PPO Dentist")
+
+
+def _premier_audit(fee):
+    audit = sc.compare_sabrina_to_portal(
+        {"fields": {"in_network": "In", "d2160": "70%", "yearly_max": "1500"},
+         "benefit_rows": {}, "fee_schedule": fee}, _THREE_NETWORKS)
+    rows = {r["key"]: r for s in audit["sections"] for r in s["rows"]}
+    return rows["d2160"]["portal"], rows["yearly_max"]["portal"], audit["diagnostics"].get("portal_network")
+
+
+check("delta audit: a Premier sheet reads Premier percentages and the Premier maximum",
+      _premier_audit("GA - DD GP Premier B"), ("70%", "1,500.00", "Delta Dental Premier Dentist"))
+check("delta audit: a Premier Lite sheet reads PPO",
+      _premier_audit("MI Delta Premier Lite Perio"), ("80%", "1,700.00", "Delta Dental PPO Dentist"))
+from smile_partners.sabrina.carriers.delta_dental.parser import parse_sabrina_text as _dd_parse_text
+_fee_parsed = _dd_parse_text("Group Number \n03668-02571\nFee Schedule \nGA - DD GP Premier B\n"
+                             "Insurance Address \nP.O. Box 1809\n")
+check("delta sheet: the fee schedule is read",
+      _fee_parsed["fee_schedule"], "GA - DD GP Premier B")
+check("delta sheet: the fee schedule is kept beside the fields, not among them",
+      "fee_schedule" in _fee_parsed["fields"], False)
+
 
 def _hist_vs_sheet(limitation, dates, sheet):
     norm = _dd_codes(_dd_entry("D0140", "100%", limitation))
