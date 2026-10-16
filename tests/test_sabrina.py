@@ -1917,6 +1917,39 @@ check("delta deductible: a PPO search takes the PPO / Premier deductibles",
       _melear("Delta Dental PPO Dentist"), ("50.00", "150.00"))
 check("delta deductible: no network recorded uses the plan's (PPO)",
       _melear(""), ("50.00", "150.00"))
+
+# Brian Jones: the plan lists deductibles for Premier and Non-Delta dentists
+# only, so a PPO office has none — not the other networks' $100 / $300.
+_PREMIER_NON_DELTA = ["Delta Dental Premier Dentist",
+                      "Non-Delta Dental Dentist (Benefits based on contract allowance)"]
+_JONES_DEDS = [_split_ded("Family", _PREMIER_NON_DELTA, "$300.00"),
+               _split_ded("Individual", _PREMIER_NON_DELTA, "$100.00")]
+
+
+def _jones(network):
+    no_footnote = [dict(_dd_entry(code, "100%", "Benefit is limited to two within a calendar year"),
+                        applies_to_deductible="Yes", applies_to_maximum="Yes")
+                   for code in ("D0120", "D0220")]
+    tabs = {"overview": {"deductibles": _JONES_DEDS}, "benefits_search": no_footnote}
+    if network:
+        tabs["benefits_search_network"] = network
+    bd = sc._portal_breakdown({"source": "Delta Dental",
+                               "primary_patient": {"name": "X", "plan": "Delta Dental PPO"},
+                               "tabs": tabs})
+    return bd.get("indiv_ded"), bd.get("family_ded"), bd.get("ded_prev"), bd.get("ded_diag")
+
+
+check("delta deductible: no PPO deductible listed -> a PPO office has $0 and No / No",
+      _jones("Delta Dental PPO Dentist"), ("0.00", "0.00", "No", "No"))
+check("delta deductible: the same plan with no network recorded is read as the plan's PPO",
+      _jones(""), ("0.00", "0.00", "No", "No"))
+check("delta deductible: a Premier office pays the listed deductible",
+      _jones("Delta Dental Premier Dentist")[:2], ("100.00", "300.00"))
+check("delta deductible: so does an out-of-network office",
+      _jones("Non-Delta Dental Dentist")[:2], ("100.00", "300.00"))
+_no_networks = [dict(r, networks=[]) for r in _JONES_DEDS]
+check("delta deductible: records that name no network keep the old reading",
+      _ded_bd(_no_networks).get("indiv_ded"), "100.00")
 check("delta frequency: 'is a benefit once within a 3 year period' (D0150)",
       _dd_frequency("This procedure is a benefit once per provider per lifetime. This procedure "
                     "is a benefit once within a 3 year period and is included as part of the oral "

@@ -502,6 +502,13 @@ def _dd_for_network(records, network):
     return matching or records
 
 
+def _dd_names_network(records, network):
+    """Whether any record lists the network being audited among its networks."""
+    kind = _dd_network_kind(network)
+    return bool(kind) and any(
+        _dd_network_kind(n) == kind for r in records for n in (r.get('networks') or []))
+
+
 def _dd_amount(value):
     """A printed dollar amount as a number, for choosing between records."""
     m = re.search(r'\d[\d,]*(?:\.\d+)?', str(value or ''))
@@ -670,6 +677,14 @@ def _normalize_dd_portal(raw):
                     if isinstance(r, dict) and not _dd_ortho_deductible_record(r)
                     and kind in str(r.get('type', '')).lower()]
         if matching:
+            # Where the deductibles name their networks and none of them is
+            # the one being audited, that network has no deductible: Brian
+            # Jones's plan lists $100 / $300 for "Delta Dental Premier Dentist"
+            # and "Non-Delta Dental Dentist" only, so a PPO office pays none.
+            if (_dd_network_kind(network)
+                    and any(r.get('networks') for r in matching)
+                    and not _dd_names_network(matching, network)):
+                return {'total': '$0.00', 'used': '$0.00', 'remaining': '$0.00'}
             return _as_amounts(_dd_for_network(matching, network)[0])
         # An empty deductible table is the portal stating there is none.
         if not deductibles:
