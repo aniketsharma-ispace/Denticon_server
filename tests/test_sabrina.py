@@ -877,6 +877,41 @@ check("ortho coverage: covered", sc._ortho_is_covered(_real), True)
 check("ortho coverage: no orthodontics row at all",
       sc._ortho_is_covered(_no_ortho_row), None)
 
+# Dasian Southern (MetLife, dependent aged 14): Covered Services said "Not
+# Covered" for orthodontics, while the plan provision said "Orthodontics is
+# covered under this plan" and the Lifetime card was Orthodontics, $2,000. The
+# audit took the coverage row and reported the maximum as $0 against a sheet
+# correctly saying 2000. The provision is the plan's own statement and decides.
+def _with_ortho_provision(raw, value):
+    out = {"metlife_data": dict(raw["metlife_data"])}
+    out["metlife_data"]["provisions"] = list(raw["metlife_data"].get("provisions", [])) + [
+        {"rule": "Orthodontic Coverage", "value": value}]
+    return out
+
+_dasian = _with_ortho_provision(
+    _lifetime("Orthodontics", "$ 2000.00 total", ortho_covered=False),
+    "Orthodontics is covered under this plan Percentage considered at initial ortho placement: 20%")
+check("ortho coverage: provision 'is covered' beats a 'Not Covered' row",
+      sc._ortho_is_covered(_dasian), True)
+check("ortho max: Dasian Southern's $2,000 comes through",
+      sc._portal_ortho_max(sc._portal_breakdown(_dasian), _dasian), "2,000.00")
+check("ortho max: and matches the sheet's 2000",
+      sc._compare("money", "2000", sc._portal_ortho_max(sc._portal_breakdown(_dasian), _dasian))[0], True)
+
+# The provision cuts both ways: "is not covered" still zeroes the maximum, even
+# where the coverage row disagrees (Nicole Green's plan states not covered).
+_stated_not = _with_ortho_provision(
+    _lifetime("Orthodontics", "$ 1000.00 total", ortho_covered=True),
+    "Orthodontics is not covered under this plan Percentage considered at initial ortho placement: 0%")
+check("ortho coverage: provision 'is not covered' beats a covered row",
+      sc._ortho_is_covered(_stated_not), False)
+check("ortho max: a plan stating ortho not covered still reports 0",
+      sc._portal_ortho_max(sc._portal_breakdown(_stated_not), _stated_not), "0.00")
+# A TMJ card is still not ortho, whatever the provision says.
+_tmj_covered = _with_ortho_provision(_tmj, "Orthodontics is covered under this plan")
+check("ortho max: TMJ card with ortho covered -> still not ortho",
+      sc._portal_ortho_max(sc._portal_breakdown(_tmj_covered), _tmj_covered), "0.00")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  1g. Apt 91215 — one plan stating two rules

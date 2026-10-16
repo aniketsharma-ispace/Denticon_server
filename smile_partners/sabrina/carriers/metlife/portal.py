@@ -214,8 +214,40 @@ def _portal_cob(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     return None
 
 
+def _ortho_provision_covered(portal_raw: dict) -> bool | None:
+    """
+    The plan's own statement under Plan Provisions › Orthodontic Coverage —
+    "Orthodontics is covered under this plan" / "… is not covered …".
+    """
+    ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
+    for prov in (ml.get("provisions") or []):
+        if not isinstance(prov, dict):
+            continue
+        if "orthodontic coverage" not in str(prov.get("rule", "")).lower():
+            continue
+        text = str(prov.get("value", "")).lower()
+        if re.search(r"\bis\s+not\s+covered\b", text):
+            return False
+        if re.search(r"\bis\s+covered\b", text):
+            return True
+    return None
+
+
 def _ortho_is_covered(portal_raw: dict) -> bool | None:
-    """Whether the portal states orthodontics is covered at all."""
+    """
+    Whether the portal states orthodontics is covered at all.
+
+    The Orthodontic Coverage provision decides when the portal states one. The
+    Covered Services row is only the fallback: it can say "Not Covered" for a
+    plan that covers orthodontics — Dasian Southern (dependent, 14) showed
+    "Not Covered" there beside "Orthodontics is covered under this plan", an
+    Orthodontics lifetime card of $2,000 and a child age limit of 19, and the
+    audit reported the maximum as $0.
+    """
+    stated = _ortho_provision_covered(portal_raw)
+    if stated is not None:
+        return stated
+
     ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
     for row in (ml.get("covered_services") or []):
         if not isinstance(row, dict):
@@ -276,7 +308,9 @@ def _portal_ortho_max(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     Two ways a non-zero maximum here can be wrong: the portal's only lifetime
     maximum belongs to a different class (TMJ), or the plan states orthodontics
     is not covered at all — in which case there is no orthodontic maximum to
-    report and the sheet's 0 is correct.
+    report and the sheet's 0 is correct. "Not covered" is read as
+    `_ortho_is_covered` decides it: the plan provision first, the Covered
+    Services row only when there is no provision.
     """
     other = _lifetime_belongs_elsewhere(portal_raw)
     if other:
