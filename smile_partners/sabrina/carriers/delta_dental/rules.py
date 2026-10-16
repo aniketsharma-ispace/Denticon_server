@@ -206,6 +206,19 @@ _DD_LITE_FEE_RE = re.compile(r"lite|prem\s*lt\b", re.IGNORECASE)
 _DD_PREMIER_FEE_RE = re.compile(r"\bprem", re.IGNORECASE)
 
 
+def _dd_selected_network(portal_raw: dict) -> str:
+    """
+    The network the user picked in the extension's pop-up before the
+    procedure-code search — "ppo", "premier" or "oon" — or "" for an export
+    made before the pop-up, or where the pick could not be applied. Read from
+    the raw export or from its translation, which keeps the raw one.
+    """
+    raw = (portal_raw or {}).get("_raw_export") or portal_raw or {}
+    tabs = raw.get("tabs") if isinstance(raw, dict) else None
+    value = str((tabs or {}).get("benefits_search_selected") or "").strip().lower()
+    return value if value in ("ppo", "premier", "oon") else ""
+
+
 def _dd_fee_schedule_network(fee_schedule) -> str:
     """
     The Delta network a sheet's fee schedule names: "premier", "ppo" for a
@@ -242,6 +255,11 @@ def _dd_network_export(portal_raw: dict, sheet_in_network, fee_schedule=None) ->
         return portal_raw
     tabs = portal_raw.get("tabs")
     if not isinstance(tabs, dict):
+        return portal_raw
+
+    # The user chose the office's network in the extension's pop-up, and only
+    # that network was searched — `benefits_search` already is the answer.
+    if _dd_selected_network(portal_raw):
         return portal_raw
 
     if _norm_network(sheet_in_network) == "OUT":

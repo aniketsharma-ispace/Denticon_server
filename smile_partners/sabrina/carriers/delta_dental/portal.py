@@ -17,7 +17,7 @@ from .common import _UNLIMITED_MAX
 from .vocabulary import (_blank, _coalesce_keys, _norm_network, _num_cob, _num_money,
                          _num_yesno)
 from .rules import (_dd_code_override, _dd_export, _dd_major_paid_on,
-                    _dd_network_export, _dd_perio_after_srp)
+                    _dd_network_export, _dd_perio_after_srp, _dd_selected_network)
 
 
 def _portal_for_sheet(portal_raw: dict, sab_fields: dict, fee_schedule=None) -> dict:
@@ -174,7 +174,14 @@ def _portal_in_network(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     and a sheet saying "Out" against a plan that only pays in network does not.
     Where the plan pays under both — the common case — either claim is valid and
     this correctly reports agreement.
+
+    An export whose network the user chose in the extension's pop-up states it
+    outright: Out of Network is "Out", PPO or Premier is "In".
     """
+    selected = _dd_selected_network(portal_raw)
+    if selected:
+        return "Out" if selected == "oon" else "In"
+
     pays_in, pays_out, stated = _network_coverage(portal_raw)
 
     if stated:

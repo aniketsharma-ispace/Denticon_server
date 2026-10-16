@@ -109,8 +109,10 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             status = STATUS_MATCH
             note = "blank on the sheet and no limit on the portal — same thing"
         elif sab_blank:
-            status = STATUS_MISSING_IN_SABRINA
-            note = "blank on the Sabrina sheet"
+            # The portal states a value the sheet left out: a mismatch, not a
+            # separate "blank" category (agreed with the team, 2026-10-16).
+            status = STATUS_MISMATCH
+            note = "blank on the Sabrina sheet, but the portal states it"
         elif field.get("uncomparable"):
             status = STATUS_NOT_COMPARABLE
             note = field["uncomparable"]

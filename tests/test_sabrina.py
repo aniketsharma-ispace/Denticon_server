@@ -2078,6 +2078,60 @@ check("delta sheet: the fee schedule is read",
 check("delta sheet: the fee schedule is kept beside the fields, not among them",
       "fee_schedule" in _fee_parsed["fields"], False)
 
+# Delta Dental INS (2026-10-16): the user picks the office's network in the
+# extension's pop-up, only that network is searched, and the export says which.
+from smile_partners.sabrina.carriers.delta_dental.rules import _dd_selected_network
+
+
+def _picked(selected, level, label):
+    return {"source": "Delta Dental", "primary_patient": {"name": "X", "plan": "Delta Dental PPO"},
+            "tabs": {"benefits_search": [_dd_entry("D2160", level, "Benefit is limited to once per surface")],
+                     "benefits_search_network": label, "benefits_search_selected": selected}}
+
+
+_PICKED_OON = _picked("oon", "50%", "Non-Delta Dental Dentist")
+check("delta pick: the export's choice is read", _dd_selected_network(_PICKED_OON), "oon")
+check("delta pick: and through the translation, which keeps the raw export",
+      _dd_selected_network({"_raw_export": _PICKED_OON}), "oon")
+check("delta pick: an export from before the pop-up has none",
+      _dd_selected_network(_THREE_NETWORKS), "")
+check("delta pick: anything else is not a choice", _dd_selected_network(_picked("x", "", "")), "")
+check("delta pick: the chosen search is used whatever the sheet's In Network says",
+      _dd_network_export(_PICKED_OON, "In", "GA - DD GP Premier B")["tabs"]["benefits_search_network"],
+      "Non-Delta Dental Dentist")
+
+
+def _pick_audit(export, sheet):
+    audit = sc.compare_sabrina_to_portal({"fields": sheet, "benefit_rows": {}}, export)
+    return audit, {r["key"]: r for s in audit["sections"] for r in s["rows"]}
+
+
+_, _rows_pick = _pick_audit(_PICKED_OON, {"in_network": "In", "d2160": "50%"})
+check("delta pick: Out of Network chosen, sheet says In -> mismatch on In Network",
+      (_rows_pick["in_network"]["portal"], _rows_pick["in_network"]["status"]), ("Out", "mismatch"))
+check("delta pick: the codes are read under the chosen network",
+      (_rows_pick["d2160"]["portal"], _rows_pick["d2160"]["status"]), ("50%", "match"))
+_, _rows_pick = _pick_audit(_picked("premier", "70%", "Delta Dental Premier Dentist"),
+                            {"in_network": "In", "d2160": "70%"})
+check("delta pick: Premier chosen is in network",
+      (_rows_pick["in_network"]["portal"], _rows_pick["in_network"]["status"]), ("In", "match"))
+
+# A field the sheet leaves blank but the portal states is a mismatch (agreed
+# with the team, 2026-10-16) — no longer a separate "blank on the sheet" count.
+_blank_audit, _rows_blank = _pick_audit(_picked("ppo", "80%", "Delta Dental PPO Dentist"),
+                                        {"in_network": "In"})
+check("delta blank: a blank sheet value the portal states is a mismatch",
+      (_rows_blank["d2160"]["status"], _rows_blank["d2160"]["portal"]), ("mismatch", "80%"))
+check("delta blank: and is counted with the mismatches",
+      (_blank_audit["summary"]["missing_in_sabrina"],
+       any(r["key"] == "d2160" for r in _blank_audit["mismatches"])), (0, True))
+_no_limit = _picked("ppo", "100%", "Delta Dental PPO Dentist")
+_no_limit["tabs"]["benefits_search"] = [_dd_entry("D1110", "100%",
+                                                  "For this program, this procedure has no frequency limitation")]
+_, _rows_no_limit = _pick_audit(_no_limit, {"in_network": "In", "d1110": "100%"})
+check("delta blank: a blank frequency against 'no frequency limitation' still agrees",
+      _rows_no_limit["d1110__freq"]["status"], "match")
+
 
 def _hist_vs_sheet(limitation, dates, sheet):
     norm = _dd_codes(_dd_entry("D0140", "100%", limitation))
