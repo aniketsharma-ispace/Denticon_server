@@ -186,6 +186,8 @@ _portal_ortho_max = _on_portal("_portal_ortho_max", 1)
 _portal_ortho_used = _on_portal("_portal_ortho_used", 1)
 _portal_perio_after_srp = _on_portal("_portal_perio_after_srp", 1)
 _portal_prev_in_max = _on_portal("_portal_prev_in_max", 1)
+_portal_subscriber_dob = _on_portal("_portal_subscriber_dob", 1)
+_portal_subscriber_name = _on_portal("_portal_subscriber_name", 1)
 _portal_yearly_max_paid = _on_portal("_portal_yearly_max_paid", 1)
 
 _DERIVED = {key: globals()[fn.__name__] for key, fn in _METLIFE_DERIVED.items()}

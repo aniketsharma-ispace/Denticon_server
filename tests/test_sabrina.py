@@ -912,6 +912,41 @@ _tmj_covered = _with_ortho_provision(_tmj, "Orthodontics is covered under this p
 check("ortho max: TMJ card with ortho covered -> still not ortho",
       sc._portal_ortho_max(sc._portal_breakdown(_tmj_covered), _tmj_covered), "0.00")
 
+# Sheila Sokolowski (MetLife, Spouse): the extension found no Subscriber entry
+# in the patient dropdown and exported `subscriber_info: null`. The breakdown
+# fell back to the PATIENT's name and DOB, so the audit reported her own name
+# and birthday as the subscriber's against a sheet correctly naming Brian
+# Leiter — a critical DOB mismatch the portal never stated.
+from smile_partners.sabrina.carriers.metlife.spec import _SPEC as _ML_SPEC
+_ml_field = {f["key"]: f for f in _ML_SPEC}
+
+def _member(name, dob, relationship, sub_info=None):
+    return {"metlife_data": {"patient": {"name": name, "dob": dob, "relationship": relationship},
+                             "provisions": [_BENEFIT_PERIOD]},
+            "subscriber_info": sub_info}
+
+def _sub_values(raw):
+    bd = sc._portal_breakdown(raw)
+    return (sc._portal_value(_ml_field["subscriber_name"], bd, raw),
+            sc._portal_value(_ml_field["subscriber_dob"], bd, raw))
+
+_sheila = _member("Sheila Sokolowski", "08/23/1964", "Spouse")
+check("subscriber: the breakdown itself falls back to the patient",
+      sc._portal_breakdown(_sheila).get("subscriber_name"), "Sheila Sokolowski")
+check("subscriber: spouse with no subscriber captured -> unstated, not her own",
+      _sub_values(_sheila), (None, None))
+check("subscriber: dependent with no subscriber captured -> unstated",
+      _sub_values(_member("Dasian J Southern", "01/26/2012", "Dependent")), (None, None))
+check("subscriber: a captured subscriber still comes through",
+      _sub_values(_member("Sheila Sokolowski", "08/23/1964", "Spouse",
+                          {"name": "Brian Leiter", "dob": "01/14/1963", "relation": "Subscriber"})),
+      ("Brian Leiter", "01/14/1963"))
+check("subscriber: the patient IS the subscriber -> her own details stand",
+      _sub_values(_member("Tudor Piroteala", "05/18/1987", "Subscriber")),
+      ("Tudor Piroteala", "05/18/1987"))
+check("subscriber: no relationship stated -> fallback kept as before",
+      _sub_values(_member("Pat Doe", "01/01/1990", "")), ("Pat Doe", "01/01/1990"))
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  1g. Apt 91215 — one plan stating two rules

@@ -58,8 +58,10 @@ _SPEC: list[dict] = [
      "after": "Patient Name"},
     {"key": "member_id",       "label": "Member ID#",      "kind": "id",   "section": "Patient / Subscriber", "portal": "member_id",
      "aliases": ["Member ID", "Member Id #", "Subscriber ID", "Member/Subscriber ID"]},
-    {"key": "subscriber_name", "label": "Subscriber Name", "kind": "name", "section": "Patient / Subscriber", "portal": "subscriber_name"},
-    {"key": "subscriber_dob",  "label": "Date of Birth",   "kind": "date", "section": "Patient / Subscriber", "portal": "subscriber_dob",
+    # Read through guards in portal.py: an export without the subscriber must
+    # not stand in the patient's own name and DOB for a spouse or dependent.
+    {"key": "subscriber_name", "label": "Subscriber Name", "kind": "name", "section": "Patient / Subscriber", "portal": "_subscriber_name"},
+    {"key": "subscriber_dob",  "label": "Date of Birth",   "kind": "date", "section": "Patient / Subscriber", "portal": "_subscriber_dob",
      "after": "Subscriber Name"},
 
     # ── Insurance ────────────────────────────────────────────────────────────

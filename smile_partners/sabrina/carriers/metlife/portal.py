@@ -39,6 +39,45 @@ def _breakdown_for_sheet(bd: dict, portal_norm: dict) -> dict:
 #  PORTAL SIDE
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Relationships under which the patient IS the subscriber.
+_SELF_RELATIONS = ("subscriber", "self", "employee", "member", "policyholder", "policy holder")
+
+
+def _subscriber_unread(portal_raw: dict) -> bool:
+    """
+    The export carries no subscriber, and the patient is someone else.
+
+    The extension reads the subscriber from the patient dropdown on the portal;
+    when it finds no Subscriber entry it records `subscriber_info: null`. The
+    breakdown then falls back to the PATIENT's name and date of birth, which
+    is right only when the patient is the subscriber. For Sheila Sokolowski
+    (Spouse) it showed her own name and DOB against a sheet correctly naming
+    Brian Leiter — a critical mismatch made up by the fallback, not the portal.
+    """
+    sub = (portal_raw or {}).get("subscriber_info")
+    if isinstance(sub, dict) and not _blank(sub.get("name")):
+        return False
+    ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
+    rel = str(((ml.get("patient") or {}).get("relationship")) or "").strip().lower()
+    # No relationship stated: nothing shows the fallback is wrong, so it stands.
+    return bool(rel) and not rel.startswith(_SELF_RELATIONS)
+
+
+def _portal_subscriber_name(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """Subscriber name — unstated rather than the patient's, when not captured."""
+    if _subscriber_unread(portal_raw):
+        return None
+    value = bd.get("subscriber_name")
+    return None if _blank(value) else str(value)
+
+
+def _portal_subscriber_dob(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """Subscriber date of birth, under the same guard as the name."""
+    if _subscriber_unread(portal_raw):
+        return None
+    value = bd.get("subscriber_dob")
+    return None if _blank(value) else str(value)
+
 def _portal_normalized(portal_raw: dict) -> dict:
     """
     The portal export in the shape the derived readers expect.
@@ -449,6 +488,8 @@ def _portal_d4341_quads(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
 # All three share the (breakdown, raw_portal) signature so `_portal_value` can
 # call them uniformly, even where one of the two arguments isn't needed.
 _DERIVED = {
+    "_subscriber_name": _portal_subscriber_name,
+    "_subscriber_dob": _portal_subscriber_dob,
     "_cob": _portal_cob,
     "_ortho_max": _portal_ortho_max,
     "_ortho_ded": _portal_ortho_ded,
