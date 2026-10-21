@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from .common import _UNLIMITED_MAX
+from .rules import _metlife_provider_network
 from .vocabulary import (_blank, _coalesce_keys, _norm_network, _num_cob, _num_money,
                          _num_yesno)
 
@@ -170,8 +171,15 @@ def _portal_in_network(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
     The network type, confirmed against what the plan actually pays under.
 
-    The portal does NOT reliably state whether this particular office is in or
-    out of network — `provider_info.provider_network_status` is scraped by
+    An export from extension v1.38+ states the office's own status — the
+    selected provider's network sticker, recorded with the procedures priced
+    under it — and that is the answer; see `rules._metlife_provider_network`.
+    This call was dropped once by an unrelated commit (8947e09), after which a
+    sheet claiming In for an out-of-network office (Stacey M Halaby, provider
+    Cary Goldstein) matched, because her plan pays under both networks.
+
+    Older exports do NOT reliably state whether this particular office is in or
+    out of network — `provider_info.provider_network_status` was scraped by
     matching the first element whose text is exactly "IN-NETWORK" or
     "OUT-OF-NETWORK", and the plan-details page renders both of those as
     coverage-panel headings, so it reads "In-Network" for every patient. It is
@@ -184,6 +192,10 @@ def _portal_in_network(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     Where the plan pays under both — the common case — either claim is valid and
     this correctly reports agreement.
     """
+    stated_by_portal = _metlife_provider_network(portal_raw)
+    if stated_by_portal:
+        return stated_by_portal
+
     pays_in, pays_out, stated = _network_coverage(portal_raw)
 
     if stated:
