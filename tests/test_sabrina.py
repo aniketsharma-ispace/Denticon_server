@@ -947,6 +947,39 @@ check("subscriber: the patient IS the subscriber -> her own details stand",
 check("subscriber: no relationship stated -> fallback kept as before",
       _sub_values(_member("Pat Doe", "01/01/1990", "")), ("Pat Doe", "01/01/1990"))
 
+# Ami N Dhruva (MetLife): seven History cells left blank on the sheet against
+# portal dates (D0120 09/11/25, D0210 11/08/22, …) were reported only as
+# "blank on the sheet", which does not count, so the audit scored 100%. As for
+# Delta Dental since 2026-10-16, a value the portal states and the sheet leaves
+# out is a mismatch.
+_ami_export = {
+    "metlife_data": {"patient": {"name": "Ami N Dhruva", "dob": "07/17/1966",
+                                 "relationship": "Subscriber"},
+                     "provisions": [_BENEFIT_PERIOD]},
+    "benefit_coverage": {"procedures": [
+        {"procedure_code": "D0120", "description": "PERIODIC ORAL EVALUATION",
+         "frequency_limit": "2 TIMES IN 1 CALENDAR YEAR", "age_limit": "0-99",
+         "late_date_of_service": "09/11/25", "benefit_level": "100%"},
+        {"procedure_code": "D0220", "description": "INTRAORAL PERIAPICAL FIRST",
+         "frequency_limit": "No Limitations", "age_limit": "0-99",
+         "late_date_of_service": "—", "benefit_level": "80%"},
+    ]},
+}
+_ami_audit = sc.compare_sabrina_to_portal(
+    {"fields": {"d0120": "100%", "d0120__freq": "2X1Year", "d0220": "80%"}, "benefit_rows": {}},
+    _ami_export)
+_ami_rows = {r["key"]: r for s in _ami_audit["sections"] for r in s["rows"]}
+check("metlife blank: History blank on the sheet, portal has a date -> mismatch",
+      (_ami_rows["d0120__hist"]["status"], _ami_rows["d0120__hist"]["portal"]),
+      ("mismatch", "09/11/25"))
+check("metlife blank: counted with the mismatches, not as 'blank'",
+      (_ami_audit["summary"]["missing_in_sabrina"],
+       any(r["key"] == "d0120__hist" for r in _ami_audit["mismatches"])), (0, True))
+check("metlife blank: so the audit is no longer 100%",
+      _ami_audit["summary"]["match_rate"] < 100, True)
+check("metlife blank: a blank frequency against 'No Limitations' still agrees",
+      _ami_rows["d0220__freq"]["status"], "match")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  1g. Apt 91215 — one plan stating two rules
