@@ -308,6 +308,15 @@ def _rule_alternate_benefit_downgrades(provisions: list) -> dict:
         if m:
             composite_answer = 'Yes' if m.group(1).lower() == 'yes' else 'No'
 
+        # Delta Dental Office Toolkit expresses the same deterministic rule in
+        # prose rather than as a Yes/No alternate-benefit row.
+        if (
+            'posterior tooth' in value.lower()
+            and 'applicable amount' in value.lower()
+            and 'amalgam' in value.lower()
+        ):
+            composite_answer = 'Yes'
+
         # ── Porcelain/veneer → full cast on molars ────────────────────────────
         # Sentence: "...full cast restoration for porcelain or veneer materials on molar teeth: Yes/No"
         m_molar = re.search(
@@ -630,7 +639,10 @@ def _number_of_quads_d4341(procs):
 #  FIX #1 — Family Deductible logic
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _family_deductible_v2(fam_total_raw: str, indiv_total_raw: str, relationship: str) -> str:
+def _family_deductible_v2(
+    fam_total_raw: str, indiv_total_raw: str, relationship: str, *,
+    derive_missing: bool = True,
+) -> str:
     """
     Show exactly what the portal shows:
       1. If the plan provides a family deductible total → use it as-is (always).
@@ -642,6 +654,8 @@ def _family_deductible_v2(fam_total_raw: str, indiv_total_raw: str, relationship
         return fam_dollar
 
     # Case 2: no family value in plan — business fallback is 3 × individual.
+    if not derive_missing:
+        return '—'
     m = re.search(r'([\d,.]+)', str(indiv_total_raw))
     if not m:
         return _dollar(indiv_total_raw, default='—')
@@ -912,10 +926,13 @@ def _extract(portal_raw, denticon_raw):
         porcelain_posterior = interp.get('porcelain_posterior_downgrade', '—')
 
     # ── FIX #1: Family deductible ──────────────────────────────────────────
+    is_toolkit = bool(portal_raw.get('_toolkit'))
+    toolkit_meta = portal_raw.get('_toolkit_meta') if isinstance(portal_raw.get('_toolkit_meta'), dict) else {}
     family_ded_val = _family_deductible_v2(
         fam_total_raw   = _g(dfam, 'total', default=''),
         indiv_total_raw = _g(dind, 'total', default=''),
         relationship    = relationship,
+        derive_missing  = not is_toolkit,
     )
 
     # MetLife top category percentages should represent the actual category
@@ -944,7 +961,7 @@ def _extract(portal_raw, denticon_raw):
         metlife_ortho_age = ''
 
     return {
-        'source_insurer': 'metlife' if is_metlife else '',
+        'source_insurer': portal_raw.get('_source_insurer') or ('metlife' if is_metlife else ''),
 
         # Patient / Subscriber
         'patient_name':    _g(ml_pat, 'name'),
@@ -1016,7 +1033,10 @@ def _extract(portal_raw, denticon_raw):
         'indiv_ded':       _dollar(_g(dind, 'total')),
         'indiv_ded_paid':  _zero_money(_dollar(_g(dind, 'used'))),
         'family_ded':      family_ded_val,          # ← FIX #1
-        'family_ded_paid': _zero_money(_dollar(_g(dfam, 'used'))),
+        'family_ded_paid': (
+            '—' if is_toolkit and not toolkit_meta.get('family_deductible_paid_available')
+            else _zero_money(_dollar(_g(dfam, 'used')))
+        ),
         'ded_prev':        _deductible_applies(svcs, 'PREVENTIVE'),
         'ded_diag':        _deductible_applies(svcs, 'DIAGNOSTIC'),
 
@@ -1030,8 +1050,12 @@ def _extract(portal_raw, denticon_raw):
         'pre_auth':      pre_auth_val,
 
         'dep_age_limit': _extract_dependent_age_limit(provisions),
-        'ortho_ded':      '0.00',
-        'ortho_ded_paid': '0.00',
+        'ortho_ded': (
+            '—' if is_toolkit and not toolkit_meta.get('ortho_deductible_available') else '0.00'
+        ),
+        'ortho_ded_paid': (
+            '—' if is_toolkit and not toolkit_meta.get('ortho_deductible_paid_available') else '0.00'
+        ),
         'ortho_max':      _dollar(_g(orth, 'total')),
         'ortho_max_paid': _dollar(_g(orth, 'used')),
 
