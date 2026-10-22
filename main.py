@@ -114,6 +114,13 @@ CLIENTS = {
         "hint":     "Portal export + Sabrina breakdown PDF",
         "supports": {"sabrina_audit", "parse_pdf"},
     },
+    "star_dental": {
+        "label":    "Star Dental",
+        "system":   "Sabrina",
+        "package":  "star_dental",
+        "hint":     "Portal export + Sabrina breakdown PDF",
+        "supports": {"sabrina_audit", "parse_pdf"},
+    },
 }
 
 # What each capability is called in an error the user will read.

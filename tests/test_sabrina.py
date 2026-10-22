@@ -2986,6 +2986,115 @@ check("and not when the description excepts it",
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  1q. STAR DENTAL — a Sabrina client with a folder of its own
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Added 2026-10-22 as a copy of smile_partners/. Its audit must be run by its
+# own package, never Smile Partners', so that a fix for one cannot reach the
+# other. Reuses the inline Toolkit export from 1p, so this section always runs.
+
+print("── 1q. STAR DENTAL ──")
+
+from fastapi import HTTPException
+import main as _main
+from star_dental import sabrina as _ns
+
+
+def _refused(name, capability):
+    try:
+        _main.resolve_client(name, capability)
+    except HTTPException as e:
+        return e.status_code
+    return None
+
+
+check("the client is registered for the Sabrina audit",
+      _main.resolve_client("Star Dental", "sabrina_audit")[0], "star_dental")
+check("and refused for jobs that need a Denticon export",
+      tuple(_refused("star_dental", c) for c in ("match", "notes", "new_plan")),
+      (400, 400, 400))
+check("the server runs its own package",
+      _main.client_module(_main.CLIENTS["star_dental"], "sabrina").__name__,
+      "star_dental.sabrina")
+check("it audits the same portals as Smile Partners",
+      _ns.CARRIERS, _CARRIERS)
+check("a carrier's rules come from its own folder, not Smile Partners'",
+      (_ns.carrier_rules(_tk)[1].__name__, _sp.carrier_rules(_tk)[1].__name__),
+      ("star_dental.sabrina.carriers.delta_toolkit",
+       "smile_partners.sabrina.carriers.delta_toolkit"))
+
+# Star Dental's field list (its tab of "Updated Sabrina Codes & C Q's Data -
+# All Clients.xlsx"): which codes it audits, and which of them carry a
+# Frequency, Age Limit or History cell. D4341's age cell is "SRP Quads per day?".
+from star_dental.sabrina.carriers.metlife import spec as _ns_spec, parser as _ns_parser
+from star_dental.sabrina.carriers.delta_dental import parser as _ns_dd_parser
+from star_dental.sabrina.carriers.metlife.portal import _portal_dep_age_limit as _ns_dep_age
+from smile_partners.sabrina.carriers.metlife import spec as _sp_spec
+
+_NS_CODES = set(
+    "D0120 D1110 D0220 D0230 D0240 D0150 D0140 D1120 D0210 D0330 D0274 D1351 "
+    "D1206 D1208 D0367 D1516 D2331 D2140 D2391 D2610 D2642 D4381 D4355 D4346 "
+    "D4341 D4910 D2740 D2750 D2950 D5110 D5212 D5511 D5650 D5810 D5821 D5912 "
+    "D6010 D6104 D6190 D6056 D6057 D6058 D6240 D6245 D9110 D9222 D9230 D9239 "
+    "D9243 D9310 D9612 D9630 D9944 D9946 D9947 D3221 D3310 D3330 D3346 D3348 "
+    "D4260 D4921 D7140 D7210 D7230 D7240 D7310 D7953 D8080 D8090 D8220 D8680".split())
+_NS_NO_FREQ = set("D3221 D3310 D3330 D3346 D3348 D4260 D4921 D7140 D7210 D7230 "
+                  "D7240 D7310 D7953 D8080 D8090 D8220 D8680".split())
+
+
+def _ns_columns(spec):
+    by_key = {f["key"]: f for f in spec}
+    out = {}
+    for f in spec:
+        if f["section"] == "Coverage by CDT Code":
+            code = by_key[f.get("row_key", f["key"])]["portal"][1]
+            out.setdefault(code, set()).add(f.get("aspect", "pct"))
+    return out
+
+
+_ns_cols = _ns_columns(_ns_spec._SPEC)
+check("Star Dental audits exactly the codes on its list", set(_ns_cols), _NS_CODES)
+check("each with the columns its list asks for",
+      {c: a for c, a in _ns_cols.items()},
+      {c: ({"pct"} | (set() if c in _NS_NO_FREQ else {"freq"})
+           | ({"age"} if c in {"D1206", "D1208", "D1351", "D4341"} else set())
+           | ({"hist"} if c in _ns_spec._HISTORY_CODES else set()))
+       for c in _NS_CODES})
+check("fields Smile Partners has and Star Dental's list doesn't are gone",
+      {k for k in ("pct_prev", "pct_basic", "pct_major", "prev_in_max",
+                   "perio_maint_after_srp", "d2160", "d5995") if any(f["key"] == k for f in _ns_spec._SPEC)},
+      set())
+check("while Smile Partners keeps them",
+      all(any(f["key"] == k for f in _sp_spec._SPEC) for k in ("pct_prev", "prev_in_max", "d2160")), True)
+
+_ns_text = "\n".join([
+    "Fee Schedule", "GA Delta PPO RC42", "Eligibility Term Date", "Starting Month of Plan Year", "January",
+    "D0120 Preventative", "100%", "Dependent Age Limit", "26", "Pre-Authorize over", "300",
+    "Benefit Details", "D0120 Periodic Exam", "2X1Year", "100%", "04/09/2026",
+    "D0120 and D0140 share freq?", "Yes", "D0230", "1X1Year", "100%",
+    "D2140 Amalgam One Surface", "1X24Months", "80%",
+    "D4341 Scaling Root Planing", "1X24Months", "80%", "4", "NH",
+    "D9944 Occlusal Guard", "1X5Years", "50%", "D9944 Bruxism only?", "Yes",
+    "D1510 Space Maintainer", "1X5Years", "100%",
+])
+_ns_f = _ns_parser.parse_sabrina_text(_ns_text)["fields"]
+check("new rows read: a bare code, a code with a description, and the questions",
+      tuple(_ns_f[k] for k in ("d0230", "d0230__freq", "d2140", "d0120_d0140_share_freq",
+                               "d9944_bruxism_only", "dep_age_limit", "pre_auth", "term_date")),
+      ("100%", "1X1Year", "80%", "Yes", "Yes", "26", "300", None))
+check("a code is not confused with a question or headline that starts with it",
+      tuple(_ns_f[k] for k in ("d0120", "d0120__hist", "d9944", "d4341__age")),
+      ("100%", "04/09/2026", "50%", "4"))
+check("D1516 reads the template's D1510 Space Maintainer row",
+      (_ns_f["d1516"], _ns_f["d1516__freq"]), ("100%", "1X5Years"))
+check("Delta Dental still picks its network from the fee schedule",
+      _ns_dd_parser.parse_sabrina_text(_ns_text)["fee_schedule"], "GA Delta PPO RC42")
+check("a dependent age limit of NAL is unstated, not 'no limit'",
+      (_ns_dep_age({"dep_age_limit": "NAL"}, {}), _ns_dep_age({"dep_age_limit": "26"}, {})),
+      (None, "26"))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  2. DETECTION
 # ══════════════════════════════════════════════════════════════════════════════
 

@@ -39,11 +39,14 @@ smile_partners/          the Sabrina client
         audit.py             the audit itself
     sheet/                 recognizing an uploaded sheet before the portal is known
     cli.py                 tuning the parser against a real sheet
+
+star_dental/             a second Sabrina client (Star Dental)
+  …                      began 2026-10-22 as a copy of smile_partners/
 ```
 
-**The two `portals/` trees are separate copies on purpose.** A fix made for one
+**The `portals/` trees are separate copies on purpose.** A fix made for one
 client cannot reach another — that is the point of the split, not an oversight.
-When you change one, say so, and decide deliberately whether the other should
+When you change one, say so, and decide deliberately whether the others should
 follow.
 
 **The same holds for each carrier under `sabrina/carriers/`.** The uploaded
@@ -83,6 +86,7 @@ can do:
 CLIENTS = {
     "dca":            {..., "supports": {"match", "notes", "new_plan", "parse_pdf"}},
     "smile_partners": {..., "supports": {"sabrina_audit", "parse_pdf"}},
+    "star_dental":    {..., "supports": {"sabrina_audit", "parse_pdf"}},
 }
 ```
 
