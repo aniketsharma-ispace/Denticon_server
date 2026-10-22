@@ -1,7 +1,7 @@
 """
 One folder per insurance portal.
 
-    aetna/  cigna/  delta_dental/  metlife/
+    aetna/  cigna/  delta_dental/  delta_toolkit/  metlife/
 
 Each folder holds the whole audit for its carrier:
 
@@ -32,6 +32,7 @@ CARRIERS = {
     "aetna":        "Aetna",
     "cigna":        "Cigna",
     "delta_dental": "Delta Dental",
+    "delta_toolkit": "Delta Dental Office Toolkit",
     "metlife":      "MetLife",
 }
 
@@ -72,12 +73,18 @@ def detect_carrier(portal_raw) -> str | None:
 
     Aetna, Cigna and Delta Dental are recognized by the same checks
     `breakdown._extract` uses, so the folder chosen here and the breakdown it
-    reads always agree. MetLife's export needs no translation and is known by
-    its own blocks. A Delta Dental plan PDF read by /api/parse-pdf is Delta
-    Dental's too.
+    reads always agree. The Delta Dental Office Toolkit is a portal of its own,
+    recognized by `portals/delta_toolkit.py`. MetLife's export needs no
+    translation and is known by its own blocks. A Delta Dental plan PDF read by
+    /api/parse-pdf is Delta Dental's too.
     """
     if not isinstance(portal_raw, dict):
         return None
+
+    # The Toolkit's translation records Delta Dental as its insurer, so it is
+    # told apart by its own marker before that is looked up.
+    if portal_raw.get("_toolkit"):
+        return "delta_toolkit"
 
     translated = _SOURCE_INSURER.get(str(portal_raw.get("_source_insurer") or "").strip().lower())
     if translated:
@@ -86,6 +93,7 @@ def detect_carrier(portal_raw) -> str | None:
     from ...portals.aetna import _is_aetna_portal
     from ...portals.cigna import _is_cigna_portal
     from ...portals.delta_dental import _is_dd_portal
+    from ...portals.delta_toolkit import _is_dd_toolkit_portal
 
     candidates = [portal_raw] + [portal_raw[key] for key in _WRAPPERS
                                  if isinstance(portal_raw.get(key), dict)]
@@ -94,6 +102,8 @@ def detect_carrier(portal_raw) -> str | None:
             return "aetna"
         if _is_cigna_portal(candidate):
             return "cigna"
+        if _is_dd_toolkit_portal(candidate):
+            return "delta_toolkit"
         if _is_dd_portal(candidate):
             return "delta_dental"
 

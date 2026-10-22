@@ -2876,6 +2876,116 @@ else:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  1p. DELTA DENTAL OFFICE TOOLKIT — routed to a folder of its own
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# dentalofficetoolkit.com is a different portal from Delta Dental's provider
+# site, and content_DD_Toolkit.js exports it in a shape of its own. Until
+# 2026-10-22 nothing called `portals/delta_toolkit.py`, so every Toolkit upload
+# was refused with "no rules for this portal export". It is now audited by
+# `carriers/delta_toolkit/`. Built from an inline export in the shape the
+# extension's builders emit, so this section always runs.
+
+print("── 1p. DELTA DENTAL OFFICE TOOLKIT ──")
+
+from smile_partners import sabrina as _sp
+from smile_partners.sabrina.carriers import CARRIERS as _CARRIERS, detect_carrier as _detect
+from smile_partners.sabrina.carriers.delta_toolkit import portal as _tk_portal
+from smile_partners.portals.delta_toolkit import _normalize_delta_toolkit_portal
+
+
+def _tk_result(code, pct, limits=(), category="Diagnostic"):
+    return {"procedureCode": code, "status": "OK", "percentCovered": pct,
+            "procedurePath": [{"level": 1, "procedure": category},
+                              {"level": 2, "procedure": category},
+                              {"level": 3, "procedure": code}],
+            "limitations": ([{"level": "procedure", "procedure": code,
+                              "exclusionsAndLimitations": list(limits)}] if limits else [])}
+
+
+def _tk_export(max_description="for Diagnostic, Preventive, Restorative, Endodontics"):
+    member = {"patientName": "JANE DOE", "birthdate": "01/15/1985",
+              "relationship": "Subscriber", "eligibility": "Eligible",
+              "effectiveDate": "01/01/2024", "selected": True}
+    return {
+        "source": "Delta Dental Office Toolkit", "portal": "www.dentalofficetoolkit.com",
+        "selected_network": "PPO Dentist",
+        "member_details": {"members": [member], "selectedMember": member},
+        "routine_procedures": {"rows": [{"procedureCode": "D0120", "serviceDates": ["03/10/2026"]},
+                                        {"procedureCode": "D1110", "serviceDates": []}]},
+        "coverages": {
+            "coverage_rows": [{"procedure": "Preventive", "percentCovered": 100},
+                              {"procedure": "Minor Restorative", "percentCovered": 80},
+                              {"procedure": "Major Restorative", "percentCovered": 50},
+                              {"procedure": "Orthodontics", "percentCovered": "Not Covered"}],
+            "procedure_code_search": {
+                "failed_codes": ["D9944"],
+                "results": [
+                    _tk_result("D0120", 100, ["Oral examinations are payable twice in a calendar year."]),
+                    _tk_result("D1110", 100, ["Prophylaxes (cleanings) are payable twice in a calendar year."],
+                               "Preventive"),
+                    _tk_result("D2160", 80, [], "Minor Restorative"),
+                    _tk_result("D2740", 50, ["Crowns are payable once per tooth in a five year period."],
+                               "Major Restorative"),
+                    _tk_result("D4910", 80, ["Periodontal maintenance is a benefit once a 30 day "
+                                             "post-operative period has completed."], "Periodontics"),
+                    _tk_result("D8080", "Not Covered", [], "Orthodontics"),
+                    {"procedureCode": "D9944", "status": "FAILED", "error": "HTTP 500"},
+                ]}},
+        "maximums_and_deductibles": {"accumulationPeriodType": "Calendar Year", "rows": [
+            {"type": "Maximum", "category": "General", "description": max_description,
+             "individual": {"amount": 1500, "used": 250, "remaining": 1250},
+             "from": "01/01/2026", "to": "12/31/2026"},
+            {"type": "Deductible", "category": "General",
+             "description": "Deductible does not apply to Diagnostic and Preventive",
+             "individual": {"amount": 50, "used": 0, "remaining": 50},
+             "family": {"amount": 150, "used": 0, "remaining": 150}}]},
+        "more_information": {"client_benefit_information": {"display_fields": {
+            "payorId": "DDPMI", "groupNumber": "12345", "subGroupNumber": "0001",
+            "groupName": "ACME CORP"}}},
+    }
+
+
+_tk = _tk_export()
+check("Toolkit export is routed to its own folder", _detect(_tk), "delta_toolkit")
+check("and so is its translation, which names Delta Dental as its insurer",
+      _detect(_normalize_delta_toolkit_portal(_tk)), "delta_toolkit")
+check("a Delta Dental provider-site export still goes to delta_dental",
+      _detect({"source": "Delta Dental", "primary_patient": {"name": "X"},
+               "tabs": {"overview": {}}}), "delta_dental")
+check("the Toolkit is named among the supported portals",
+      _CARRIERS.get("delta_toolkit"), "Delta Dental Office Toolkit")
+
+_tk_sheet = {"fields": {
+    "patient_name": "Jane Doe", "patient_dob": "01/15/1985", "group_number": "12345-0001",
+    "payor_id": "DDPMI", "yearly_max": "1500.00", "yearly_max_paid": "250.00",
+    "indiv_ded": "50.00", "family_ded": "150.00", "ded_prev": "No",
+    "pct_prev": "100%", "pct_basic": "80%", "pct_major": "50%",
+    "major_paid_on": "Seat Date", "perio_maint_after_srp": "30 Days",
+    "d0120__freq": "2X1Year", "d0120__hist": "03/10/2026", "d1110__hist": "NH",
+    "d2740__freq": "1X5Years", "ortho_coverage": "0%", "d9944": "100%",
+}, "benefit_rows": {}, "labels_not_found": []}
+_tk_res = _sp.compare_sabrina_to_portal(_tk_sheet, _tk)
+_tk_rows = {r["key"]: r for s in _tk_res["sections"] for r in s["rows"]}
+
+check("the audit is run by delta_toolkit", _tk_res["carrier"], "delta_toolkit")
+check("every value the sheet and the Toolkit both state agrees",
+      {k: _tk_rows[k]["status"] for k in _tk_sheet["fields"] if k != "d9944"},
+      {k: "match" for k in _tk_sheet["fields"] if k != "d9944"})
+check("headline percentages are the named codes' own",
+      tuple(_tk_rows[k]["portal"] for k in ("pct_prev", "pct_basic", "pct_major")),
+      ("100", "80", "50"))
+check("a code whose Toolkit lookup failed is unstated, not a mismatch",
+      (_tk_rows["d9944"]["status"], _tk_res["diagnostics"]["portal_failed_codes"]),
+      ("not_in_portal", ["D9944"]))
+check("preventive is in the max when the description lists it",
+      _tk_rows["prev_in_max"]["portal"], "Yes")
+_tk_except = _tk_export("Applies to all services except Preventive and Diagnostic")
+check("and not when the description excepts it",
+      _tk_portal._portal_prev_in_max({}, _tk_portal._portal_normalized(_tk_except)), "No")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  2. DETECTION
 # ══════════════════════════════════════════════════════════════════════════════
 
