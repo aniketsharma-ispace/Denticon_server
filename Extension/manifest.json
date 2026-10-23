@@ -186,6 +186,7 @@
                 "https://www.dentalofficetoolkit.com/*"
             ],
             "js": [
+                "toolkit_requirements.generated.js",
                 "content_DD_Toolkit.js"
             ],
             "run_at": "document_start",
@@ -196,6 +197,7 @@
                 "https://www.dentalofficetoolkit.com/*"
             ],
             "js": [
+                "toolkit_requirements.generated.js",
                 "content_DD_Toolkit.js"
             ],
             "run_at": "document_start",
