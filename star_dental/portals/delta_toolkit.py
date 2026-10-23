@@ -193,6 +193,36 @@ def _text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
+def _code_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        pieces = [str(item) for item in value if item is not None]
+    else:
+        pieces = [str(value)]
+    out: list[str] = []
+    for piece in pieces:
+        for token in re.split(r"[\s,;|]+", piece):
+            token = token.strip().upper()
+            if token and token not in out:
+                out.append(token)
+    return out
+
+
+_NOT_IN_PORTAL_KIND = "NOT_IN_PORTAL_CODE_LIST"
+
+
+def _is_not_in_portal_result(result: dict[str, Any]) -> bool:
+    return (
+        _text(result.get("failure_kind")).upper() == _NOT_IN_PORTAL_KIND
+        or _text(result.get("status")).casefold() == "not in portal code list"
+    )
+
+
+def _is_failed_result(result: dict[str, Any]) -> bool:
+    return _text(result.get("status")).upper() == "FAILED"
+
+
 def _money(value: Any) -> str:
     if value in (None, "", "N/A", "NA"):
         return ""
@@ -209,6 +239,16 @@ def _flatten_limitations(result: dict[str, Any]) -> list[str]:
         if not isinstance(item, dict):
             continue
         for sentence in item.get("exclusionsAndLimitations") or []:
+            sentence = _text(sentence)
+            if sentence and sentence not in out:
+                out.append(sentence)
+    for key in ("applicable_limitations", "frequency"):
+        values = result.get(key)
+        if isinstance(values, str):
+            values = [values]
+        for sentence in values or []:
+            if not isinstance(sentence, str):
+                continue
             sentence = _text(sentence)
             if sentence and sentence not in out:
                 out.append(sentence)
@@ -700,11 +740,19 @@ def _history_for_code(code: str, result: dict[str, Any], routine_by_code: dict[s
     this exact code with no service dates is an explicit "no history" (NH); a
     code with no row at all is simply not stated by the portal.
     """
-    direct = _latest_service_date(result.get("serviceDates"))
+    direct = (
+        _latest_service_date(result.get("serviceDates"))
+        or _latest_service_date(result.get("utilization_history"))
+    )
     if direct:
         return direct
     routine = routine_by_code.get(code.upper())
     if routine is None:
+        if (
+            _text(result.get("history_status")).upper() == "NO_HISTORY_ON_FILE"
+            and result.get("utilization_source_present") is not False
+        ):
+            return "NH"
         return None
     routine_date = _latest_service_date(routine.get("serviceDates"))
     if routine_date:
@@ -758,13 +806,36 @@ def _inherit_perio_maintenance_frequency(procedures: list[dict[str, Any]]) -> No
     perio["frequency_inherited_from"] = "D1110"
 
 
+_CHECKLIST_CODES: frozenset[str] | None = None
+
+
+def _checklist_codes() -> frozenset[str]:
+    global _CHECKLIST_CODES
+    if _CHECKLIST_CODES is None:
+        codes: set[str] = set()
+        try:
+            from ..sabrina.spec import _SPEC
+        except Exception:
+            _SPEC = []
+        for field in _SPEC:
+            src = field.get("portal") if isinstance(field, dict) else None
+            if not (isinstance(src, tuple) and src):
+                continue
+            if src[0] == "code":
+                codes.update(str(c).upper() for c in src[1:] if isinstance(c, str))
+            elif src[0] == "codefield":
+                codes.update(str(c).upper() for c in src[2:] if isinstance(c, str))
+        _CHECKLIST_CODES = frozenset(codes)
+    return _CHECKLIST_CODES
+
+
 def _procedure_root_category(proc: dict[str, Any]) -> str:
-    path = proc.get("procedure_path") or []
+    path = [item for item in (proc.get("procedure_path") or []) if isinstance(item, dict)]
     for item in path:
-        if not isinstance(item, dict):
-            continue
         if item.get("level") == 1:
             return _text(item.get("procedure")).casefold()
+    if len(path) > 1 and not any("level" in item for item in path):
+        return _text(path[0].get("procedure")).casefold()
     return ""
 
 
@@ -809,9 +880,11 @@ def _resolve_optional_coverage(
 
         code = str(proc.get("procedure_code") or "").upper()
         category = _procedure_root_category(proc)
+        checklist = _checklist_codes()
         siblings = [
             candidate for candidate in by_category.get(category, [])
             if candidate is not proc and str(candidate.get("procedure_code") or "").upper() != code
+            and (not checklist or str(candidate.get("procedure_code") or "").upper() in checklist)
         ]
 
         donor = next(
@@ -903,8 +976,20 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
     ortho_info = raw.get("ortho_information") or {}
     search = (raw.get("coverages") or {}).get("procedure_code_search") or {}
     results = [r for r in (search.get("results") or []) if isinstance(r, dict)]
-    failed = {str(c).upper() for c in (search.get("failed_codes") or [])}
+    failed = set(_code_list(search.get("failed_codes")))
+    not_in_portal = set(_code_list(search.get("codes_not_in_portal")))
+    requested_code_list = _code_list(search.get("codes_requested"))
     result_by_code = {str(r.get("procedureCode") or "").upper(): r for r in results}
+    for _code, _result in result_by_code.items():
+        if not _code:
+            continue
+        if _is_not_in_portal_result(_result):
+            not_in_portal.add(_code)
+        elif _is_failed_result(_result):
+            failed.add(_code)
+    failed -= not_in_portal
+    unavailable = failed | not_in_portal
+    crawl = raw.get("crawl_statistics") or {}
 
     # The structured display field is the canonical payor ID for this portal.
     # Keep the contradictory source note/claim payor in metadata instead of
@@ -952,6 +1037,8 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
 
     major_payment_timing = ""
     maximum_notes = [_text(x) for x in ((raw.get("maximums_and_deductibles") or {}).get("notes") or [])]
+    if _text(ortho_info.get("crowns_bridges_dentures_payment_note")):
+        maximum_notes.append(_text(ortho_info.get("crowns_bridges_dentures_payment_note")))
     for note in maximum_notes:
         low = note.lower()
         if "seat/delivery date" in low or "seat date" in low:
@@ -981,7 +1068,7 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
 
     procedures: list[dict[str, Any]] = []
     for code, result in result_by_code.items():
-        if code in failed:
+        if code in unavailable:
             continue
         direct_limits = _flatten_limitations(result)
         # Use the exact result's limitations first, but allow an explicitly
@@ -1028,6 +1115,9 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
             "toolkit_waiting_period_met_date": result.get("waitingPeriodMetDate"),
             "toolkit_service_dates": [],
             "toolkit_source_limitations": limitations,
+            "toolkit_history_status": _text(result.get("history_status")),
+            "toolkit_age_limits": list(result.get("age_limits") or []),
+            "toolkit_related_limitations": list(result.get("related_limitations") or []),
             "toolkit_raw": result,
         })
 
@@ -1198,17 +1288,21 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
         "_toolkit_meta": {
             "selected_network": _text(raw.get("selected_network")),
             "requested_codes": int(
-                (raw.get("crawl_statistics") or {}).get("requested_codes")
-                or len(search.get("codes_requested") or [])
+                crawl.get("requested_codes")
+                or len(requested_code_list)
                 or search.get("count")
-                or len(result_by_code) + len(failed)
+                or len(set(result_by_code) | unavailable)
             ),
             "successful_codes": int(
-                (raw.get("crawl_statistics") or {}).get("successful_codes")
+                crawl.get("successful_codes")
                 or search.get("successful_count")
-                or len(result_by_code)
+                or len([c for c in result_by_code if c and c not in unavailable])
             ),
             "failed_codes": sorted(failed),
+            "codes_not_in_portal": sorted(not_in_portal),
+            "requested_code_list": requested_code_list,
+            "crawl_status": _text(crawl.get("status")),
+            "extraction_scope": _text(crawl.get("extraction_scope")),
             "payor_id_from_display": payor_id,
             "payor_id_from_notes": client_notes.get("payor id", ""),
             "group_number": group_number,
