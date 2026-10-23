@@ -1943,6 +1943,19 @@ def _ded_bd(deductibles):
 _bd_120147 = _ded_bd([_CAL_INDIVIDUAL, _LIFETIME_ORTHO_DED])
 check("delta ortho deductible: a lifetime deductible naming Orthodontics is the ortho one",
       (_bd_120147.get("ortho_ded"), _bd_120147.get("ortho_ded_paid")), ("50.00", "0.00"))
+# Mary Crocker (2026-10-23): only a LIFETIME deductible naming Orthodontics is
+# the sheet's Orthodontics Deductible. A calendar one covering Orthodontics and
+# Oral Surgery is not recorded there — and is still not the general deductible.
+_CAL_ORTHO_DED = {"type": "Calendar Individual Deductible Accumulation period for this program",
+                  "treatment_types": ["Orthodontics", "Oral & Maxillofacial Surgery"],
+                  "amount": "$50.00", "used": "$0.00", "remaining": "$50.00"}
+_bd_crocker = _ded_bd([_CAL_INDIVIDUAL, _CAL_ORTHO_DED])
+check("delta ortho deductible: a calendar deductible naming Orthodontics is not the ortho one",
+      _bd_crocker.get("ortho_ded"), "0.00")
+check("delta ortho deductible: nor is it taken for the general deductible",
+      _bd_crocker.get("indiv_ded"), "25.00")
+check("delta ortho deductible: a lifetime one beside it is still read",
+      _ded_bd([_CAL_INDIVIDUAL, _CAL_ORTHO_DED, _LIFETIME_ORTHO_DED]).get("ortho_ded"), "50.00")
 check("delta ortho deductible: the calendar deductible is still the individual one",
       _ded_bd([_LIFETIME_ORTHO_DED, _CAL_INDIVIDUAL]).get("indiv_ded"), "25.00")
 check("delta text: the sheet's '30days' is the portal's '30 Days'",

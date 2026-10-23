@@ -692,8 +692,15 @@ def _normalize_dd_portal(raw):
         return {'total': '', 'used': '', 'remaining': ''}
 
     def _ortho_deductible():
+        # The sheet's "Orthodontics Deductible" is the lifetime one only
+        # (agreed with the team, 2026-10-23). A calendar deductible naming
+        # Orthodontics — Mary Crocker's "Calendar Individual Deductible:
+        # Orthodontics, Oral & Maxillofacial Surgery, $50" — is not recorded
+        # there, and the shared default of zero stands. It is still kept out of
+        # the general deductible above.
         ortho = [r for r in deductibles
-                 if isinstance(r, dict) and _dd_ortho_deductible_record(r)]
+                 if isinstance(r, dict) and _dd_ortho_deductible_record(r)
+                 and 'lifetime' in str(r.get('type', '')).lower()]
         individual = [r for r in ortho if 'individual' in str(r.get('type', '')).lower()]
         either = _dd_for_network(individual or ortho, network)
         return _as_amounts(either[0]) if either else {}
