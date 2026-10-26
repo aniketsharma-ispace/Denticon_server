@@ -79,7 +79,7 @@ if (typeof document === "undefined" || globalThis.location?.protocol === "moz-ex
         const data = await response.json();
         if (action === "description") {
             const exact = (data.matches || []).find(item => item.code === payload.code);
-            const result = { description: exact?.longDesc || exact?.shortDesc || "" };
+            const result = { description: exact?.longDesc || exact?.shortDesc || "", msgCode: String(exact?.msgCode || "").trim().toUpperCase() };
             descriptionCache.set(`${session.asof}:${payload.code}`, result);
             return result;
         }
@@ -245,7 +245,7 @@ if (typeof document === "undefined" || globalThis.location?.protocol === "moz-ex
             const data = response.json();
             if (action === "description") {
                 const exact = (data.matches || []).find(item => item.code === payload.code);
-                return { description: exact?.longDesc || exact?.shortDesc || "" };
+                return { description: exact?.longDesc || exact?.shortDesc || "", msgCode: String(exact?.msgCode || "").trim().toUpperCase() };
             }
             return data;
         }
@@ -2404,6 +2404,7 @@ async function crawlProcedureCodes(baseData, run) {
     };
     await cignaMessage("session");
     const descriptions = {};
+    const msgCodes = {};   // Cigna code-search flag per code; "N" = no dental benefits
     const startedAt = Date.now();
     const stats = {
         coverage_http_requests: 1, description_http_requests: 0, benefit_http_requests: 0,
@@ -2418,8 +2419,16 @@ async function crawlProcedureCodes(baseData, run) {
     let resolved = 0;
     await runPool(PROCEDURE_CODES, DESCRIPTION_CONCURRENCY, async code => {
         const saved = cached[`cigna_description_${code}`];
-        if (saved?.code === code && saved.description) descriptions[code] = saved.description;
-        else try { stats.description_http_requests++; descriptions[code] = (await cignaMessage("description", { code })).description || ""; }
+            if (saved?.code === code && saved.description && saved.msgCode !== undefined) {
+                descriptions[code] = saved.description;
+                msgCodes[code] = saved.msgCode;
+            }
+            else try {
+                stats.description_http_requests++;
+                const info = await cignaMessage("description", { code });
+                descriptions[code] = info.description || "";
+                msgCodes[code] = info.msgCode || "";
+            }
         catch (error) {
             descriptions[code] = "";
             console.warn("Cigna: Procedure description lookup failed; continuing without a description", {
@@ -2506,6 +2515,9 @@ async function crawlProcedureCodes(baseData, run) {
         else if (fields[0]) validationSummary[`${fields[0]}_required`].push(req.code);
         return parseApiProcedure(item, req);
     });
+    for (const result of results) {
+        result.api_details = { ...(result.api_details || {}), search_msg_code: msgCodes[result.procedure_code] || "" };
+    }
     validateProcedureResultIntegrity(results);
     baseData.procedures.codes_searched = [...PROCEDURE_CODES];
     baseData.procedures.results = results;
@@ -2663,7 +2675,8 @@ function compactCignaOutput(data) {
                     service_history: details.service_history,
                     coverage_scope: details.coverage_scope && details.coverage_scope !== "context_independent" ? details.coverage_scope : undefined,
                     varies_by_context: details.varies_by_context || undefined,
-                    lookup_error: details.lookup_error
+                    lookup_error: details.lookup_error,
+                    search_msg_code: details.search_msg_code
                 })
             }
         };
