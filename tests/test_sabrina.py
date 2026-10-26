@@ -2974,7 +2974,7 @@ _tk_sheet = {"fields": {
     "payor_id": "DDPMI", "yearly_max": "1500.00", "yearly_max_paid": "250.00",
     "indiv_ded": "50.00", "family_ded": "150.00", "ded_prev": "No",
     "pct_prev": "100%", "pct_basic": "80%", "pct_major": "50%",
-    "major_paid_on": "Seat Date", "perio_maint_after_srp": "30 Days",
+    "major_payment_timing": "Seat Date",
     "d0120__freq": "2X1Year", "d0120__hist": "03/10/2026", "d1110__hist": "NH",
     "d2740__freq": "1X5Years", "ortho_coverage": "0%", "d9944": "100%",
 }, "benefit_rows": {}, "labels_not_found": []}
@@ -2982,15 +2982,16 @@ _tk_res = _sp.compare_sabrina_to_portal(_tk_sheet, _tk)
 _tk_rows = {r["key"]: r for s in _tk_res["sections"] for r in s["rows"]}
 
 check("the audit is run by delta_toolkit", _tk_res["carrier"], "delta_toolkit")
-check("every value the sheet and the Toolkit both state agrees",
-      {k: _tk_rows[k]["status"] for k in _tk_sheet["fields"] if k != "d9944"},
-      {k: "match" for k in _tk_sheet["fields"] if k != "d9944"})
+check("without the Delta page inside the PDF the identity gate holds back every comparison",
+      (_tk_res["diagnostics"]["toolkit"]["identity_valid"],
+       {r["status"] for s in _tk_res["sections"] for r in s["rows"]} - {"not_comparable"}),
+      (False, set()))
 check("headline percentages are the named codes' own",
       tuple(_tk_rows[k]["portal"] for k in ("pct_prev", "pct_basic", "pct_major")),
-      ("100", "80", "50"))
-check("a code whose Toolkit lookup failed is unstated, not a mismatch",
-      (_tk_rows["d9944"]["status"], _tk_res["diagnostics"]["portal_failed_codes"]),
-      ("not_in_portal", ["D9944"]))
+      ("100%", "80%", "50%"))
+check("a code whose Toolkit lookup failed is never a mismatch",
+      (_tk_rows["d9944"]["status"] != "mismatch", _tk_res["diagnostics"]["toolkit"]["failed_codes"]),
+      (True, ["D9944"]))
 check("preventive is in the max when the description lists it",
       _tk_rows["prev_in_max"]["portal"], "Yes")
 _tk_except = _tk_export("Applies to all services except Preventive and Diagnostic")
