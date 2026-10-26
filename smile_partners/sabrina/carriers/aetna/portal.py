@@ -17,6 +17,7 @@ from .vocabulary import (_blank, _coalesce_keys, _norm_network, _num_cob, _num_m
                          _num_yesno)
 from .rules import (
     _aetna_code_override,
+    _aetna_field_override,
     _aetna_in_network_unverifiable,
     _aetna_breakdown_for_sheet,
     _aetna_oon_benefits,
@@ -488,6 +489,12 @@ _DERIVED = {
 
 def _portal_value(field: dict, bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """Resolve one spec'd field's value on the portal side."""
+    value = _portal_value_from_spec(field, bd, portal_raw, sab_raw)
+    return _aetna_field_override(field, value, portal_raw, sab_raw)
+
+
+def _portal_value_from_spec(field: dict, bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """The portal-side value as the spec's source names it."""
     src = field.get("portal")
     if src is None:
         return None

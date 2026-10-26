@@ -283,11 +283,92 @@ async function _submitProcedureCodeSearch() {
     viewButton.click();
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// SUBSCRIBER DOB — for a dependent, the subscriber's date of birth is only
+// shown on the subscriber's own Plan Benefits page. After the dependent's
+// benefits are scraped, the crawl holds that JSON, goes back to the results,
+// opens the Self row, clicks View Benefits (General Benefits), reads the DOB,
+// adds it to the held JSON and downloads it.
+//   stage sub_view_patient      -> clicked "View Patient" on dependent's benefits
+//   stage sub_back_to_results   -> clicked "Back to Search Results"
+//   stage sub_pick              -> clicked the Self row
+//   stage sub_view_benefits     -> clicked "View Benefits" on subscriber details
+// Any step that cannot be done downloads the held JSON without the DOB.
+// ══════════════════════════════════════════════════════════════════════════
+
+const SUBSCRIBER_MAX_STEPS = 6;
+
+function _isSelfRelationship(text) {
+    return /^(self|subscriber|employee)$/i.test(clean(text));
+}
+
+function _needsSubscriberDob(state) {
+    var selected = state.selected_member || {};
+    if (!selected.relationship || _isSelfRelationship(selected.relationship)) return false;
+    var members = state.eligibility_members || [];
+    var self = members.find(function(m) { return _isSelfRelationship(m.relationship); });
+    if (!self) return false;
+    return !clean(self.date_of_birth);
+}
+
+function _clickByText(text) {
+    var wanted = text.toLowerCase();
+    var els = Array.from(document.querySelectorAll("a, button, input[type=submit], input[type=button]"));
+    var el = els.find(function(e) {
+        return clean(e.textContent || e.value).toLowerCase() === wanted;
+    });
+    if (!el) return false;
+    el.click();
+    return true;
+}
+
+function _finishCrawl(payload) {
+    downloadAetnaJSON(payload);
+    _clearCrawlState();
+}
+
+function _subscriberStep(state, nextStage) {
+    state.stage = nextStage;
+    state.subscriber_steps = (state.subscriber_steps || 0) + 1;
+    _saveCrawlState(state);
+    return state.subscriber_steps <= SUBSCRIBER_MAX_STEPS;
+}
+
+function _giveUpOnSubscriberDob(reason) {
+    var state = _getCrawlState();
+    console.warn("[Aetna] Subscriber DOB not captured: " + reason);
+    if (state.pending_payload) {
+        state.pending_payload.subscriber_dob_note = "not captured: " + reason;
+        _finishCrawl(state.pending_payload);
+    } else {
+        _clearCrawlState();
+    }
+}
+
+function _selectGeneralBenefits() {
+    var labels = Array.from(document.querySelectorAll("label"));
+    var label = labels.find(function(el) { return clean(el.textContent) === "General Benefits"; });
+    var radio = label && label.htmlFor ? document.getElementById(label.htmlFor) : null;
+    if (radio && !radio.checked) radio.click();
+}
+
 async function continueAetnaCrawl() {
     if (window.__aetnaCrawlBusy) return;
     window.__aetnaCrawlBusy = true;
 
     try {
+        if (_isEligibilityResultsPage() && _getCrawlState().stage === "sub_back_to_results") {
+            // Back on the results to fetch the subscriber's DOB: open the Self row.
+            var back = _getCrawlState();
+            var self = _extractStartPage().members.find(function(m) {
+                return _isSelfRelationship(m.relationship) && m._link;
+            });
+            if (!self) { _giveUpOnSubscriberDob("no Self row on the results page"); return; }
+            if (!_subscriberStep(back, "sub_pick")) { _giveUpOnSubscriberDob("too many steps"); return; }
+            self._link.click();
+            return;
+        }
+
         if (_isEligibilityResultsPage()) {
             var start = _extractStartPage();
             var existingState = _getCrawlState();
@@ -311,6 +392,24 @@ async function continueAetnaCrawl() {
             return;
         }
 
+        if (_isPatientDetailsPage() && _getCrawlState().stage === "sub_view_patient") {
+            // Dependent's details page: go back to the results.
+            var vp = _getCrawlState();
+            if (!_subscriberStep(vp, "sub_back_to_results")) { _giveUpOnSubscriberDob("too many steps"); return; }
+            if (!_clickByText("Back to Search Results")) _giveUpOnSubscriberDob("Back to Search Results not found");
+            return;
+        }
+
+        if (_isPatientDetailsPage() && _getCrawlState().stage === "sub_pick") {
+            // Subscriber's details page: open General Benefits.
+            var sp = _getCrawlState();
+            if (!_subscriberStep(sp, "sub_view_benefits")) { _giveUpOnSubscriberDob("too many steps"); return; }
+            _selectGeneralBenefits();
+            await _sleep(300);
+            if (!_clickByText("View Benefits")) _giveUpOnSubscriberDob("View Benefits not found");
+            return;
+        }
+
         if (_isPatientDetailsPage()) {
             var detailsState = _getCrawlState();
             detailsState.running = true;
@@ -321,10 +420,36 @@ async function continueAetnaCrawl() {
             return;
         }
 
+        if (_isPlanBenefitsPage() && _getCrawlState().stage === "sub_view_benefits") {
+            // Subscriber's Plan Benefits: read the DOB into the held JSON.
+            var sb = _getCrawlState();
+            var held = sb.pending_payload;
+            if (!held) { _clearCrawlState(); return; }
+            var subPatient = getMultiTabValues("Member ID or SSN:");
+            var dob = clean(subPatient.date_of_birth);
+            held.subscriber = Object.assign({}, held.subscriber || {});
+            if (dob && dob !== "N/A") {
+                held.subscriber.date_of_birth = dob;
+                held.subscriber_dob_note = "read from the subscriber's Plan Benefits page";
+            } else {
+                held.subscriber_dob_note = "not shown on the subscriber's Plan Benefits page";
+            }
+            _finishCrawl(held);
+            return;
+        }
+
         if (isBenefitsPage()) {
             var data = buildAetnaPayload();
-            downloadAetnaJSON(data);
-            _clearCrawlState();
+            var bs = _getCrawlState();
+            if (_needsSubscriberDob(bs)) {
+                // Dependent: hold this JSON and go fetch the subscriber's DOB.
+                bs.pending_payload = data;
+                bs.subscriber_steps = 0;
+                _subscriberStep(bs, "sub_view_patient");
+                if (!_clickByText("View Patient")) _giveUpOnSubscriberDob("View Patient not found");
+                return;
+            }
+            _finishCrawl(data);
             return;
         }
 
@@ -339,6 +464,13 @@ async function continueAetnaCrawl() {
 // ══════════════════════════════════════════════════════════════════════════
 // GUARD
 // ══════════════════════════════════════════════════════════════════════════
+
+// Any Plan Benefits page, including a General Benefits one that has no
+// Service Level Benefits table (the subscriber's, opened for the DOB).
+function _isPlanBenefitsPage() {
+    var text = document.body ? document.body.innerText : "";
+    return text.includes("Plan Benefits") && text.includes("Member ID or SSN:") && text.includes("Plan Begin:");
+}
 
 function isBenefitsPage() {
     return document.body?.innerText?.includes("Service Level Benefits");
@@ -412,21 +544,38 @@ function _tableRowsUnderLegend(legendEl) {
     return table ? Array.from(table.querySelectorAll("tr")) : [];
 }
 
-// Maximums / Deductibles: Type | Coverage | Amount | Remaining | Message
+// Maximums / Deductibles: usually Type | Coverage | Amount | Remaining | Message,
+// but some plans drop the Type column. Columns are matched by their header
+// text, so a missing column can't shift the values into the wrong fields.
 function _parseAmountRows(rows) {
     var out = [];
+    var col = null;   // header name -> column index
     rows.forEach(function(r) {
-        var cells = r.querySelectorAll("td");
-        if (cells.length < 4) return;
-        var t = clean(cells[0].innerText);
-        if (!t || t === "Type" || /^D\d{4}/.test(t)) return;
-        out.push({
-            type:      t,
-            coverage:  clean(cells[1].innerText),
-            amount:    clean(cells[2].innerText),
-            remaining: clean(cells[3].innerText),
-            message:   clean(cells[4] ? cells[4].innerText : "")
-        });
+        var cells = r.querySelectorAll("th, td");
+        if (!cells.length) return;
+        var texts = Array.from(cells).map(function(c) { return clean(c.innerText); });
+        var lower = texts.map(function(t) { return t.toLowerCase(); });
+        if (lower.indexOf("amount") !== -1 && lower.indexOf("remaining") !== -1) {
+            col = {};
+            lower.forEach(function(t, i) { col[t] = i; });
+            return;   // header row
+        }
+        if (cells.length < 3) return;
+        var pick = function(name, fallback) {
+            var i = (col && col[name] !== undefined) ? col[name] : fallback;
+            return (i === -1 || i === undefined || i >= texts.length) ? "" : texts[i];
+        };
+        var hasType = !col || col["type"] !== undefined;
+        var row = {
+            type:      hasType ? pick("type", 0) : "",
+            coverage:  pick("coverage", 1),
+            amount:    pick("amount", 2),
+            remaining: pick("remaining", 3),
+            message:   pick("message", 4)
+        };
+        if (/^D\d{4}/.test(row.type)) return;
+        if (!row.type && !row.coverage && !row.amount) return;
+        out.push(row);
     });
     return out;
 }
@@ -448,31 +597,72 @@ function _parseCoInsuranceRows(rows) {
 }
 
 // Service Level Benefits: Procedure Code | Percentage | Frequency & Limitations | Message
+// Service Level Benefits. Usually
+//   Procedure Code | Percentage | Frequency & Limitations | Message
+// but some plans add a column (a waiting period such as "12 months") and
+// some Not Covered tables have only Procedure Code | Message. Columns are
+// matched by their header text so an extra or missing column can't shift
+// values into the wrong fields. A column that is not one of the four known
+// ones is kept under other_columns, by its header.
+function _serviceColumns(texts) {
+    var col = { code: -1, pct: -1, freq: -1, msg: -1, other: {} };
+    texts.forEach(function(t, i) {
+        var h = t.toLowerCase();
+        if (/procedure/.test(h) && col.code === -1) col.code = i;
+        else if (/percentage|co-?pay/.test(h) && col.pct === -1) col.pct = i;
+        else if (/frequency|limitation/.test(h) && col.freq === -1) col.freq = i;
+        else if (/message|remark/.test(h) && col.msg === -1) col.msg = i;
+        else col.other[i] = t || ("column " + (i + 1));
+    });
+    return col;
+}
+
 function _parseServiceRows(rows) {
     var out = [];
+    // Positional default (the usual 4-column table) until a header is seen.
+    var col = { code: 0, pct: 1, freq: 2, msg: 3, other: {} };
     for (var i = 0; i < rows.length; i++) {
         var text = rows[i].innerText.trim();
-        var cols = rows[i].querySelectorAll("td");
+        var cells = Array.from(rows[i].querySelectorAll("th, td"));
+        if (!cells.length) continue;
+        var raw = cells.map(function(c) { return c.innerText || ""; });
 
-        if (text.includes("Procedure Code") && text.includes("Percentage")) continue; // header
-        if (text.includes("PAYMENT IS BASED")) break;                                // footer
-        if (cols.length < 2) continue;
+        if (/^procedure\s*code/i.test(clean(raw[0]))) {   // header row
+            col = _serviceColumns(raw.map(clean));
+            continue;
+        }
+        if (text.includes("PAYMENT IS BASED")) break;     // footer
+        if (cells.length < 2) continue;
 
-        var code = clean(cols[0].innerText);
-        if (!code) continue;
+        var cell = function(idx) { return (idx >= 0 && idx < raw.length) ? raw[idx] : ""; };
+        var code = clean(cell(col.code));
+        if (!/^D\d{4}/i.test(code)) continue;
 
-        var freqText = cols[2] ? cols[2].innerText : "";
-        var col3Text = cols[3] ? cols[3].innerText : "";
-        var sharesMatch = col3Text.match(/Shares frequency with\s*([^\n]+)/i);
-        out.push({
+        var freqText = cell(col.freq);
+        var msgText = cell(col.msg);
+        var sharesMatch = msgText.match(/Shares? frequenc(?:y|ies) with\s*([^\n]+)/i);
+        var row = {
             procedure_code:         code,
-            percentage_copay:       clean(cols[1].innerText),
+            percentage_copay:       clean(cell(col.pct)),
             frequency:              (freqText.match(/Frequency:\s*([^\n]+)/) || [])[1] || "N/A",
             history:                (freqText.match(/History:\s*([^\n]+)/)   || [])[1] || "N/A",
             age_limit:              (freqText.match(/Age Limitation:\s*([^\n]+)/) || [])[1] || "N/A",
             shares_frequency_with:  sharesMatch ? clean(sharesMatch[1]) : "",
-            message:                clean(col3Text)
+            message:                clean(msgText)
+        };
+        var others = {};
+        Object.keys(col.other).forEach(function(idx) {
+            var v = clean(cell(Number(idx)));
+            if (v) others[col.other[idx]] = v;
         });
+        if (Object.keys(others).length) {
+            row.other_columns = others;
+            var waitKey = Object.keys(others).find(function(h) { return /wait/i.test(h); });
+            var waitVal = waitKey ? others[waitKey]
+                : Object.values(others).find(function(v) { return /\d+\s*(month|year|day)/i.test(v); });
+            if (waitVal) row.waiting_period = waitVal;
+        }
+        out.push(row);
     }
     return out;
 }
@@ -508,6 +698,44 @@ function scrapeBenefitTables() {
     });
 
     return { in_network: inNet, out_of_network: outNet, sections_found: sectionsFound };
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// CLAIM ADDRESS — Provider Information block
+//   Information Type: Claim Address
+//   Name:             Aetna Medicare
+//   Address:          PO Box 981106
+//                     El Paso, TX 79998
+// ══════════════════════════════════════════════════════════════════════════
+
+function scrapeClaimAddress() {
+    var legend = _legendByText("Provider Information");
+    var container = legend ? legend.parentElement : null;
+    if (!container) return null;
+    var rows = Array.from(container.querySelectorAll("tr"));
+    var inClaim = false, inAddress = false;
+    var result = { name: "", address_lines: [] };
+    rows.forEach(function(r) {
+        var cells = r.querySelectorAll("td");
+        if (cells.length < 2) return;
+        var label = clean(cells[0].innerText).replace(/:$/, "").toLowerCase();
+        var value = clean(cells[1].innerText);
+        if (label === "information type") {
+            inClaim = /claim\s+address/i.test(value);
+            inAddress = false;
+            return;
+        }
+        if (!inClaim) return;
+        if (label === "name") { result.name = value; inAddress = false; return; }
+        // An address can wrap inside one cell or run on into a row with an
+        // empty label; keep each line either way.
+        var lines = String(cells[1].innerText || "").split("\n").map(clean).filter(Boolean);
+        if (label === "address") { result.address_lines = result.address_lines.concat(lines); inAddress = true; return; }
+        if (!label && inAddress && lines.length) { result.address_lines = result.address_lines.concat(lines); return; }
+        inAddress = false;
+    });
+    if (!result.address_lines.length) return null;
+    return { name: result.name, address: result.address_lines.join(", ") };
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -565,6 +793,7 @@ function buildAetnaPayload() {
         coverage_details:        st.coverage_details || {},
         requested_procedure_codes: st.requested_procedure_codes || PROCEDURE_CODES.slice(),
         plan_level_remarks:      scrapeRemarks(),
+        claim_address:           scrapeClaimAddress(),   // Provider Information > Claim Address
         in_network:              bt.in_network,      // In Network + In and Out of Network tables
         out_of_network:          bt.out_of_network,  // Out of Network + In and Out of Network tables
         sections_found:          bt.sections_found   // which legends were read, for checking
@@ -610,7 +839,9 @@ window.__claimConnectProcedureCodes = PROCEDURE_CODES.slice();
 // Continue automatically after Wicket navigates to the next crawl page.
 setTimeout(function() {
     var state = _getCrawlState();
-    if (state.running && !_isEligibilityResultsPage()) {
+    // Keep going on every crawl page; on the results page only when the
+    // crawl came back there to fetch the subscriber's DOB.
+    if (state.running && (!_isEligibilityResultsPage() || state.stage === "sub_back_to_results")) {
         continueAetnaCrawl().catch(function(error) {
             console.error("[Aetna] Automatic crawl continuation failed:", error);
             window.__aetnaCrawlBusy = false;

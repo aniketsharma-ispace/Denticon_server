@@ -123,6 +123,7 @@ _SPEC: list[dict] = [
 
     # ── Orthodontics ─────────────────────────────────────────────────────────
     {"key": "ortho_max",      "label": "Ortho Maximum$",                       "kind": "money", "section": "Orthodontics", "portal": "_ortho_max",
+     "after": "Yearly Max($)",
      "aliases": ["Ortho Max", "Orthodontic Maximum", "Ortho Lifetime Maximum"]},
     {"key": "ortho_max_paid", "label": "Orthodontics Used Amount $",            "kind": "money", "section": "Orthodontics", "portal": "_ortho_used",
      "aliases": ["Ortho Used", "Orthodontics Used Amount"]},
