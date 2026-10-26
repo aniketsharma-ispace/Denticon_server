@@ -121,6 +121,13 @@ CLIENTS = {
         "hint":     "Portal export + Sabrina breakdown PDF",
         "supports": {"sabrina_audit", "parse_pdf"},
     },
+    "jefferson": {
+        "label":    "Jefferson",
+        "system":   "Sabrina",
+        "package":  "jefferson",
+        "hint":     "Portal export + Sabrina breakdown PDF",
+        "supports": {"sabrina_audit", "parse_pdf"},
+    },
 }
 
 # What each capability is called in an error the user will read.

@@ -3109,6 +3109,74 @@ check("a dependent age limit of NAL is unstated, not 'no limit'",
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  1r. JEFFERSON — a Sabrina client built from its own field list
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Added 2026-10-26 as a copy of star_dental/, with the field list replaced by
+# the "Jefferson " tab of the codes workbook. Inline data only, so this section
+# always runs.
+
+print("── 1r. JEFFERSON ──")
+
+from jefferson import sabrina as _jf
+from jefferson.sabrina.carriers.metlife import spec as _jf_spec, parser as _jf_parser
+from jefferson.sabrina.carriers.delta_dental import parser as _jf_dd_parser
+
+check("Jefferson is registered for the Sabrina audit",
+      _main.resolve_client("Jefferson", "sabrina_audit")[0], "jefferson")
+check("and refused for jobs that need a Denticon export",
+      tuple(_refused("jefferson", c) for c in ("match", "notes", "new_plan")),
+      (400, 400, 400))
+check("a carrier's rules come from Jefferson's own folder",
+      _jf.carrier_rules(_tk)[1].__name__, "jefferson.sabrina.carriers.delta_toolkit")
+
+_JF_CODES = set(
+    "D0120 D1110 D0220 D0230 D0150 D0140 D1120 D0210 D0330 D0274 D1351 D1206 "
+    "D1208 D1516 D2331 D2140 D2391 D2610 D2642 D4381 D4355 D4346 D4341 D4910 "
+    "D2740 D2750 D2950 D5110 D5212 D5511 D6010 D6104 D6190 D6056 D6057 D6058 "
+    "D6240 D6245 D9110 D9222 D9230 D9239 D9243 D9944 D9946 D3221 D3310 D3330 "
+    "D3346 D3348 D4921 D7140 D7210 D7230 D7240 D7953 D8080 D8090 D2520 D2194 "
+    "D5940 D9311 D8040 D4266 D2920 D9932".split())
+_JF_NO_FREQ = set("D3221 D3310 D3330 D3346 D3348 D4921 D7140 D7210 D7230 D7240 "
+                  "D7953 D8080 D8090".split())
+_JF_HIST = set("D0120 D0140 D0150 D0210 D0220 D0230 D0274 D0330 D1110 D1120 D1206 "
+               "D1208 D1351 D2194 D2391 D2520 D2740 D2750 D4266 D4341 D4346 D4381 "
+               "D4910 D5110 D5212 D5940 D8040 D9311 D9932".split())
+
+_jf_cols = _ns_columns(_jf_spec._SPEC)
+check("Jefferson audits exactly the codes on its list", set(_jf_cols), _JF_CODES)
+check("each with the columns its list asks for",
+      _jf_cols,
+      {c: ({"pct"} | (set() if c in _JF_NO_FREQ else {"freq"})
+           | ({"age"} if c in {"D1206", "D1208", "D1351", "D9932", "D4341"} else set())
+           | ({"hist"} if c in _JF_HIST else set()))
+       for c in _JF_CODES})
+check("Star Dental's own rows are not in Jefferson's audit",
+      {k for k in ("d0240", "d0367", "d4260", "d9310", "d9612", "d0150_freq_per_provider")
+       if any(f["key"] == k for f in _jf_spec._SPEC)},
+      set())
+check("and Star Dental keeps them",
+      all(any(f["key"] == k for f in _ns_spec._SPEC) for k in ("d0240", "d9310", "d0150_freq_per_provider")),
+      True)
+
+_jf_text = "\n".join([
+    "Fee Schedule", "GA Delta PPO RC42", "Benefit Details",
+    "D0220 PAs", "Pre-D", "100%", "01/02/2026",
+    "D2520 Inlay Metallic", "1X5Years", "50%", "NH",
+    "D9932", "1X1Year", "50%", "18", "NH",
+    "D9310", "Yes",
+    "D9311", "2X1Year", "80%", "NH",
+])
+_jf_f = _jf_parser.parse_sabrina_text(_jf_text)["fields"]
+check("Jefferson's own rows read: new History cells, a new age cell, D9310's question",
+      tuple(_jf_f[k] for k in ("d0220__hist", "d2520", "d2520__freq", "d2520__hist",
+                               "d9932__age", "d9310_question", "d9311", "d9311__freq")),
+      ("01/02/2026", "50%", "1X5Years", "NH", "18", "Yes", "80%", "2X1Year"))
+check("Delta Dental picks its network from the fee schedule",
+      _jf_dd_parser.parse_sabrina_text(_jf_text)["fee_schedule"], "GA Delta PPO RC42")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  2. DETECTION
 # ══════════════════════════════════════════════════════════════════════════════
 
