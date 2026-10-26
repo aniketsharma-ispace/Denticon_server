@@ -1223,6 +1223,7 @@ function renderSabrina(result) {
         <div class="stat-pill"><div class="num" style="color:#ff7043;">${s.critical_mismatches}</div><div class="lbl">Critical</div></div>
         <div class="stat-pill"><div class="num" style="color:#8b93a7;">${s.not_in_portal}</div><div class="lbl">Not On Portal</div></div>
         <div class="stat-pill"><div class="num">${s.match_rate}%</div><div class="lbl">Match Rate</div></div>
+        <div class="stat-pill"><div class="num" style="color:#8b93a7;">${s.not_comparable || 0}</div><div class="lbl">Not Comparable</div></div>
     </div>`;
 
     const mismBlock = mism.length
@@ -1230,7 +1231,17 @@ function renderSabrina(result) {
                <span class="sab-section-count">${mism.length}${s.critical_mismatches ? ` · ${s.critical_mismatches} critical` : ''}</span>
                <span class="divider"></span></div>
            <table class="sab-table">${SAB_THEAD}<tbody>${mism.map(sabRow).join('')}</tbody></table>`
-        : `<div class="sab-clean">✓ Every field the portal states agrees with the Sabrina PDF.</div>`;
+        : (s.not_comparable
+            ? `<div class="sab-clean">✓ No confirmed mismatches among comparable fields. ${s.not_comparable} field(s) are not comparable because one side lacks sufficient source data.</div>`
+            : `<div class="sab-clean">✓ Every field the portal states agrees with the Sabrina PDF.</div>`);
+
+    const toolkitDiag = result.diagnostics?.toolkit;
+    const toolkitBlock = toolkitDiag
+        ? `<div class="sab-legend"><b>Delta Toolkit:</b> ${toolkitDiag.successful_codes ?? '—'}/${toolkitDiag.requested_codes ?? '—'} procedure lookups succeeded`
+          + `${(toolkitDiag.failed_codes || []).length ? `; failed: ${escHtml(toolkitDiag.failed_codes.join(', '))}` : ''}`
+          + `${(toolkitDiag.codes_not_in_portal || []).length ? `; not in portal code list: ${escHtml(toolkitDiag.codes_not_in_portal.join(', '))}` : ''}`
+          + `${toolkitDiag.identity_valid === false ? `; identity/network validation failed: ${escHtml((toolkitDiag.identity_issues || []).join(', '))}` : ''}</div>`
+        : '';
 
     const allBlock = (result.sections || []).map(sec => {
         const groups = new Set(sec.rows.filter(r => r.group).map(r => r.group));
@@ -1261,6 +1272,7 @@ function renderSabrina(result) {
         </div>
         ${pills}
         ${mismBlock}
+        ${toolkitBlock}
         <span class="sab-toggle" id="sabToggle">Show all ${s.total_fields} fields ▾</span>
         <div id="sabAll" style="display:none;">${allBlock}</div>
         ${diag}

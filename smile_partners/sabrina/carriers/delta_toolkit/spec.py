@@ -61,6 +61,31 @@ _SPEC: list[dict] = [
     {"key": "subscriber_name", "label": "Subscriber Name", "kind": "name", "section": "Patient / Subscriber", "portal": "subscriber_name"},
     {"key": "subscriber_dob",  "label": "Date of Birth",   "kind": "date", "section": "Patient / Subscriber", "portal": "subscriber_dob",
      "after": "Subscriber Name"},
+    # These are Toolkit-only comparison rows. They are validated from the
+    # Sabrina eligibility block and Toolkit selectedMember data; they are kept
+    # out of the legacy parser's core field count so existing DD INS fixtures
+    # remain unchanged.
+    {"key": "eligibility", "label": "Eligibility", "kind": "yesno",
+     "section": "Patient / Subscriber", "portal": "_toolkit_eligibility",
+     "portal_only": True, "toolkit_only": True},
+    {"key": "relationship", "label": "Relationship", "kind": "text",
+     "section": "Patient / Subscriber", "portal": "_toolkit_relationship",
+     "portal_only": True, "toolkit_only": True},
+
+    {"key": "major_payment_timing",
+     "label": "Are Major Services Paid on Prep or Seat date?", "kind": "text",
+     "section": "Plan Provisions", "portal": "_toolkit_major_payment_timing",
+     "portal_only": True, "toolkit_only": True},
+
+    # Toolkit exposes these existing Sabrina-side orthodontic concepts in
+    # structured data. Keep them out of legacy DD INS runs, but compare them
+    # directly when the Toolkit adapter is selected.
+    {"key": "ortho_max_type", "label": "Ortho Maximum Covered", "kind": "text",
+     "section": "Orthodontics", "portal": "_toolkit_ortho_max_type",
+     "portal_only": True, "toolkit_only": True},
+    {"key": "ortho_payment_timing", "label": "Ortho Payment Timing", "kind": "text",
+     "section": "Orthodontics", "portal": "_toolkit_ortho_payment_timing",
+     "portal_only": True, "toolkit_only": True},
 
     # ── Insurance ────────────────────────────────────────────────────────────
     # Compared on the CARRIER, not the whole string: the sheet names the plan
@@ -85,7 +110,7 @@ _SPEC: list[dict] = [
     {"key": "oon_benefits", "label": "OON Benefits", "kind": "yesno", "section": "Insurance", "portal": "_oon_benefits",
      "aliases": ["OON Benefit", "Out of Network Benefits", "Out-of-Network Benefits"]},
 
-    {"key": "eff_date",        "label": "Patient Eff Date",            "kind": "date",  "section": "Insurance", "portal": "_eff_date",
+    {"key": "eff_date",        "label": "Patient Eff Date",            "kind": "date",  "section": "Insurance", "portal": "eff_date",
      "aliases": ["Patient Effective Date", "Eff Date", "Effective Date"]},
     {"key": "plan_year_start", "label": "Starting Month of Plan Year",  "kind": "month", "section": "Insurance", "portal": "plan_year_start",
      "aliases": ["Plan Year Start", "Benefit Year Start"]},
@@ -136,6 +161,11 @@ _SPEC: list[dict] = [
      "aliases": ["Missing Tooth Clause", "Does Missing Tooth Clause Apply"]},
     {"key": "prev_in_max",    "label": "Preventative Included in Yearly Max?", "kind": "yesno", "section": "Clauses", "portal": "_prev_in_max",
      "aliases": ["Preventive Included in Yearly Max", "Preventative Included in Yearly Max"]},
+    {"key": "perio_maint_after_srp",
+     "label": "When Is First Perio Maintenance Allowed After SRP ?", "kind": "text",
+     "section": "Clauses", "portal": "_toolkit_perio_after_srp",
+     "aliases": ["When Is First Perio Maintenance Allowed After SRP?",
+                 "When Is First Perio Maintenance Allowed After SRP"]},
 
     # OBS 4/5 — the two alternate-benefit questions. The portal states both in a
     # single "Alternate Benefits" provision and `new_plan` already splits them
@@ -150,18 +180,6 @@ _SPEC: list[dict] = [
      "section": "Clauses", "portal": "porcelain_posterior_downgrade",
      "aliases": ["Are Posterior Crowns Downgraded",
                  "Are Porcelain Crowns Downgraded"]},
-
-    # Fixed per carrier rather than stated per patient (Cigna: Seat Date,
-    # Next Day). Carriers without a known answer read "not on portal".
-    {"key": "major_paid_on",
-     "label": "Are Major Services Paid on Prep or Seat date?", "kind": "text",
-     "section": "Clauses", "portal": "_major_paid_on",
-     "aliases": ["Are Major Services Paid on Prep or Seat date"]},
-    {"key": "perio_maint_after_srp",
-     "label": "When Is First Perio Maintenance Allowed After SRP ?", "kind": "text",
-     "section": "Clauses", "portal": "_perio_after_srp",
-     "aliases": ["When Is First Perio Maintenance Allowed After SRP?",
-                 "When Is First Perio Maintenance Allowed After SRP"]},
 
     # ── Coverage by CDT code ─────────────────────────────────────────────────
     # Each row compares a coverage percentage. Where Sabrina's label names one
@@ -225,6 +243,55 @@ _SPEC: list[dict] = [
 ]
 
 
+# DD INS/Sabrina uses a fixed procedure comparison set.  The Sabrina sheet
+# does not print every code, so the extra codes below are portal-only rows: they
+# participate in comparison/UI rendering but are deliberately skipped by the
+# Sabrina label parser. This preserves legacy parser completeness while still
+# allowing the DD INS set to be compared by exact CDT code.
+_DD_INS_REQUIRED_CODES = [
+    "D0120", "D0140", "D0150", "D0180", "D0210", "D0220", "D0230", "D0240",
+    "D0274", "D0330", "D0364", "D0431", "D1110", "D1120", "D1206", "D1351",
+    "D1510", "D2140", "D2331", "D2391", "D2620", "D2740", "D2950", "D2962",
+    "D3310", "D3330", "D3347", "D4249", "D4260", "D4341", "D4346", "D4355",
+    "D4381", "D4910", "D5110", "D5740", "D5860", "D6010", "D6056", "D6065",
+    "D6194", "D6245", "D6750", "D7140", "D7210", "D7240", "D7259", "D7953",
+    "D8010", "D8080", "D8090", "D9110", "D9222", "D9230", "D9239", "D9243",
+    "D9310", "D9430", "D9944",
+]
+
+_DD_CODE_LABELS = {
+    "D0180": "D0180", "D0230": "D0230", "D0240": "D0240", "D0364": "D0364",
+    "D0431": "D0431", "D2140": "D2140", "D2331": "D2331", "D2620": "D2620",
+    "D2962": "D2962", "D3330": "D3330", "D3347": "D3347", "D4249": "D4249",
+    "D5740": "D5740", "D5860": "D5860", "D6056": "D6056", "D6065": "D6065",
+    "D6194": "D6194", "D6245": "D6245", "D7240": "D7240", "D7259": "D7259",
+    "D7953": "D7953", "D8010": "D8010", "D8080": "D8080", "D9222": "D9222",
+    "D9239": "D9239", "D9430": "D9430",
+}
+
+_existing_dd_codes = set()
+for _field in _SPEC:
+    if _field.get("portal_only") or _field.get("derived"):
+        continue
+    _portal = _field.get("portal")
+    if isinstance(_portal, tuple) and _portal and _portal[0] == "code":
+        _existing_dd_codes.add(str(_portal[1]).upper())
+
+for _code in _DD_INS_REQUIRED_CODES:
+    if _code in _existing_dd_codes:
+        continue
+    _SPEC.append({
+        "key": _code.lower(),
+        "label": _DD_CODE_LABELS.get(_code, _code),
+        "kind": "pct",
+        "section": "Coverage by CDT Code",
+        "portal": ("code", _code),
+        "portal_only": True,
+        "toolkit_only": True,
+    })
+
+
+
 _BENEFIT_ASPECTS = (
     ("freq", "Frequency", "frequency", "frequency_limit"),
     ("age",  "Age Limit", "agelimit",  "age_limit"),
@@ -243,15 +310,14 @@ _ASPECT_SECTION = "Coverage by CDT Code"
 # Age Limit and History are only meaningful for a handful of procedures, and
 # Frequency is not expected for a few. Generating rows for the rest produced ~70
 # "blank on the sheet" flags that were nothing of the kind — the sheet is right
-# to leave those cells empty. D4341 is in the age list for a different reason:
-# Sabrina puts the QUADRANT COUNT in its Age Limit column, not an age, so that
-# row is compared as "Quads" against `_d4341_quads` (see _build_aspect_spec).
+# to leave those cells empty. Note D4341 is in the history list but NOT the age
+# list: Sabrina puts the quadrant count in its Age Limit column, not an age.
 _AGE_LIMIT_CODES = {"D1206", "D1208", "D1351", "D1510", "D8080", "D4341"}
 
 
 _HISTORY_CODES = {
     "D0120", "D0140", "D0150", "D0210", "D0274", "D0330", "D1110",
-    "D1206", "D1208", "D1351", "D4341", "D4910",
+    "D1206", "D1208", "D1351", "D1510", "D4341", "D4910",
 }
 
 
@@ -284,18 +350,18 @@ def _build_aspect_spec() -> list[dict]:
             portal_source = ("codefield", portal_field) + codes
             if suffix == "age" and primary == "D8080":
                 portal_source = "_ortho_age"
-            row_title = title
             if suffix == "age" and primary == "D4341":
-                # Sabrina's Age Limit cell on D4341 holds the number of quads.
-                portal_source = "_d4341_quads"
-                row_title = "Quads"
+                portal_source = "_toolkit_srp_quads_per_day"
+                title, kind = "Quads", "text"
             out.append({
                 "key":     f'{field["key"]}__{suffix}',
-                "label":   f'{field["label"]} · {row_title}',
+                "label":   f'{field["label"]} · {title}',
                 "kind":    kind,
                 "section": _ASPECT_SECTION,
                 "portal":  portal_source,
                 "derived": True,
+                "portal_only": field.get("portal_only", False),
+                "toolkit_only": field.get("toolkit_only", False),
                 "row_key": field["key"],
                 "aspect":  suffix,
                 "group":   field["key"],
@@ -312,7 +378,7 @@ def _build_aspect_spec() -> list[dict]:
 _SPEC += _build_aspect_spec()
 
 
-CORE_FIELD_KEYS = tuple(f["key"] for f in _SPEC if not f.get("derived"))
+CORE_FIELD_KEYS = tuple(f["key"] for f in _SPEC if not f.get("derived") and not f.get("portal_only"))
 
 
 def core_fields(fields: dict) -> dict:

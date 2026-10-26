@@ -26,6 +26,7 @@ from .vocabulary import (
     _num_money,
     _num_month,
     _num_pct,
+    _norm_id,
     _num_yesno,
     _visible_part,
 )
@@ -83,6 +84,21 @@ def _compare(kind: str, sab, por, ctx: dict | None = None) -> tuple[bool | None,
         return a == b, ""
 
     if kind == "frequency":
+        # The Star Toolkit/Sabrina workflow treats these two labels as
+        # equivalent. Keep this alias local to comparison: the helper used to
+        # calculate whether two different procedures share a frequency still
+        # requires an actual counted frequency before it can answer Yes/No.
+        if (ctx or {}).get("toolkit"):
+            frequency_aliases = {"no frequency", "frequency not available"}
+            normalized = [re.sub(r"\s+", " ", str(v or "").strip().casefold()) for v in (sab, por)]
+            alias_a, alias_b = (value in frequency_aliases for value in normalized)
+            if alias_a or alias_b:
+                if alias_a and alias_b:
+                    return True, "same frequency label meaning, worded differently"
+                other = normalized[1] if alias_a else normalized[0]
+                if re.fullmatch(r"pre[\s-]?d(?:etermination)?", other):
+                    return None, "Pre-D is a pre-determination instruction, not a frequency limit"
+                return False, "one side states no frequency while the other states a different limit"
         age = (ctx or {}).get("age")
         a, b = _num_frequency(sab, age), _num_frequency(por, age)
         if a is None or b is None:
@@ -93,6 +109,31 @@ def _compare(kind: str, sab, por, ctx: dict | None = None) -> tuple[bool | None,
         # "1X60Months" and "1X5Years" are the same limit stated two ways; the
         # canonical form already reconciles those, so a difference here is real.
         return False, note
+
+    if kind == "payer_id":
+        a, b = _norm_id(sab), _norm_id(por)
+        if a is None or b is None:
+            return None, ""
+        # Delta Dental Ohio may be presented as DDPO in Sabrina and DDPOH in
+        # the Toolkit-derived export. This alias belongs only to payer IDs;
+        # member/group IDs retain the ordinary identifier rules below.
+        aliases = {"DDPO": "DDPO", "DDPOH": "DDPO"}
+        # Some portal exports list several valid payer IDs in one value (for
+        # example "DDPMI, DDPIN, DDPOH"). Treat the field as a set of IDs and
+        # apply the alias to each token, rather than concatenating the whole
+        # string and missing the overlapping payer ID.
+        def payer_tokens(value) -> set[str]:
+            tokens = set()
+            for part in re.split(r"[,;/|]+", str(value or "")):
+                token = _norm_id(part)
+                if token:
+                    tokens.add(aliases.get(token, token))
+            return tokens
+
+        payer_a, payer_b = payer_tokens(sab), payer_tokens(por)
+        if payer_a & payer_b:
+            return True, "payer ID aliases or listed IDs overlap"
+        return _compare("id", sab, por, ctx)
 
     if kind == "cob":
         a, b = _num_cob(sab), _num_cob(por)

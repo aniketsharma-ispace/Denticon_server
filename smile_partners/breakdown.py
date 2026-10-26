@@ -579,6 +579,14 @@ def _procedure_benefit_pct(procs, *codes):
     return ''
 
 
+def _toolkit_code_pct(procs, code):
+    value = str(((procs or {}).get(code) or {}).get('benefit_level') or '').strip()
+    if value.upper() in ('NOT COVERED', 'NC', 'N/C'):
+        return '0%'
+    m = re.search(r'(\d+(?:\.\d+)?)\s*%?', value)
+    return f"{float(m.group(1)):g}%" if m else ''
+
+
 def _covered_pct_max(services, *category_hints):
     """Return the highest plan-paid percentage in the first matching category."""
     for hint in category_hints:
@@ -954,6 +962,11 @@ def _extract(portal_raw, denticon_raw):
             or _covered_pct(svcs, 'PROSTHODONTICS', 'IMPLANT')
         )
         metlife_ortho_age = _extract_metlife_ortho_age_limit(provisions)
+    elif is_toolkit:
+        pct_prev = _toolkit_code_pct(procs, 'D0120')
+        pct_basic = _toolkit_code_pct(procs, 'D2160')
+        pct_major = _toolkit_code_pct(procs, 'D2740')
+        metlife_ortho_age = ''
     else:
         pct_prev = _covered_pct(svcs, 'PREVENTIVE')
         pct_basic = _covered_pct(svcs, 'RESTORATIVE', 'DIAGNOSTIC')

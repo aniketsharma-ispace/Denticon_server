@@ -1,5 +1,5 @@
 """
-Shared plumbing for the Star Dental audit.
+Shared plumbing for the Star audit.
 """
 
 from __future__ import annotations

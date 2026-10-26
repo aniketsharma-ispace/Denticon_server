@@ -1,5 +1,5 @@
 """
-The audit itself, for a Delta Dental Office Toolkit portal export.
+The audit itself.
 
 Parse the sheet, read the portal, compare field by field, and return a
 UI-ready result: per-section rows carrying both sides' raw values, a
@@ -8,35 +8,36 @@ mismatches-only list, and the counts.
 
 from __future__ import annotations
 
+import re
+
 from .spec import _CRITICAL_KEYS
-from .vocabulary import _blank_for, _blank_means_no_limit, _num_date
-from .parser import _MIN_MARKERS, parse_sabrina_pdf
+from .vocabulary import _blank_for, _blank_means_no_limit, _num_date, _num_history
+from .parser import _MIN_MARKERS, parse_sabrina_pdf, parse_sabrina_text
 from .spec import _SPEC
 from .compare import _compare
-from .portal import (_breakdown_for_sheet, _portal_breakdown, _portal_for_sheet,
-                     _portal_normalized, _portal_value)
-from .rules import _toolkit_meta, _toolkit_wrapped_history
+from .portal import (
+    _portal_breakdown,
+    _portal_normalized,
+    _portal_value,
+)
+from .rules import (
+    _pdf_eligibility,
+    _pdf_major_payment_timing,
+    _pdf_ortho_coverage,
+    _pdf_ortho_max_type,
+    _pdf_ortho_payment_timing,
+    _pdf_relationship,
+    _toolkit_identity_gate,
+)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  PUBLIC ENTRY POINT
-# ══════════════════════════════════════════════════════════════════════════════
-
+# Public status constants consumed by the API/UI package. Keep the legacy
+# lowercase values so existing DD INS clients remain wire-compatible.
 STATUS_MATCH = "match"
-
-
 STATUS_MISMATCH = "mismatch"
-
-
 STATUS_NOT_IN_PORTAL = "not_in_portal"
-
-
 STATUS_MISSING_IN_SABRINA = "missing_in_sabrina"
-
-
 STATUS_NOT_STATED = "not_stated"
-
-
 STATUS_NOT_COMPARABLE = "not_comparable"
 
 
@@ -55,6 +56,10 @@ def _age_from_dob(dob) -> int | None:
     return age if 0 <= age <= 130 else None
 
 
+def _is_freq_not_available(value) -> bool:
+    return bool(re.fullmatch(r"\s*(?:frequency\s+)?not\s+available\s*", str(value or ""), re.IGNORECASE))
+
+
 def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     """
     Audit a parsed Sabrina PDF against the insurance portal export.
@@ -64,16 +69,29 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     what each system says.
     """
     sab_fields = sabrina_parsed.get("fields", {})
-    # Pick what the sheet should be read against: the network its In Network
-    # field names, and for an in-network office the one its fee schedule
-    # names (Premier, or PPO for Premier Lite).
-    portal_raw = _portal_for_sheet(portal_raw, sab_fields, sabrina_parsed.get("fee_schedule"))
     bd = _portal_breakdown(portal_raw)
     # Derived readers work off the translated export, not the raw one.
     portal_norm = _portal_normalized(portal_raw)
-    bd = _breakdown_for_sheet(bd, portal_norm)
-    # A Delta audit reads a History cell that wraps onto a second line in full.
-    sab_fields = _toolkit_wrapped_history(sab_fields, sabrina_parsed.get("benefit_rows"), portal_norm)
+
+    if portal_norm.get("_toolkit") and sabrina_parsed.get("text"):
+        if not sabrina_parsed.get("toolkit_parse"):
+            sabrina_parsed = {**sabrina_parsed, **parse_sabrina_text(sabrina_parsed["text"], toolkit=True)}
+        # Toolkit uses the full seven-page Sabrina PDF. The generic Sabrina
+        # parser intentionally skips portal_only CDT rows for legacy carrier
+        # compatibility, so the Toolkit adapter supplements those rows from
+        # the embedded Delta benefit pages without changing legacy behavior.
+        from ....portals.delta_toolkit import enrich_toolkit_sabrina_parse
+        sabrina_parsed = enrich_toolkit_sabrina_parse(sabrina_parsed)
+        sab_fields = sabrina_parsed.get("fields", {})
+
+    toolkit_identity_ok, toolkit_identity_issues = (
+        _toolkit_identity_gate(sabrina_parsed, portal_norm)
+        if portal_norm.get("_toolkit") else (True, [])
+    )
+
+    toolkit_meta = portal_norm.get("_toolkit_meta") if isinstance(portal_norm.get("_toolkit_meta"), dict) else {}
+    toolkit_failed = {str(code).upper() for code in (toolkit_meta.get("failed_codes") or [])}
+    toolkit_not_in_portal = {str(code).upper() for code in (toolkit_meta.get("codes_not_in_portal") or [])}
 
     # Some portal rules are stated per age band ("… TO AGE 19, … FOR ADULTS"),
     # so the patient's age decides which one governs. Taken as of today, which
@@ -84,6 +102,8 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     rows: list[dict] = []
 
     for field in _SPEC:
+        if field.get("toolkit_only") and not portal_norm.get("_toolkit"):
+            continue
         key = field["key"]
         # A CDT percentage row anchors its code's group.
         if field["section"] == "Coverage by CDT Code" and not field.get("derived"):
@@ -91,10 +111,46 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             field.setdefault("group_label", field["label"])
             field.setdefault("aspect", "pct")
         sab_raw = sab_fields.get(key)
+        if portal_norm.get("_toolkit") and key == "eligibility":
+            sab_raw = _pdf_eligibility(sabrina_parsed.get("text", ""))
+        elif portal_norm.get("_toolkit") and key == "relationship":
+            sab_raw = _pdf_relationship(sabrina_parsed.get("text", ""))
+        elif portal_norm.get("_toolkit") and key == "major_payment_timing":
+            sab_raw = _pdf_major_payment_timing(sabrina_parsed.get("text", ""))
+        elif portal_norm.get("_toolkit") and key == "ortho_coverage":
+            sab_raw = _pdf_ortho_coverage(sabrina_parsed.get("text", ""))
+        elif portal_norm.get("_toolkit") and key == "ortho_max_type":
+            sab_raw = _pdf_ortho_max_type(sabrina_parsed.get("text", ""))
+        elif portal_norm.get("_toolkit") and key == "ortho_payment_timing":
+            sab_raw = _pdf_ortho_payment_timing(sabrina_parsed.get("text", ""))
+        # Benefit Details is the canonical source for procedure percentages.
+        # The same CDT label can appear in the page-1 coverage summary with a
+        # different display token such as "Optional"; never let that summary
+        # override the six-column Benefit Details row.
+        if (
+            field.get("section") == "Coverage by CDT Code"
+            and field.get("aspect") == "pct"
+        ):
+            benefit_row = (sabrina_parsed.get("benefit_rows") or {}).get(key)
+            if isinstance(benefit_row, dict) and benefit_row.get("percentage") is not None:
+                sab_raw = benefit_row.get("percentage")
         por_raw = _portal_value(field, bd, portal_norm, sab_raw)
 
         sab_blank = _blank_for(field["kind"], sab_raw)
         por_blank = _blank_for(field["kind"], por_raw)
+
+        # The portal shows a dash (or nothing) in History where a procedure was
+        # never performed — the same statement the sheet writes as "NH". When
+        # the sheet says NH and the portal cell is empty, read the portal as NH
+        # so the pair is compared as a match instead of "not comparable".
+        if (
+            field["kind"] == "history"
+            and por_blank
+            and not sab_blank
+            and _num_history(sab_raw) == "NONE"
+        ):
+            por_raw = "NH"
+            por_blank = False
         note = ""
 
         if sab_blank and por_blank:
@@ -109,21 +165,57 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             status = STATUS_MATCH
             note = "blank on the sheet and no limit on the portal — same thing"
         elif sab_blank:
-            # The portal states a value the sheet left out: a mismatch, not a
-            # separate "blank" category (agreed with the team, 2026-10-16).
-            status = STATUS_MISMATCH
-            note = "blank on the Sabrina sheet, but the portal states it"
+            status = STATUS_MISSING_IN_SABRINA
+            note = "blank on the Sabrina sheet"
         elif field.get("uncomparable"):
             status = STATUS_NOT_COMPARABLE
             note = field["uncomparable"]
         else:
-            equal, cmp_note = _compare(field["kind"], sab_raw, por_raw, ctx)
+            if (
+                portal_norm.get("_toolkit")
+                and field["kind"] == "frequency"
+                and (_is_freq_not_available(sab_raw) or _is_freq_not_available(por_raw))
+            ):
+                equal, cmp_note = _is_freq_not_available(sab_raw) and _is_freq_not_available(por_raw), ""
+            else:
+                equal, cmp_note = _compare(field["kind"], sab_raw, por_raw, ctx)
             note = cmp_note
             if equal is None:
                 status = STATUS_NOT_COMPARABLE
                 note = note or "values are not in a comparable form"
             else:
                 status = STATUS_MATCH if equal else STATUS_MISMATCH
+
+        # Toolkit data has a hard retrieval failure signal.  A failed CDT lookup
+        # is data-unavailable, never a benefit mismatch.
+        if portal_norm.get("_toolkit") and field.get("section") == "Coverage by CDT Code":
+            code_src = field.get("portal")
+            code = None
+            if isinstance(code_src, tuple) and code_src and code_src[0] in ("code", "codefield"):
+                code = str(code_src[1] if code_src[0] == "code" else code_src[2]).upper()
+            if code in toolkit_failed:
+                status = STATUS_NOT_COMPARABLE
+                note = f"Toolkit lookup failed for {code}; no source benefit data was retrieved."
+            elif code in toolkit_not_in_portal:
+                status = STATUS_NOT_COMPARABLE
+                note = (f"{code} is not in the Toolkit's procedure code list; "
+                        "the portal returned no benefit for it.")
+            elif not toolkit_identity_ok:
+                status = STATUS_NOT_COMPARABLE
+                note = "Identity/network validation failed: " + ", ".join(toolkit_identity_issues)
+
+        if portal_norm.get("_toolkit"):
+            if not toolkit_identity_ok:
+                # The safety gate applies to every plan/procedure comparison.
+                status = STATUS_NOT_COMPARABLE
+                note = "Identity/network validation failed: " + ", ".join(toolkit_identity_issues)
+            elif por_blank and not sab_blank:
+                # Toolkit missing data is an evidence gap, not a negative answer.
+                status = STATUS_NOT_COMPARABLE
+                if field["kind"] == "agelimit" and str(sab_raw).strip().upper() == "NC":
+                    note = "Sabrina states NC (no numeric age limit); the Toolkit states no age limit for this code."
+                else:
+                    note = note or "Toolkit did not expose this value."
 
         row = {
             "key": key,
@@ -141,6 +233,30 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             "critical": key in _CRITICAL_KEYS,
             "note": note,
         }
+        if portal_norm.get("_toolkit") and field.get("section") == "Coverage by CDT Code":
+            code_src = field.get("portal")
+            if isinstance(code_src, tuple) and code_src:
+                code = str(code_src[1] if code_src[0] == "code" else code_src[2]).upper()
+                proc = (bd.get("procs") or {}).get(code) or {}
+                row["source_trace"] = {
+                    "cdt_code": code,
+                    "percentage": proc.get("benefit_level"),
+                    "raw_limitation": proc.get("toolkit_source_limitations") or proc.get("limitations"),
+                    "derived_frequency": proc.get("frequency_limit"),
+                    "age_limit": proc.get("age_limit"),
+                    "history": proc.get("late_date_of_service"),
+                    "waiting_period": proc.get("toolkit_waiting_period"),
+                    "procedure_path": proc.get("procedure_path"),
+                    "retrieval_status": (proc.get("toolkit_status") if proc
+                                         else ("FAILED" if code in toolkit_failed
+                                               else "NOT_IN_PORTAL_CODE_LIST" if code in toolkit_not_in_portal
+                                               else None)),
+                    "error": proc.get("toolkit_error") if proc else (
+                        f"Toolkit lookup failed for {code}." if code in toolkit_failed
+                        else f"{code} is not in the Toolkit's procedure code list." if code in toolkit_not_in_portal
+                        else None
+                    ),
+                }
         rows.append(row)
         sections.setdefault(field["section"], []).append(row)
 
@@ -171,7 +287,8 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             "critical_mismatches": sum(1 for r in mismatches if r["critical"]),
             "not_in_portal": _count(STATUS_NOT_IN_PORTAL),
             "missing_in_sabrina": _count(STATUS_MISSING_IN_SABRINA),
-            "not_stated": _count(STATUS_NOT_STATED, STATUS_NOT_COMPARABLE),
+            "not_stated": _count(STATUS_NOT_STATED),
+            "not_comparable": _count(STATUS_NOT_COMPARABLE),
             "match_rate": round(matched / compared * 100, 1) if compared else 0.0,
         },
         "mismatches": mismatches,
@@ -180,11 +297,17 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             "labels_not_found": sabrina_parsed.get("labels_not_found", []),
             "marker_count": sabrina_parsed.get("marker_count"),
             "pdf_line_count": sabrina_parsed.get("line_count"),
-            # The provider network the per-code rows were read under, and the
-            # codes whose lookup failed — those read "not on portal" for that
-            # reason, not because the plan is silent on them.
-            "portal_network": _toolkit_meta(portal_norm).get("selected_network") or None,
-            "portal_failed_codes": _toolkit_meta(portal_norm).get("failed_codes") or [],
+            # Delta only: the provider network the per-code rows were read under.
+            "portal_network": (((portal_raw or {}).get("tabs") or {}).get("benefits_search_network")
+                              if isinstance((portal_raw or {}).get("tabs"), dict) else None),
+            "toolkit": {
+                "requested_codes": toolkit_meta.get("requested_codes"),
+                "successful_codes": toolkit_meta.get("successful_codes"),
+                "failed_codes": sorted(toolkit_failed),
+                "codes_not_in_portal": sorted(toolkit_not_in_portal),
+                "identity_valid": toolkit_identity_ok,
+                "identity_issues": toolkit_identity_issues,
+            } if portal_norm.get("_toolkit") else None,
         },
     }
 

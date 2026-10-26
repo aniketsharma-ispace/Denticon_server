@@ -35,6 +35,25 @@ _WORD_COUNTS = {
 }
 
 
+# TODO(Star): the 12 codes below carry a Frequency on the Star checklist but have
+# no entry in _FREQUENCY_PHRASES (and none in _TOOLKIT_PDF_FREQ_PHRASES, which
+# serves the sheet side). Each needs the wording its plan states in real
+# limitation text, which needs a real Star Toolkit crawl; none is guessed here.
+# No fixture carries a limitation sentence that names any of them.
+#   D0367  phrase still needed
+#   D2610  phrase still needed
+#   D5511  phrase still needed
+#   D5650  phrase still needed
+#   D5810  phrase still needed
+#   D5821  phrase still needed
+#   D5912  phrase still needed
+#   D6104  phrase still needed
+#   D6190  phrase still needed
+#   D9612  phrase still needed
+#   D9630  phrase still needed
+#   D9947  phrase still needed (checklist ticks Frequency, but its remark asks for coverage only)
+# _AGE_PHRASES needs nothing new: Star's age-limit codes (D1206, D1208, D1351) are already listed.
+
 # Only these code/phrase pairs may turn a source sentence into a frequency.
 # This deliberately avoids category inheritance.  A sentence is usable only
 # when the code is named directly or the phrase below explicitly identifies the
@@ -44,6 +63,10 @@ _FREQUENCY_PHRASES: dict[str, tuple[str, ...]] = {
     "D0140": ("oral examinations",),
     "D0150": ("oral examinations",),
     "D0180": ("oral examinations",),
+    # D9110 is palliative/emergency treatment.  Only use the general oral-exam
+    # limitation for it when the source explicitly includes emergency exams;
+    # a generic oral-exam rule must not bleed into D9110.
+    "D9110": ("emergency examinations", "emergency exams"),
     "D0210": ("full mouth x-rays", "panorex"),
     "D0330": ("panorex",),
     "D0272": ("bitewing x-rays",),
@@ -54,22 +77,37 @@ _FREQUENCY_PHRASES: dict[str, tuple[str, ...]] = {
     "D1208": ("fluoride treatments",),
     "D1351": ("sealants",),
     "D1510": ("space maintainers",),
+    "D1516": ("space maintainers",),
     "D2140": ("amalgam and composite resin restorations",),
     "D2160": ("amalgam and composite resin restorations",),
     "D2331": ("amalgam and composite resin restorations",),
     "D2391": ("amalgam and composite resin restorations",),
+    "D2642": ("cast restorations", "onlays"),
     "D2740": ("cast restorations", "crowns", "onlays"),
+    "D2750": ("cast restorations", "crowns"),
     "D2950": ("cast restorations", "cores", "substructures"),
     "D4355": ("full mouth debridement",),
-    "D4341": ("root planing and scaling",),
+    # Match the actual source wording in either supported order.  Toolkit
+    # currently says "Scaling and root planing procedures ...".
+    "D4341": ("scaling and root planing", "root planing and scaling"),
     "D4910": ("periodontal prophylaxes", "periodontal maintenance"),
     "D5110": ("full and partial dentures", "dentures"),
     "D5212": ("full and partial dentures", "partial dentures"),
     "D5213": ("full and partial dentures", "partial dentures"),
     "D6750": ("bridgework",),
+    "D6240": ("bridgework",),
     "D6245": ("bridgework",),
     "D6010": ("implants",),
-    "D9944": ("occlusal guard",),   # matches "occlusal guard" and "occlusal guards"
+    # Toolkit uses this exact parent-category wording for implant abutments
+    # and implant crowns as well as the implant body. The limitation applies
+    # to the restorations on the tooth, not just the code that places the
+    # implant itself.
+    "D6056": ("implants and/or the restorations", "implants and/or restorations"),
+    "D6057": ("implants and/or the restorations", "implants and/or restorations"),
+    "D6058": ("implants and/or the restorations", "implants and/or restorations"),
+    # Star exports/Sabrina sheets use both "Occlusal Guard" and "Nightguard".
+    "D9944": ("occlusal guard", "night guard", "nightguard"),
+    "D9946": ("occlusal guard", "night guard", "nightguard"),
 }
 
 
@@ -412,6 +450,12 @@ def _derive_age(code: str, limitations: list[str]) -> tuple[str, str | None]:
     for sentence in limitations:
         if not _age_phrase_applies(code, sentence):
             continue
+        # Star's worksheet uses 99 for "no age limit". Preserve that meaning
+        # when the Toolkit explicitly says no age limitation, but only when the
+        # sentence has already been tied to this code by _age_phrase_applies.
+        if re.search(r"\bno\s+age\s+limitations?\b", sentence, re.IGNORECASE):
+            if best_age is None or best_age < 99:
+                best_age, best_sentence = 99, sentence
         for m in _AGE_LIMIT_RE.finditer(sentence):
             age = int(m.group(1) or m.group(2))
             if best_age is None or age > best_age:
@@ -621,12 +665,16 @@ def enrich_toolkit_sabrina_parse(parsed: dict) -> dict:
         if existing.get("history") is not None and fields.get(f"{key}__hist") in (None, ""):
             fields[f"{key}__hist"] = existing.get("history")
 
-    return {
+    enriched = {
         **parsed,
         "fields": fields,
         "benefit_rows": benefit_rows,
         "toolkit_pdf_enriched": True,
     }
+    # Import lazily to avoid an import cycle: the audit imports this adapter,
+    # while the parser owns the canonical keyed-label diagnostic logic.
+    from ..sabrina.carriers.delta_toolkit.parser import _refresh_missing_labels
+    return _refresh_missing_labels(enriched)
 
 
 def _coverage_level(result: dict[str, Any]) -> str:
@@ -666,6 +714,41 @@ def _payor_id_from_site(raw: Any) -> str:
         return "DDPIN"
     if re.search(r"deltadental[a-z]*\.com", blob):
         return "DDPOH"
+    return ""
+
+
+_FEE_SCHEDULE_KEY_RE = re.compile(r"^fee[\s_-]*schedule$", re.IGNORECASE)
+_FEE_SCHEDULE_NOTE_RE = re.compile(r"^\s*fee\s+schedule\s*:\s*(.+?)\s*$", re.IGNORECASE)
+
+
+def _fee_schedule_from_raw(raw: Any) -> str:
+    stack = [raw]
+    index = 0
+    while index < len(stack):
+        node = stack[index]
+        index += 1
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if _FEE_SCHEDULE_KEY_RE.match(str(key)) and isinstance(value, (str, int, float)) and _text(value):
+                    return _text(value)
+                stack.append(value)
+        elif isinstance(node, list):
+            stack.extend(node)
+        elif isinstance(node, str):
+            m = _FEE_SCHEDULE_NOTE_RE.match(node)
+            if m:
+                return _text(m.group(1))
+    return ""
+
+
+def _network_from_fee_schedule(fee_schedule: Any) -> str:
+    text = _text(fee_schedule)
+    if not text:
+        return ""
+    if re.search(r"\bucr\b", text, re.IGNORECASE):
+        return "Out"
+    if re.search(r"\bdelta\s*dental\b|\bpremier\b", text, re.IGNORECASE):
+        return "In"
     return ""
 
 
@@ -748,11 +831,6 @@ def _history_for_code(code: str, result: dict[str, Any], routine_by_code: dict[s
         return direct
     routine = routine_by_code.get(code.upper())
     if routine is None:
-        if (
-            _text(result.get("history_status")).upper() == "NO_HISTORY_ON_FILE"
-            and result.get("utilization_source_present") is not False
-        ):
-            return "NH"
         return None
     routine_date = _latest_service_date(routine.get("serviceDates"))
     if routine_date:
@@ -786,6 +864,30 @@ def _share_frequency(procedures: list[dict[str, Any]]) -> None:
                 target["frequency_scope"] = donor["frequency_scope"]
 
 
+def _share_radiograph_history(procedures: list[dict[str, Any]]) -> None:
+    by_code = {p["procedure_code"]: p for p in procedures}
+    fmx, pano = by_code.get("D0210"), by_code.get("D0330")
+    if not fmx or not pano:
+        return
+    shared_sentence = any(
+        re.search(r"full\s+mouth", sentence, re.IGNORECASE)
+        and re.search(r"panorex|panoramic", sentence, re.IGNORECASE)
+        for proc in (fmx, pano)
+        for sentence in (proc.get("toolkit_source_limitations") or [])
+    )
+    if not shared_sentence:
+        return
+    fmx_date, pano_date = fmx.get("late_date_of_service"), pano.get("late_date_of_service")
+    if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", str(fmx_date or "")) and not re.fullmatch(
+        r"\d{1,2}/\d{1,2}/\d{4}", str(pano_date or "")
+    ):
+        pano["late_date_of_service"] = fmx_date
+    elif re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", str(pano_date or "")) and not re.fullmatch(
+        r"\d{1,2}/\d{1,2}/\d{4}", str(fmx_date or "")
+    ):
+        fmx["late_date_of_service"] = pano_date
+
+
 def _inherit_perio_maintenance_frequency(procedures: list[dict[str, Any]]) -> None:
     by_code = {p["procedure_code"]: p for p in procedures}
     perio, prophy = by_code.get("D4910"), by_code.get("D1110")
@@ -814,7 +916,7 @@ def _checklist_codes() -> frozenset[str]:
     if _CHECKLIST_CODES is None:
         codes: set[str] = set()
         try:
-            from ..sabrina.spec import _SPEC
+            from ..sabrina.carriers.delta_toolkit.spec import _SPEC
         except Exception:
             _SPEC = []
         for field in _SPEC:
@@ -991,12 +1093,31 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
     unavailable = failed | not_in_portal
     crawl = raw.get("crawl_statistics") or {}
 
-    # The structured display field is the canonical payor ID for this portal.
-    # Keep the contradictory source note/claim payor in metadata instead of
-    # silently choosing it or creating a mismatch.
+    # Preserve portal notes for diagnostics, but prefer the actual claim payer
+    # ID when the display field contains a plan key instead of the payer ID.
     client_notes = _note_fields(client.get("notes"))
+    claim_payor_id = _text(
+        ((raw.get("more_information") or {}).get("claim_and_inquiry_mailing_addresses") or {}).get("payorId")
+    ) or client_notes.get("payor id", "")
+    claim_ids = _code_list(claim_payor_id)
+    if len(claim_ids) > 1:
+        plan_ids = _code_list(" ".join(
+            _text(display.get(key)) for key in ("payorId", "payor_id", "payor_plan_id", "plan")
+        ))
+        site_id = _payor_id_from_site(raw)
+        chosen = next((pid for pid in plan_ids if pid in claim_ids), "") or (
+            site_id if site_id in claim_ids else ""
+        )
+        if chosen:
+            claim_payor_id = chosen
+    # In Office Toolkit, display_fields.payorId can contain the carrier's plan
+    # key (e.g. DDMN), not the payer ID printed on the Sabrina/Dental page
+    # (e.g. 07000). Prefer the actual claim payer ID, then use display fields as
+    # a fallback for older exports that omit it.
     payor_id = (
-        _text(display.get("payorId"))
+        claim_payor_id
+        or _text(display.get("payorId"))
+        or _text(display.get("payor_id"))
         or _text(display.get("payor_plan_id"))
         or _text(display.get("plan"))
         or _payor_id_from_site(raw)
@@ -1011,14 +1132,26 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
         or _text(display.get("clientName"))
     )
     claim_address = ((raw.get("more_information") or {}).get("claim_and_inquiry_mailing_addresses") or {}).get("claimMailingAddress") or {}
+    fee_schedule = _fee_schedule_from_raw(raw)
     members = [m for m in ((raw.get("member_details") or {}).get("members") or []) if isinstance(m, dict)]
     if _text(selected.get("relationship")).lower() == "subscriber":
         subscriber = selected
     else:
         subscriber = next((m for m in members if _text(m.get("relationship")).lower() == "subscriber"), {})
 
-    general_max = next((r for r in maximums if str(r.get("category", "")).lower() == "general"), {})
-    ortho_max = next((r for r in maximums if str(r.get("category", "")).lower() == "orthodontic"), {})
+    # General Maximum and General Deductible both use category="General".
+    # Selecting by category alone can accidentally read the $50 deductible as
+    # the annual maximum when the deductible row appears first in the export.
+    general_max = next((
+        r for r in maximums
+        if str(r.get("type", "")).lower() == "maximum"
+        and str(r.get("category", "")).lower() == "general"
+    ), {})
+    ortho_max = next((
+        r for r in maximums
+        if str(r.get("type", "")).lower() == "maximum"
+        and str(r.get("category", "")).lower() == "orthodontic"
+    ), {})
     general_ded = next((r for r in maximums if str(r.get("type", "")).lower() == "deductible" and
                         str(r.get("category", "")).lower() == "general"), {})
 
@@ -1127,7 +1260,10 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
     _resolve_optional_coverage(procedures, coverage_row_list)
 
     _share_frequency(procedures)
-    _inherit_perio_maintenance_frequency(procedures)
+    _share_radiograph_history(procedures)
+    # Do not copy D1110's limitation onto D4910.  Toolkit must report a code's
+    # frequency only when the source wording applies to that exact procedure;
+    # a shared benefit category is not enough evidence.
 
     coverage_notes_text = " ".join(_text(x) for x in ((raw.get("coverages") or {}).get("notes") or []))
     oon_stated = bool(
@@ -1140,6 +1276,33 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
             return value is not None and float(value) == 0.0
         except (TypeError, ValueError):
             return False
+
+    # Star's Toolkit sometimes represents the family amount as 0 even when
+    # the individual deductible is populated.  For this client, derive the
+    # family total as three individual deductibles only for that explicit-zero
+    # case; a missing family row/value remains missing and is not fabricated.
+    family_deductible_derived = False
+    if _is_zero(ded_family.get("amount")) and ded_individual.get("amount") is not None:
+        try:
+            individual_amount = float(ded_individual["amount"])
+        except (TypeError, ValueError):
+            individual_amount = None
+        if individual_amount is not None:
+            family_total = round(individual_amount * 3, 2)
+            family_used = ded_family.get("used")
+            try:
+                used_amount = float(family_used) if family_used is not None else None
+            except (TypeError, ValueError):
+                used_amount = None
+            ded_family = dict(ded_family)
+            ded_family["amount"] = family_total
+            if used_amount is not None:
+                ded_family["remaining"] = max(round(family_total - used_amount, 2), 0.0)
+            elif _is_zero(ded_family.get("remaining")):
+                # When both family amount and remainder are exported as zero,
+                # they are the same placeholder sentinel covered by this rule.
+                ded_family["remaining"] = family_total
+            family_deductible_derived = True
 
     deductible_is_zero = _is_zero(ded_individual.get("amount")) and (
         ded_family.get("amount") is None or _is_zero(ded_family.get("amount"))
@@ -1261,7 +1424,7 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
     if ortho_payment_timing:
         provisions.append({"rule": "Ortho Payment Frequency", "value": ortho_payment_timing})
 
-    ortho_max_type = "Lifetime" if ortho_max.get("isLifetime") is True and ortho_covered is not False else ""
+    ortho_max_type = "Lifetime" if ortho_max.get("isLifetime") is True else ""
     ortho_ded_stated = ortho_covered is False or no_deductible or (
         "deductible does not apply" in ded_lower and "orthodontic" in ded_lower
     )
@@ -1278,6 +1441,7 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
         "name": _text(selected.get("patientName")),
         "dob": _text(selected.get("birthdate")),
         "relation": _text(selected.get("relationship")),
+        "member_id": _text((raw.get("member_details") or {}).get("memberAlternateId")),
         "group_number": combined_group,
     }
 
@@ -1308,14 +1472,17 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
             "group_number": group_number,
             "sub_group_number": sub_group,
             "combined_group_number": combined_group,
-            "member_id_available": False,
+            "member_id_available": bool(_text((raw.get("member_details") or {}).get("memberAlternateId"))),
             "family_deductible_available": ded_family.get("amount") is not None,
+            "family_deductible_derived_from_individual": family_deductible_derived,
             "family_deductible_paid_available": ded_family.get("used") is not None,
             "ortho_deductible_available": ortho_ded_stated,
             "ortho_deductible_paid_available": ortho_ded_stated,
             "ortho_covered": ortho_covered,
             "oon_stated": oon_stated,
             "age_limit_ortho": ortho_age,
+            "fee_schedule": fee_schedule,
+            "fee_schedule_network": _network_from_fee_schedule(fee_schedule),
             "major_payment_timing": major_payment_timing,
             "ortho_max_type": ortho_max_type,
             "ortho_payment_timing": ortho_payment_timing,

@@ -669,6 +669,41 @@ def _payor_id_from_site(raw: Any) -> str:
     return ""
 
 
+_FEE_SCHEDULE_KEY_RE = re.compile(r"^fee[\s_-]*schedule$", re.IGNORECASE)
+_FEE_SCHEDULE_NOTE_RE = re.compile(r"^\s*fee\s+schedule\s*:\s*(.+?)\s*$", re.IGNORECASE)
+
+
+def _fee_schedule_from_raw(raw: Any) -> str:
+    stack = [raw]
+    index = 0
+    while index < len(stack):
+        node = stack[index]
+        index += 1
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if _FEE_SCHEDULE_KEY_RE.match(str(key)) and isinstance(value, (str, int, float)) and _text(value):
+                    return _text(value)
+                stack.append(value)
+        elif isinstance(node, list):
+            stack.extend(node)
+        elif isinstance(node, str):
+            m = _FEE_SCHEDULE_NOTE_RE.match(node)
+            if m:
+                return _text(m.group(1))
+    return ""
+
+
+def _network_from_fee_schedule(fee_schedule: Any) -> str:
+    text = _text(fee_schedule)
+    if not text:
+        return ""
+    if re.search(r"\bucr\b", text, re.IGNORECASE):
+        return "Out"
+    if re.search(r"\bdelta\s*dental\b|\bpremier\b", text, re.IGNORECASE):
+        return "In"
+    return ""
+
+
 def _no_deductible_stated(raw: dict[str, Any]) -> bool:
     """True when the source explicitly says the contract has no deductible."""
     for section in ("maximums_and_deductibles", "ortho_information", "routine_procedures", "coverages"):
@@ -748,11 +783,6 @@ def _history_for_code(code: str, result: dict[str, Any], routine_by_code: dict[s
         return direct
     routine = routine_by_code.get(code.upper())
     if routine is None:
-        if (
-            _text(result.get("history_status")).upper() == "NO_HISTORY_ON_FILE"
-            and result.get("utilization_source_present") is not False
-        ):
-            return "NH"
         return None
     routine_date = _latest_service_date(routine.get("serviceDates"))
     if routine_date:
@@ -814,7 +844,7 @@ def _checklist_codes() -> frozenset[str]:
     if _CHECKLIST_CODES is None:
         codes: set[str] = set()
         try:
-            from ..sabrina.spec import _SPEC
+            from ..sabrina.carriers.delta_toolkit.spec import _SPEC
         except Exception:
             _SPEC = []
         for field in _SPEC:
@@ -997,6 +1027,7 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
     client_notes = _note_fields(client.get("notes"))
     payor_id = (
         _text(display.get("payorId"))
+        or _text(display.get("payor_id"))
         or _text(display.get("payor_plan_id"))
         or _text(display.get("plan"))
         or _payor_id_from_site(raw)
@@ -1011,6 +1042,7 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
         or _text(display.get("clientName"))
     )
     claim_address = ((raw.get("more_information") or {}).get("claim_and_inquiry_mailing_addresses") or {}).get("claimMailingAddress") or {}
+    fee_schedule = _fee_schedule_from_raw(raw)
     members = [m for m in ((raw.get("member_details") or {}).get("members") or []) if isinstance(m, dict)]
     if _text(selected.get("relationship")).lower() == "subscriber":
         subscriber = selected
@@ -1261,7 +1293,7 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
     if ortho_payment_timing:
         provisions.append({"rule": "Ortho Payment Frequency", "value": ortho_payment_timing})
 
-    ortho_max_type = "Lifetime" if ortho_max.get("isLifetime") is True and ortho_covered is not False else ""
+    ortho_max_type = "Lifetime" if ortho_max.get("isLifetime") is True else ""
     ortho_ded_stated = ortho_covered is False or no_deductible or (
         "deductible does not apply" in ded_lower and "orthodontic" in ded_lower
     )
@@ -1316,6 +1348,8 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
             "ortho_covered": ortho_covered,
             "oon_stated": oon_stated,
             "age_limit_ortho": ortho_age,
+            "fee_schedule": fee_schedule,
+            "fee_schedule_network": _network_from_fee_schedule(fee_schedule),
             "major_payment_timing": major_payment_timing,
             "ortho_max_type": ortho_max_type,
             "ortho_payment_timing": ortho_payment_timing,

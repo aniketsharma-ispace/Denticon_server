@@ -34,3 +34,11 @@ Material/
 # Local secrets - never commit
 secrets/
 *authenticator*.txt
+
+# ── Patient data: Toolkit JSONs and Sabrina PDFs used by the tests (never commit) ─
+tests/fixtures/
+tests/test_star_toolkit.py
+tests/test_toolkit_rules.py
+tests/test_delta_toolkit_new_format.py
+tests/test_delta_toolkit_sabrina.py
+tests/test_delta_toolkit_melinda.py

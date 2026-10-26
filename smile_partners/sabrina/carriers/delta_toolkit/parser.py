@@ -9,6 +9,7 @@ the value is whatever follows it, up to the next label.
 from __future__ import annotations
 
 import re
+from contextvars import ContextVar
 from shared.pdf_extractor import _extract_text
 from .spec import _SPEC
 from .common import _DEBUG, log
@@ -59,8 +60,10 @@ _OTHER_SHEET_LABELS = {_norm_label(s) for s in (
     "PPO / Indemnity / HMO Plan?",
     # Coverage block
     "Applies To", "Period", "Ortho Maximum Covered", "Ortho Payment Timing",
-    "Pre-Authorize over",
+    "Are Major Services Paid on Prep or Seat date?", "Pre-Authorize over",
     "Dependent Age Limit",
+    # Benefit Details question rows that this audit does not compare
+    "When Is First Perio Maintenance Allowed After SRP ?",
     # Section + table headers
     "Demographics", "Office Information", "Patient/Subscriber Information",
     "Insurance Information", "Coverage", "Benefit Details", "Benefit Name",
@@ -102,14 +105,26 @@ _TRIM = " \t:-–—=|"
 
 
 # A Benefit Details "Frequency" cell — "2X1Year", "1X12Months", "1XLifetime",
-# "No Frequency", "Frequency not available", "NC", "Pre-D". These sit between a CDT label and its
+# "No Frequency", "NC", "Pre-D". These sit between a CDT label and its
 # Percentage cell and must be stepped over when the field being read is a
 # coverage percentage.
 _FREQ_RE = re.compile(
     r"^(?:\d+\s*x\s*\d*\s*(?:year|month|lifetime|day|week|visit)s?"
+    r"|no\s+frequency|nc|n/c|pre[\s-]?d(?:etermination)?)$",
+    re.IGNORECASE,
+)
+
+_FREQ_RE_TOOLKIT = re.compile(
+    r"^(?:\d+\s*x\s*\d*\s*(?:year|month|lifetime|day|week|visit)s?"
     r"|no\s+frequency|frequency\s+not\s+available|nc|n/c|pre[\s-]?d(?:etermination)?)$",
     re.IGNORECASE,
 )
+
+_TOOLKIT_PARSE: ContextVar[bool] = ContextVar("sabrina_toolkit_parse", default=False)
+
+
+def _freq_match(text: str):
+    return (_FREQ_RE_TOOLKIT if _TOOLKIT_PARSE.get() else _FREQ_RE).match(text)
 
 
 def _split_lines(text: str) -> list[str]:
@@ -152,7 +167,7 @@ def _reflow_wrapped(lines: list[str]) -> list[str]:
                     if i + take > len(out):
                         continue
                     cand = " ".join(out[i:i + take])
-                    if _norm_label(cand) in _STOP_LABELS or _FREQ_RE.match(cand.strip()):
+                    if _norm_label(cand) in _STOP_LABELS or _freq_match(cand.strip()):
                         joined = (cand, take)
                         break
             if joined:
@@ -171,21 +186,6 @@ def _reflow_wrapped(lines: list[str]) -> list[str]:
 # Page furniture that sits directly after the last table row.
 _BOILERPLATE_RE = re.compile(
     r"^\s*(?:©|\(c\))|all rights reserved|verification date", re.IGNORECASE)
-
-
-def _is_stop_line(line: str) -> bool:
-    """
-    Whether a line ends the cells of the field being read: a label, a header,
-    or page furniture.
-
-    A Frequency cell is never one, even though "Frequency not available"
-    begins with the word "Frequency" — the table's own column header. Without
-    this exception every row with that cell stops reading at it and the
-    percentage after it is lost.
-    """
-    if _FREQ_RE.match(line.strip()):
-        return False
-    return not _looks_like_value(line) or _any_label_at(line.split(), 0)
 
 
 def _looks_like_value(candidate: str) -> bool:
@@ -218,6 +218,8 @@ def _any_label_at(words: list[str], i: int) -> bool:
     norm = _norm_label(words[i])
     if not norm:
         return False
+    if i == 0 and _TOOLKIT_PARSE.get() and _freq_match(" ".join(words).strip()):
+        return False
     for lbl in _LABELS_BY_FIRST.get(norm.split()[0], ()):
         if _label_span(words, i, lbl):
             return True
@@ -236,12 +238,12 @@ def _refine_inline(kind: str, inline: str) -> str | None:
         return inline
     # Whole string first, so multi-word statements survive intact ("Not Covered"
     # is a stated 0% benefit; splitting it into words loses that).
-    if not _FREQ_RE.match(inline) and _num_pct(inline) is not None:
+    if not _freq_match(inline) and _num_pct(inline) is not None:
         return inline
     # Otherwise this is a flattened row carrying several cells at once — take
     # the first token that reads as a percentage, stepping over Frequency cells.
     for token in inline.split():
-        if _FREQ_RE.match(token):
+        if _freq_match(token):
             continue
         if _num_pct(token) is not None:
             return token
@@ -269,7 +271,7 @@ def _pick_cell(kind: str, cands: list[tuple[int, str]]) -> tuple[int, str] | Non
 
     if kind == "pct":
         for m, cand in cands:
-            if _FREQ_RE.match(cand):
+            if _freq_match(cand):
                 continue                      # Frequency column — not the percentage
             if _num_pct(cand) is not None:
                 return m, cand
@@ -299,30 +301,24 @@ def _classify_row_cells(cells: list[str]) -> dict[str, str | None]:
 
     A cell after the percentage that is none of these (the Coverage column, page
     furniture) is ignored rather than guessed at.
-
-    A History cell listing several dates wraps after a comma — "06/10/2026,"
-    then "01/29/2026". `history` stays the first line, as it always has been;
-    the whole list is kept beside it as `history_wrapped`, which the audit
-    reads (see `rules._toolkit_wrapped_history`).
     """
-    freq = pct = age = hist = wrapped = None
+    freq = pct = age = hist = None
     for cell in cells:
         s = cell.strip()
         if pct is None:
-            if freq is None and _FREQ_RE.match(s):
+            if freq is None and _freq_match(s):
                 freq = s
             elif _num_pct(s) is not None:
                 pct = s
             continue
         if hist is None and (_num_date(s) is not None or s.lower() in _HISTORY_NONE):
             hist = s
-        elif (hist is not None and (wrapped or hist).endswith(",")
-              and _num_date(s) is not None):
-            wrapped = f"{wrapped or hist} {s}"
-        elif age is None and re.fullmatch(r"\d{1,3}", s):
-            age = s
-    return {"frequency": freq, "percentage": pct, "age_limit": age, "history": hist,
-            "history_wrapped": wrapped}
+        elif age is None and (
+            re.fullmatch(r"\d{1,3}", s)
+            or (_TOOLKIT_PARSE.get() and s.upper() == "NC")
+        ):
+            age = s.upper() if s.upper() == "NC" else s
+    return {"frequency": freq, "percentage": pct, "age_limit": age, "history": hist}
 
 
 def _capture_benefit_rows(lines: list[str]) -> dict[str, dict]:
@@ -334,7 +330,7 @@ def _capture_benefit_rows(lines: list[str]) -> dict[str, dict]:
     """
     rows: dict[str, dict] = {}
     for field in _SPEC:
-        if field.get("derived") or field["section"] != "Coverage by CDT Code":
+        if field.get("derived") or field.get("portal_only") or field["section"] != "Coverage by CDT Code":
             continue
         targets = sorted(
             [_norm_label(field["label"])] +
@@ -355,7 +351,7 @@ def _capture_benefit_rows(lines: list[str]) -> dict[str, dict]:
 
         cells = []
         for m in range(at + 1, min(at + 8, len(lines))):
-            if _is_stop_line(lines[m]):
+            if _any_label_at(lines[m].split(), 0) or not _looks_like_value(lines[m]):
                 break
             cells.append(lines[m])
         rows[field["key"]] = _classify_row_cells(cells)
@@ -439,7 +435,7 @@ def _find_value(lines: list[str], field: dict, cursor: dict[int, int]
                     cand = _SEP_RE.sub("", lines[m]).strip(_TRIM)
                     if not cand:
                         continue
-                    if _is_stop_line(cand):
+                    if not _looks_like_value(cand) or _any_label_at(lines[m].split(), 0):
                         break          # next label reached — no more cells for this field
                     cands.append((m, cand))
 
@@ -509,8 +505,16 @@ def sabrina_marker_count(text: str) -> int:
 #  PARSE: SABRINA PDF → {field key: raw string}
 # ══════════════════════════════════════════════════════════════════════════════
 
-def parse_sabrina_text(text: str) -> dict:
+def parse_sabrina_text(text: str, toolkit: bool = False) -> dict:
     """Pull every spec'd field out of already-extracted Sabrina PDF text."""
+    token = _TOOLKIT_PARSE.set(toolkit)
+    try:
+        return _parse_sabrina_lines(text, toolkit)
+    finally:
+        _TOOLKIT_PARSE.reset(token)
+
+
+def _parse_sabrina_lines(text: str, toolkit: bool) -> dict:
     lines = _reflow_wrapped(_split_lines(text))
 
     values: dict[str, str | None] = {}
@@ -518,7 +522,7 @@ def parse_sabrina_text(text: str) -> dict:
     missing_labels: list[str] = []
 
     for field in _SPEC:
-        if field.get("derived"):
+        if field.get("derived") or field.get("portal_only"):
             continue                     # filled in from the row pass below
         value, idx = _find_value(lines, field, cursor)
         values[field["key"]] = value
@@ -539,19 +543,12 @@ def parse_sabrina_text(text: str) -> dict:
         log.warning("Sabrina labels not found in PDF (%d): %s",
                     len(missing_labels), ", ".join(missing_labels))
 
-    # The fee schedule is not audited, but it says which Delta network an
-    # in-network office belongs to — "GA - DD GP Premier B" is Premier,
-    # "#3 MI - DD LITE Pr Reg6" is PPO — and so which Benefits Search the
-    # sheet is read against. Kept beside the fields, not among them.
-    fee_schedule, _ = _find_value(lines, {"key": "fee_schedule", "label": "Fee Schedule",
-                                          "kind": "text"}, cursor)
-
     return {
         "fields": values,
         "benefit_rows": benefit_rows,
         "labels_not_found": missing_labels,
         "line_count": len(lines),
-        "fee_schedule": fee_schedule,
+        "toolkit_parse": toolkit,
     }
 
 
