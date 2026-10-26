@@ -25,77 +25,112 @@
             margin: 20px 0;
             border-radius: 4px;
         }
+        table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+        th, td { border: 1px solid #ddd; padding: 8px 10px; text-align: left; vertical-align: top; }
+        th { background: #f5f8fc; }
+        code { background: #f3f3f3; padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
     </style>
 </head>
 <body>
 
     <h1>Privacy Policy</h1>
-    <p class="last-updated">Last updated: May 26, 2025</p>
+    <p class="last-updated">Last updated: October 26, 2026</p>
 
-    <p>This Privacy Policy describes how <strong>Insurance Auditor Pro</strong> ("the Extension") handles information when installed in the Google Chrome browser. By using this Extension, you agree to the practices described in this policy.</p>
+    <p>This Privacy Policy describes how <strong>Insurance Auditor Pro</strong> ("the Extension") handles information. The Extension is distributed for Google Chrome and Mozilla Firefox. By using the Extension, you agree to the practices described in this policy.</p>
 
     <div class="highlight">
-        <strong>Summary:</strong> This extension does not collect, transmit, or share any data with external servers. All data processed by this extension stays entirely on your local device.
+        <strong>Summary:</strong> The Extension does not send your data to the developer or to any third party. Data is read from dental insurance portals you are already signed in to, held temporarily in your browser's local storage, and exported as a file to your own device.
     </div>
 
     <h2>1. What Data Does the Extension Access?</h2>
-    <p>Insurance Auditor Pro reads the following information from supported dental insurance portals when explicitly triggered by the user:</p>
+    <p>Insurance Auditor Pro is a tool for dental professionals. When explicitly triggered by the user, it reads the following from supported dental insurance portals that the user is already authenticated to:</p>
     <ul>
-        <li><strong>Personally Identifiable Information (PII):</strong> Patient name, date of birth, email address, and phone number as displayed on the portal.</li>
-        <li><strong>Health Information:</strong> Dental insurance plan details, coverage percentages, procedure categories, and benefits information.</li>
-        <li><strong>Financial Information:</strong> Account balances, estimated insurance/patient portions, deductibles, and annual maximums as displayed on the portal.</li>
-        <li><strong>Website Content:</strong> Text content from dental portal pages (Denticon, MetLife, Cigna) required to extract the above data.</li>
+        <li><strong>Personally Identifiable Information (PII):</strong> Patient and responsible-party name, date of birth, email address, and phone number as displayed on the portal.</li>
+        <li><strong>Health Information:</strong> Dental insurance plan details, coverage percentages, procedure codes and categories, frequency limitations, waiting periods, and benefit history as displayed on the portal.</li>
+        <li><strong>Financial Information:</strong> Account balances, estimated insurance and patient portions, deductibles, and annual maximums as displayed on the portal.</li>
+        <li><strong>Website Content:</strong> Text and page data from the supported portals listed in Section 6, required to extract the above.</li>
     </ul>
+    <p>The Extension does not read pages on any website outside the list in Section 6.</p>
 
     <h2>2. How Is Data Used?</h2>
-    <p>All data accessed by the Extension is used solely for the following purposes:</p>
     <ul>
-        <li>Temporarily storing captured insurance data in the browser's local storage (<code>chrome.storage.local</code>) while the user navigates between portals.</li>
-        <li>Compiling and exporting the data as a structured JSON file to the user's local device for audit and reconciliation purposes.</li>
+        <li>Temporarily storing captured insurance data in the browser's extension storage while the user moves between portal pages and between portals.</li>
+        <li>Requesting additional benefit details from a portal's own API, using the session the user is already signed in with (see Section 4).</li>
+        <li>Compiling the result into a structured JSON file saved to the user's own device for audit and reconciliation purposes.</li>
     </ul>
 
-    <h2>3. Data Storage & Retention</h2>
+    <h2>3. Data Storage &amp; Retention</h2>
     <ul>
-        <li>Data is stored <strong>only in the user's local browser storage</strong> (<code>chrome.storage.local</code>).</li>
-        <li>Data is <strong>automatically purged</strong> from local storage immediately after the user downloads the JSON export.</li>
-        <li>No data is retained beyond a single audit session.</li>
+        <li>Data is stored only in the browser's local extension storage (<code>storage.local</code>) and session storage (<code>storage.session</code>) on the user's own machine.</li>
+        <li>Session storage is cleared automatically when the browser session ends or the portal tab is closed.</li>
+        <li>Local storage holds the current audit so it can be assembled across pages. It is cleared by the Extension during an audit run, replaced when the next audit begins, and removed entirely when the Extension is uninstalled.</li>
+        <li>Users may clear this data at any time by removing the Extension or clearing browser data for it.</li>
+        <li>No data is stored outside the user's browser and the files the user chooses to export.</li>
     </ul>
 
-    <h2>4. Data Sharing & Transmission</h2>
-    <div class="highlight">
-        <strong>This extension does NOT:</strong>
-        <ul style="margin: 8px 0 0 0;">
-            <li>Send any data to external servers, APIs, or third parties.</li>
-            <li>Sell or transfer user data to any third party.</li>
-            <li>Use data for any purpose unrelated to the extension's core insurance auditing function.</li>
-            <li>Use data to determine creditworthiness or for lending purposes.</li>
-        </ul>
-    </div>
+    <h2>4. Data Sharing &amp; Transmission</h2>
+    <p>The Extension sends network requests only to the insurance portals listed in Section 6, and only to the portal the user is actively working in. These requests carry the user's own existing signed-in session, and are the same requests the portal's own web interface makes. They are used to retrieve benefit details for the patient the user is already viewing.</p>
+    <p>The Extension does <strong>NOT</strong>:</p>
+    <ul>
+        <li>Send any data to the developer, to any analytics service, or to any server operated by or on behalf of the developer.</li>
+        <li>Sell, rent, or transfer user data to any third party.</li>
+        <li>Use data for advertising, profiling, or any purpose unrelated to the Extension's insurance auditing function.</li>
+        <li>Use data to determine creditworthiness or for lending purposes.</li>
+    </ul>
 
     <h2>5. Permissions Used</h2>
-    <ul>
-        <li><strong>storage:</strong> Used to temporarily hold audit data in local browser storage between portal sessions.</li>
-        <li><strong>activeTab:</strong> Used to detect which portal the user is currently viewing, to display correct status and route commands.</li>
-        <li><strong>downloads:</strong> Used to save the compiled JSON audit file to the user's local machine.</li>
-        <li><strong>Host permissions (denticon.com, planetdds.com, metlife.com, cigna.com):</strong> Required for content scripts to read insurance data from the supported portals.</li>
-    </ul>
+    <p>Each permission requested by the Extension and the specific reason it is required:</p>
+    <table>
+        <tr><th>Permission</th><th>Why it is needed</th></tr>
+        <tr>
+            <td><code>storage</code></td>
+            <td>Holds the in-progress audit in the browser's own extension storage while the user moves between portal pages, and holds the current portal session reference. Nothing is written outside the browser.</td>
+        </tr>
+        <tr>
+            <td><code>activeTab</code></td>
+            <td>Lets the Extension act on the portal tab the user has open at the moment they click the Extension's toolbar button.</td>
+        </tr>
+        <tr>
+            <td><code>tabs</code></td>
+            <td>Reads the active tab's URL so the Extension can tell which supported portal is open and show the correct controls, sends scrape and export commands to that tab, and detects when a portal tab is closed so its stored session reference can be discarded.</td>
+        </tr>
+        <tr>
+            <td><code>scripting</code></td>
+            <td>Runs the export routine on the supported portal page when the user clicks a button in the Extension popup.</td>
+        </tr>
+        <tr>
+            <td><code>webRequest</code></td>
+            <td>Used read-only, and only on the Cigna dental benefits API host, to observe the authorization header on the request the user's own browser already sends while signed in. This lets the Extension request that same patient's benefits from Cigna's API on the user's behalf. The Extension does not block, modify, or redirect any request, and does not observe requests on any other site.</td>
+        </tr>
+    </table>
+    <p>Host permissions are limited to the portals listed in Section 6 and are required for the Extension's content scripts to read insurance data from those portals.</p>
 
     <h2>6. Supported Portals</h2>
-    <p>The Extension only operates on the following dental insurance portals:</p>
+    <p>The Extension operates only on the following dental practice-management and insurance portals:</p>
     <ul>
-        <li>Denticon / PlanetDDS (<code>denticon.com</code>, <code>planetdds.com</code>)</li>
-        <li>MetLife Dental Provider Portal (<code>dentalprovider.metlife.com</code>)</li>
-        <li>Cigna for HCP (<code>cignaforhcp.cigna.com</code>)</li>
+        <li><strong>Denticon / PlanetDDS</strong> — denticon.com, planetdds.com</li>
+        <li><strong>MetLife Dental Provider</strong> — dentalprovider.metlife.com</li>
+        <li><strong>Cigna for Health Care Professionals</strong> — cignaforhcp.cigna.com, p-chcp.digitaledge.cigna.com</li>
+        <li><strong>Guardian</strong> — guardiananytime.com</li>
+        <li><strong>Delta Dental</strong> — deltadentalins.com, deltadentalva.com, my.deltadentalar.com, deltadentalco.com, deltadentalri.com, my.deltadentalcoversme.com, deltadentalnj.com, deltadentalwa.com, app.deltadentalil.com, www4.deltadentalwi.com</li>
+        <li><strong>Dental Office Toolkit</strong> — dentalofficetoolkit.com</li>
+        <li><strong>DentalXchange / ClaimConnect</strong> — claimconnect.dentalxchange.com, dentalxchange.com</li>
+        <li><strong>United Concordia</strong> — unitedconcordia.com</li>
+        <li><strong>DentaQuest</strong> — providers.dentaquest.com</li>
+        <li><strong>DNOA Connect</strong> — dnoaconnect.com</li>
     </ul>
 
-    <h2>7. Children's Privacy</h2>
-    <p>This Extension is intended for use by dental professionals only and is not directed at individuals under the age of 13. We do not knowingly collect data from children.</p>
+    <h2>7. Intended Users &amp; Children's Privacy</h2>
+    <p>The Extension is intended for use by dental professionals acting within their existing authorized access to these portals. It is not directed at individuals under the age of 13, and the developer does not knowingly collect data from children. Patient records handled through the Extension remain under the control of the dental practice that accesses them.</p>
 
-    <h2>8. Changes to This Policy</h2>
-    <p>We may update this Privacy Policy from time to time. Any changes will be reflected on this page with an updated "Last updated" date. Continued use of the Extension after changes constitutes acceptance of the updated policy.</p>
+    <h2>8. Your Responsibilities</h2>
+    <p>The Extension is a tool operated by the user. Users are responsible for ensuring their use of it complies with their own obligations regarding patient information, including any applicable privacy and health-information regulations, and with the terms of the portals they access.</p>
 
-    <h2>9. Contact</h2>
-    <p>If you have any questions about this Privacy Policy or the Extension's data practices, please contact the developer through the Chrome Web Store listing page.</p>
+    <h2>9. Changes to This Policy</h2>
+    <p>This Privacy Policy may be updated from time to time. Changes will be reflected on this page with an updated "Last updated" date. Continued use of the Extension after changes constitutes acceptance of the updated policy.</p>
+
+    <h2>10. Contact</h2>
+    <p>Questions about this Privacy Policy or the Extension's data practices can be directed to the developer at <a href="mailto:aniket.sharma@ispace.com">aniket.sharma@ispace.com</a>, or through the Extension's listing page on the Chrome Web Store.</p>
 
 </body>
 </html>
