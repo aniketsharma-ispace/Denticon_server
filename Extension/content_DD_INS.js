@@ -3,19 +3,39 @@
 const clean = (s) => (s || "").trim().replace(/\s+/g, ' ');
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// CDT codes to search for - split into batches of 10. Additional Batch 6 is added for new plan PDF.
-const BATCH_1 = ["D0120", "D0180", "D0140", "D0150", "D0274", "D0210", "D0330", "D0220", "D0230", "D0240"];
-const BATCH_2 = ["D1110", "D1120", "D1206", "D1351", "D1510", "D2140", "D2331", "D2620", "D2740", "D2950"];
-const BATCH_3 = ["D3310", "D3330", "D3347", "D4260", "D4341", "D4355", "D4381", "D4910", "D5110", "D7953"];
-const BATCH_4 = ["D5740", "D6010", "D6056", "D6065", "D6194", "D6245", "D7140", "D7240", "D7210", "D6750"];
-const BATCH_5 = ["D7259", "D8010", "D8080", "D8090", "D9110", "D9222", "D9230", "D9243", "D9310", "D4346"];
-const BATCH_6 = ["D9944", "D0364", "D0431", "D2391", "D2962", "D4249"];
-// Codes the breakdown sheet audits that no earlier batch asked for. Without
-// them the audit has nothing to compare the sheet's rows against and reports
-// them as never stated by the portal. D1208 has its own limit (Pre-D on Deion
-// Reid's plan) that the D1206 varnish row does not share.
-const BATCH_7 = ["D2160", "D2980", "D5212", "D5899", "D5995", "D1208"];
-console.log("Delta Dental scraper V2.0 initialized - Ready to audit benefits");
+// CDT codes to search for: every code any client's sheet in "Updated Sabrina
+// Codes & C Q's Data - All Clients" asks for, plus the Toolkit's supplemental
+// codes, read from the same bundled spec the Toolkit uses
+// (toolkit_requirements.generated.js). The list is never edited here: change
+// the workbook and regenerate the spec, and both scrapers follow.
+const REQUIREMENTS_SPEC = globalThis.__DELTA_TOOLKIT_REQUIREMENTS_SPEC__ || null;
+// The codes this scraper searched before it read the spec. Used only if the
+// spec failed to load, so a packaging mistake costs codes rather than the run.
+const LEGACY_CODES = [
+    "D0120", "D0180", "D0140", "D0150", "D0274", "D0210", "D0330", "D0220", "D0230", "D0240",
+    "D1110", "D1120", "D1206", "D1351", "D1510", "D2140", "D2331", "D2620", "D2740", "D2950",
+    "D3310", "D3330", "D3347", "D4260", "D4341", "D4355", "D4381", "D4910", "D5110", "D7953",
+    "D5740", "D6010", "D6056", "D6065", "D6194", "D6245", "D7140", "D7240", "D7210", "D6750",
+    "D7259", "D8010", "D8080", "D8090", "D9110", "D9222", "D9230", "D9243", "D9310", "D4346",
+    "D9944", "D0364", "D0431", "D2391", "D2962", "D4249",
+    "D2160", "D2980", "D5212", "D5899", "D5995", "D1208"
+];
+const SHEET_CODES = (() => {
+    const universe = REQUIREMENTS_SPEC?.code_universe;
+    const codes = [
+        ...(Array.isArray(universe?.mandatory_codes) ? universe.mandatory_codes : []),
+        ...(Array.isArray(universe?.supplemental_codes) ? universe.supplemental_codes : [])
+    ].map(code => String(code).toUpperCase()).filter(code => /^D\d{4}$/.test(code));
+    if (!codes.length) {
+        console.error("Delta Dental: requirements spec missing; searching the legacy code list only.");
+        return [...new Set(LEGACY_CODES)].sort();
+    }
+    return [...new Set(codes)].sort();
+})();
+// The search box takes ten codes at a time.
+const BATCHES = Array.from({ length: Math.ceil(SHEET_CODES.length / 10) },
+    (_, i) => SHEET_CODES.slice(i * 10, i * 10 + 10));
+console.log(`Delta Dental scraper V2.0 initialized - ${SHEET_CODES.length} sheet codes - Ready to audit benefits`);
 
 // ══════════════════════════════════════════════════════════════════════════
 // HELPER: Extract all static fields from patient card
@@ -976,8 +996,7 @@ function parseTableContent(table, code, cardEl, footnotes, expanded) {
         rows
     };
 }
-async function searchAllBatches(networkLabel) {
-    const batches = [BATCH_1, BATCH_2, BATCH_3, BATCH_4, BATCH_5, BATCH_6, BATCH_7];
+async function searchAllBatches(networkLabel, batches = BATCHES) {
     const allResults = [];
 
     for (let i = 0; i < batches.length; i++) {
@@ -1155,7 +1174,7 @@ function askProviderNetwork(patientName) {
     });
 }
 
-async function scrapeBenefitsSearchTab(choice) {
+async function scrapeBenefitsSearchTab(choice, batches = BATCHES) {
     const result = { answers: [], network: "", choice: "", error: "" };
     const isInNetwork = (text) => !!text && !OUT_OF_NETWORK_RE.test(text);
     const wanted = {
@@ -1171,7 +1190,7 @@ async function scrapeBenefitsSearchTab(choice) {
     // which may be another patient's.
     try {
         if (!findNetworkControl()) {
-            await searchBenefitCodes(BATCH_1);
+            await searchBenefitCodes(batches[0]);
             await sleep(1000);
         }
         const showing = readNetwork(findNetworkControl());
@@ -1190,9 +1209,278 @@ async function scrapeBenefitsSearchTab(choice) {
     // audit falls back to the sheet's own In Network and fee schedule.
     result.network = readNetwork(findNetworkControl());
     if (choice && wanted(result.network)) result.choice = choice;
-    result.answers = await searchAllBatches(result.network);
+    result.answers = await searchAllBatches(result.network, batches);
 
     if (result.error) console.warn(`Provider network not set: ${result.error}`);
+    return result;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Benefits from the portal's own data
+//
+// Benefits Search filters data the page already holds; typing codes into it
+// asks the server nothing. content_DD_INS_hook.js keeps those responses as the
+// page receives them, and every sheet code is answered from them in the same
+// shape the search cards are read into:
+//
+//   benefits-package   procedure → network[] (##PPO / ##PMR / ##NP) →
+//                      coverageDetail[] (level, deductible and maximum
+//                      exemption, age band) and limitation[] (the sentence
+//                      and its age band)
+//   other-procedures   codes the plan does not pay for, with the comment the
+//                      card shows ("not a benefit of most Delta Dental plans")
+//   treatment-history  claims per code; the card's service dates are the
+//                      approved ones (a denied claim is not shown)
+//
+// A code in neither list is one the search answers with "This procedure code
+// could not be recognized."
+//
+// Anything missing or belonging to another patient sends the run back to the
+// search box, so this path can only make a scrape faster, never thinner.
+// ──────────────────────────────────────────────────────────────────────────
+
+const HOOK_SOURCE = "dd-ins-hook";
+const SCRAPER_SOURCE = "dd-ins-scraper";
+const NETWORK_CODES = { ppo: "##PPO", premier: "##PMR", oon: "##NP" };
+const UNRECOGNIZED_CODE = "This procedure code could not be recognized.";
+
+function readCapturedResponses(timeoutMs = 1000) {
+    return new Promise(resolve => {
+        const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const done = (captured) => {
+            clearTimeout(timer);
+            window.removeEventListener("message", onMessage);
+            resolve(captured || {});
+        };
+        const onMessage = (event) => {
+            if (event.source !== window || event.origin !== window.location.origin) return;
+            const message = event.data;
+            if (!message || message.source !== HOOK_SOURCE || message.type !== "CAPTURED") return;
+            if (message.requestId === requestId) done(message.captured);
+        };
+        const timer = setTimeout(() => done({}), timeoutMs);
+        window.addEventListener("message", onMessage);
+        window.postMessage({ source: SCRAPER_SOURCE, type: "GET_CAPTURED", requestId }, window.location.origin);
+    });
+}
+
+const nameTokens = (name) => clean(String(name || "")).toLowerCase()
+    .replace(/[^a-z\s]/g, " ").split(/\s+/).filter(Boolean);
+
+// The package names its member; a different name means the page is still
+// showing (or has only fetched) another patient's plan.
+function samePatient(memberName, patientName) {
+    const member = nameTokens(memberName);
+    const patient = nameTokens(patientName);
+    if (!member.length || !patient.length || /^n\/?a$/i.test(clean(patientName))) return true;
+    const shorter = member.length <= patient.length ? member : patient;
+    const longer = new Set(member.length <= patient.length ? patient : member);
+    return shorter.every(token => longer.has(token));
+}
+
+// What the page has captured for this patient, waiting a little for responses
+// still in flight. Returns the reason instead when something is unusable.
+async function capturedBenefits(patientName, maxWaitMs = 10000) {
+    const start = Date.now();
+    let reason = "";
+    while (true) {
+        const captured = await readCapturedResponses();
+        const pkg = captured["benefits-package"]?.body;
+        const history = captured["treatment-history"]?.body;
+        const other = captured["other-procedures"]?.body;
+        const memberName = pkg?.member?.memberName;
+        const enrollee = pkg?.member?.enrolleeId;
+        const historyEnrollee = history?.criteria?.enrolleeId;
+
+        if (!Array.isArray(pkg?.treatment)) reason = "benefits package not captured";
+        else if (!samePatient(memberName, patientName)) reason = "benefits package is for another patient";
+        else if (!Array.isArray(history?.procedures)) reason = "treatment history not captured";
+        else if (enrollee && historyEnrollee && enrollee !== historyEnrollee) reason = "treatment history is for another patient";
+        else if (!Array.isArray(other?.treatment) && Date.now() - start < maxWaitMs) reason = "other procedures not captured";
+        else return { pkg, history, other: Array.isArray(other?.treatment) ? other : null };
+
+        if (Date.now() - start >= maxWaitMs) return { reason };
+        await sleep(500);
+    }
+}
+
+function formatCoverage(detail) {
+    if (!detail) return "N/A";
+    if (String(detail.amountType || "PERCENT").toUpperCase() === "PERCENT") {
+        const level = Number(detail.benefitCoverageLevel);
+        return Number.isFinite(level) ? `${+level.toFixed(2)}%` : "N/A";
+    }
+    const copay = Number(detail.copayAmount);
+    return Number.isFinite(copay) ? `$${copay.toFixed(2)}` : "N/A";
+}
+
+// "No" is the portal's word for "no age band"; the card prints "None".
+const ageBand = (description) => {
+    const text = clean(description);
+    return !text || /^no$/i.test(text) ? "None" : text;
+};
+
+function benefitsFromCaptured(codes, captured, choice) {
+    const networkCode = NETWORK_CODES[choice] || captured.pkg.member?.defaultNetwork || "##PPO";
+    const networkName = (captured.pkg.networksAllowed || []).find(n => n.code === networkCode)?.description ||
+        NETWORK_CHOICES.find(c => NETWORK_CODES[c.key] === networkCode)?.hint || networkCode;
+
+    const packaged = new Map();
+    for (const treatment of captured.pkg.treatment || []) {
+        for (const procedureClass of treatment.procedureClass || []) {
+            for (const procedure of procedureClass.procedure || []) {
+                const code = String(procedure?.code || "").toUpperCase();
+                if (code && !packaged.has(code)) packaged.set(code, procedure);
+            }
+        }
+    }
+    const notPaid = new Map();
+    for (const treatment of captured.other?.treatment || []) {
+        for (const procedure of treatment.procedure || []) {
+            const code = String(procedure?.code || "").toUpperCase();
+            if (code && !notPaid.has(code)) notPaid.set(code, procedure);
+        }
+    }
+    const approvedDates = new Map();
+    for (const procedure of captured.history.procedures || []) {
+        const code = String(procedure?.code || "").toUpperCase();
+        if (!code) continue;
+        const dates = approvedDates.get(code) || [];
+        for (const service of procedure.services || []) {
+            if (/denied/i.test(service?.statusCodeDescription || "")) continue;
+            const date = clean(service?.serviceDate);
+            if (date && !dates.includes(date)) dates.push(date);
+        }
+        approvedDates.set(code, dates);
+    }
+    const serviceDate = (code) => (approvedDates.get(code) || []).join(", ") || "None";
+
+    const answers = [];
+    const unanswered = [];
+    for (const code of codes) {
+        const procedure = packaged.get(code);
+        if (procedure) {
+            const network = (procedure.network || []).find(n => n.code === networkCode);
+            const detail = network?.coverageDetail?.[0];
+            // "##NP,##PMR,##PPO": the networks a limitation binds; blank binds all.
+            const appliesHere = (applicable) => {
+                const list = String(applicable || "").split(",").map(s => s.trim()).filter(Boolean);
+                return !list.length || list.includes(networkCode);
+            };
+            const description = clean(procedure.description) || "None";
+            const pre_approval = procedure.preApprovalRequired ? "Required" : "None";
+            const date = serviceDate(code);
+
+            // One card row per age band, its limitation sentences joined, as
+            // the search prints them (D0274: one row for 18+, one for children).
+            const bands = new Map();
+            for (const limitation of procedure.limitation || []) {
+                if (!appliesHere(limitation?.networksApplicable)) continue;
+                const text = clean(limitation?.frequencyLimitationText);
+                if (!text) continue;
+                const band = ageBand((limitation.sexAgeToothCode || [])
+                    .map(s => s?.sexAgeCodeDescription).find(d => ageBand(d) !== "None"));
+                if (!bands.has(band)) bands.set(band, []);
+                if (!bands.get(band).includes(text)) bands.get(band).push(text);
+            }
+            if (!bands.size) {
+                for (const coverage of network?.coverageDetail || [{}]) {
+                    const band = ageBand(coverage?.sexAgeCodeDescription);
+                    if (!bands.has(band)) bands.set(band, []);
+                }
+            }
+            const rows = [...bands].map(([band, texts]) => ({
+                description,
+                limitation: texts.join(" ") || "None",
+                service_date: date,
+                age_limits: band,
+                pre_approval
+            }));
+
+            answers.push({
+                code,
+                benefit_level: formatCoverage(detail),
+                deductible: detail ? (detail.deductibleExempted ? "Does not apply" : "Applies") : "",
+                applies_to_deductible: detail ? (detail.deductibleExempted ? "No" : "Yes") : "",
+                applies_to_maximum: detail ? (detail.maximumExempted ? "No" : "Yes") : "",
+                rows
+            });
+            continue;
+        }
+
+        const other = notPaid.get(code);
+        if (other || captured.other) {
+            if (!other) unanswered.push(code);
+            answers.push({
+                code,
+                benefit_level: "N/A",
+                deductible: "",
+                applies_to_deductible: "",
+                applies_to_maximum: "",
+                rows: [{
+                    description: other ? (clean(other.description) || "None") : UNRECOGNIZED_CODE,
+                    limitation: other ? (clean(other.comments) || "None") : "None",
+                    service_date: serviceDate(code),
+                    age_limits: "None",
+                    pre_approval: "None"
+                }]
+            });
+            continue;
+        }
+        // Not in the package and the not-paid list never arrived: only the
+        // search box can say whether the code is unpaid or unknown.
+        unanswered.push(code);
+    }
+    return { answers, network: networkName, unanswered, searchNeeded: !captured.other };
+}
+
+// Every sheet code, answered from the captured data where possible and from
+// the search box for whatever it cannot answer.
+async function scrapeBenefits(choice, patientName) {
+    const codeOrder = new Map(SHEET_CODES.map((code, i) => [code, i]));
+    const byCode = (a, b) => (codeOrder.get(a.code) ?? 1e9) - (codeOrder.get(b.code) ?? 1e9);
+    const result = { answers: [], network: "", choice: "", method: "", missing: [], error: "" };
+
+    const captured = await capturedBenefits(patientName);
+    if (captured.reason) console.warn(`Benefits not read from the page's data (${captured.reason}); using the search box.`);
+
+    let searchCodes = SHEET_CODES;
+    if (!captured.reason) {
+        const fromData = benefitsFromCaptured(SHEET_CODES, captured, choice);
+        result.answers = fromData.answers;
+        result.network = fromData.network;
+        result.choice = choice || "";
+        result.method = "api";
+        searchCodes = fromData.searchNeeded ? fromData.unanswered : [];
+        if (!fromData.searchNeeded) result.missing = fromData.unanswered;
+        console.log(`Benefits read from the page's data (${result.network}): ${result.answers.length} codes`);
+    }
+
+    if (searchCodes.length) {
+        const batches = Array.from({ length: Math.ceil(searchCodes.length / 10) },
+            (_, i) => searchCodes.slice(i * 10, i * 10 + 10));
+        const search = await scrapeBenefitsSearchTab(choice, batches);
+        const wanted = new Set(searchCodes);
+        const seen = new Set(result.answers.map(a => a.code));
+        for (const answer of search.answers) {
+            const code = String(answer?.code || "").toUpperCase();
+            if (!wanted.has(code) || seen.has(code)) continue;
+            seen.add(code);
+            result.answers.push(answer);
+        }
+        result.missing.push(...searchCodes.filter(code => !seen.has(code)));
+        result.method = result.method ? "mixed" : "dom";
+        if (!result.network) result.network = search.network;
+        if (!result.choice) result.choice = search.choice;
+        result.error = search.error;
+    }
+
+    result.answers.sort(byCode);
+    // The search box answers an unknown code with a card saying so.
+    const unrecognized = result.answers.filter(answer => (answer.rows || [])
+        .some(row => /could not be recognized/i.test(row?.description || ""))).map(answer => answer.code);
+    result.missing = [...new Set([...result.missing, ...unrecognized])]
+        .sort((a, b) => (codeOrder.get(a) ?? 1e9) - (codeOrder.get(b) ?? 1e9));
     return result;
 }
 
@@ -1312,12 +1600,21 @@ async function runDeltaDentalCrawl() {
 // Small buffer for React rendering
 await sleep(1500);
 const choice = await askProviderNetwork(auditData.primary_patient?.name);
-const search = await scrapeBenefitsSearchTab(choice);
+const search = await scrapeBenefits(choice, auditData.primary_patient?.name);
 auditData.tabs.benefits_search = search.answers;
 auditData.tabs.benefits_search_network = search.network;
 // "ppo" | "premier" | "oon"; empty when the choice could not be applied.
 auditData.tabs.benefits_search_selected = search.choice;
 if (search.error) auditData.tabs.benefits_search_network_error = search.error;
+// "api" (the page's data), "dom" (the search box) or "mixed".
+auditData.tabs.benefits_search_method = search.method;
+auditData.tabs.benefits_search_codes_requested = SHEET_CODES.join(", ");
+// Codes the portal does not recognise at all.
+auditData.tabs.benefits_search_codes_not_in_portal = search.missing.join(", ");
+auditData.tabs.benefits_search_spec = {
+    source_workbook_sha256: REQUIREMENTS_SPEC?.source_workbook_sha256 || "",
+    generated_at_utc: REQUIREMENTS_SPEC?.generated_at_utc || ""
+};
         // TREATMENT HISTORY TAB
         console.log("Scraping Treatment History tab...");
         const historyTabClicked = await clickTab("treatmentHistoryTab");
