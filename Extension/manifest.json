@@ -98,7 +98,7 @@
                 "https://www.deltadentalins.com/*"
             ],
             "js": [
-                "content_DD_INS_hook.js"
+                "content_DD_INS.js"
             ],
             "all_frames": true,
             "run_at": "document_start",
