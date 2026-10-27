@@ -62,11 +62,14 @@ _OTHER_SHEET_LABELS = {_norm_label(s) for s in (
     "D0120 Preventative", "D2160 Basic", "D2740 Major",
     "Preventative Included in Yearly Max?",
     "When Is First Perio Maintenance Allowed After SRP ?",
+    "Family Deductible Applies to Preventative", "Family Deductible Applies to Diagnostic",
+    # Read on its own and compared on D4341's row (see _srp_quads_per_day)
+    "SRP Quads per day?",
     # Section + table headers
     "Demographics", "Office Information", "Patient/Subscriber Information",
     "Insurance Information", "Coverage", "Benefit Details", "Benefit Name",
     "Frequency", "Percentage", "Age Limit", "History", "Insurance Plan Breakdown",
-    "Verification Date",
+    "Verification Date", "General Breakdown", "OralSurgery", "Oral Surgery",
 )}
 
 
@@ -174,18 +177,35 @@ _BOILERPLATE_RE = re.compile(
     r"^\s*(?:©|\(c\))|all rights reserved|verification date", re.IGNORECASE)
 
 
+# A CDT code in a line: "D0120", "(D2950)", "Periodic Exam D0120".
+_CDT_TOKEN_RE = re.compile(r"\bD\d{4}\b", re.IGNORECASE)
+
+
+# A question row that names a code without being that code's row:
+# "D0150 freq per provider?", "D9944 Bruxism only?".
+_QUESTION_RE = re.compile(
+    r"\?|share\s+freq|freq\s+per\s+provider|fee\s+per\s+provider|quads\s+per\s+day|bruxism\s+only",
+    re.IGNORECASE)
+
+
 def _is_stop_line(line: str) -> bool:
     """
     Whether a line ends the cells of the field being read: a label, a header,
-    or page furniture.
+    page furniture, or the next procedure row.
 
     A Frequency cell is never one, even though "Frequency not available"
     begins with the word "Frequency" — the table's own column header. Without
     this exception every row with that cell stops reading at it and the
     percentage after it is lost.
+
+    A line naming a CDT code always starts a row of its own, even when its
+    description is not a label this sheet knows ("Periodic Exam D0120"); no
+    cell ever holds a code.
     """
     if _FREQ_RE.match(line.strip()):
         return False
+    if _CDT_TOKEN_RE.search(line):
+        return True
     return not _looks_like_value(line) or _any_label_at(line.split(), 0)
 
 
@@ -326,41 +346,122 @@ def _classify_row_cells(cells: list[str]) -> dict[str, str | None]:
             "history_wrapped": wrapped}
 
 
+def _benefit_detail_bounds(lines: list[str]) -> tuple[int, int]:
+    """
+    The lines of Sabrina's own Benefit Details table, as (start, end).
+
+    A Delta Dental breakdown is often saved with the portal's eligibility
+    printout appended after the sheet, and that printout names CDT codes too
+    ("D7220, D7230, D7240 or D7241" under Removal of Impacted Teeth), as does
+    the coverage summary above the table ("D0120 Preventative"). A procedure
+    row is only ever read between the "Benefit Details" heading and the
+    copyright / "Verification Date" line that ends the sheet.
+    """
+    start = next((i for i, line in enumerate(lines)
+                  if _norm_label(line) == "benefit details"), 0)
+    end = next((i for i in range(start + 1, len(lines))
+                if _BOILERPLATE_RE.search(lines[i])), len(lines))
+    return start, end
+
+
+def _row_line(lines: list[str], field: dict, start: int, end: int) -> int | None:
+    """
+    The line a CDT field's row starts on, within the table.
+
+    The label or an alias first, longest first. Failing that, the row's CDT
+    code wherever the office's template puts it — "Periodic Exam D0120",
+    "Diagnostic (D0220)%", "Core Buildup (D2950) %" — except on a question
+    that merely mentions the code ("D0150 freq per provider?").
+    """
+    targets = sorted(
+        [_norm_label(field["label"])] +
+        [_norm_label(a) for a in field.get("aliases", ())],
+        key=lambda t: -len(t.split()))
+    for target in targets:
+        for i in range(start, end):
+            words = lines[i].split()
+            if any(_label_span(words, p, target) for p in range(len(words))):
+                return i
+
+    source = field.get("portal")
+    code = source[1] if isinstance(source, tuple) and len(source) > 1 and source[0] == "code" else None
+    if not code:
+        return None
+    code_re = re.compile(rf"\b{re.escape(code)}\b", re.IGNORECASE)
+    for i in range(start, end):
+        if code_re.search(lines[i]) and not _QUESTION_RE.search(lines[i]):
+            return i
+    return None
+
+
 def _capture_benefit_rows(lines: list[str]) -> dict[str, dict]:
     """
-    Read the Frequency / Age Limit / History cells for every CDT row.
+    Read the Frequency / Percentage / Age Limit / History cells for every CDT
+    row of the Benefit Details table.
 
-    Runs as its own pass: the percentage is already resolved by the main field
-    loop, and re-finding each label here keeps that verified path untouched.
+    The row's cells are the lines after its label, up to the next label,
+    header or procedure row.
     """
+    start, end = _benefit_detail_bounds(lines)
     rows: dict[str, dict] = {}
     for field in _SPEC:
         if field.get("derived") or field["section"] != "Coverage by CDT Code":
             continue
-        targets = sorted(
-            [_norm_label(field["label"])] +
-            [_norm_label(a) for a in field.get("aliases", ())],
-            key=lambda t: -len(t.split()))
-
-        at = None
-        for target in targets:
-            for i, line in enumerate(lines):
-                words = line.split()
-                if any(_label_span(words, p, target) for p in range(len(words))):
-                    at = i
-                    break
-            if at is not None:
-                break
+        at = _row_line(lines, field, start, end)
         if at is None:
             continue
 
         cells = []
-        for m in range(at + 1, min(at + 8, len(lines))):
+        for m in range(at + 1, min(at + 8, end)):
             if _is_stop_line(lines[m]):
                 break
             cells.append(lines[m])
         rows[field["key"]] = _classify_row_cells(cells)
     return rows
+
+
+def _srp_quads_per_day(lines: list[str]) -> str | None:
+    """
+    "SRP Quads per day?" where the sheet asks it as a row of its own.
+
+    One template prints the quadrant count in D4341's Age Limit cell; another
+    asks it on its own row beneath D4341 ("SRP Quads per day?" / "4"). Either
+    way it is the same answer, compared on D4341's row.
+    """
+    start, end = _benefit_detail_bounds(lines)
+    target = _norm_label("SRP Quads per day?")
+    for i in range(start, end):
+        if _norm_label(lines[i]) != target:
+            continue
+        value = lines[i + 1].strip() if i + 1 < end else ""
+        return value if re.fullmatch(r"\d{1,2}", value) else None
+    return None
+
+
+def _ortho_max_and_used(lines: list[str]) -> tuple[str, str] | None:
+    """
+    The Ortho Maximum and Orthodontics Used Amount where Sabrina prints the two
+    labels one above the other and their values after both:
+
+        Ortho Maximum / Orthodontics Used Amount $ / 1500 / 0
+
+    Read label by label, the first amount would be taken as the used amount
+    and the maximum left blank.
+    """
+    for i, line in enumerate(lines):
+        if _norm_label(line) != "ortho maximum":
+            continue
+        used = next((j for j in range(i + 1, min(i + 4, len(lines)))
+                     if _norm_label(lines[j]) == "orthodontics used amount"), None)
+        if used is None:
+            return None
+        amounts = []
+        for candidate in lines[used + 1:used + 3]:
+            if not re.fullmatch(r"\$?\s*[\d,]+(?:\.\d{1,2})?\s*", candidate):
+                break
+            amounts.append(candidate.strip().replace("$", "").replace(",", ""))
+        return (amounts[0], amounts[1]) if len(amounts) == 2 else None
+    return None
 
 
 def _anchor_line(lines: list[str], anchor: str) -> int:
@@ -374,7 +475,8 @@ def _anchor_line(lines: list[str], anchor: str) -> int:
     return 0
 
 
-def _find_value(lines: list[str], field: dict, cursor: dict[int, int]
+def _find_value(lines: list[str], field: dict, cursor: dict[int, int],
+                bounds: tuple[int, int] | None = None
                 ) -> tuple[str | None, int | None]:
     """
     Locate one field's value on the sheet.
@@ -393,6 +495,7 @@ def _find_value(lines: list[str], field: dict, cursor: dict[int, int]
     second field on a line still finds its own value and no value is read twice.
     `after` anchors a label that appears repeatedly ("Date of Birth",
     "Paid to Date($)") to the first occurrence following its section anchor.
+    `bounds` keeps the search to a (start, end) range of lines.
     """
     # Longest label first: where one label is a prefix of another the more
     # specific wins, so "D0150 Diagnostic Exam Comp" is not matched as
@@ -401,11 +504,12 @@ def _find_value(lines: list[str], field: dict, cursor: dict[int, int]
     targets += [_norm_label(a) for a in field.get("aliases", ())]
     targets.sort(key=lambda t: -len(t.split()))
 
-    start_line = _anchor_line(lines, field["after"]) if field.get("after") else 0
+    lo, hi = bounds or (0, len(lines))
+    start_line = max(_anchor_line(lines, field["after"]) if field.get("after") else 0, lo)
     blank_at: int | None = None
 
     for target in targets:
-        for i in range(start_line, len(lines)):
+        for i in range(start_line, hi):
             words = lines[i].split()
             for p in range(cursor.get(i, 0), len(words)):
                 span = _label_span(words, p, target)
@@ -434,7 +538,7 @@ def _find_value(lines: list[str], field: dict, cursor: dict[int, int]
                 # the Benefit Details table (one cell per line, empty cells
                 # omitted entirely).
                 cands: list[tuple[int, str]] = []
-                for m in range(i + 1, min(i + 8, len(lines))):
+                for m in range(i + 1, min(i + 8, hi)):
                     if cursor.get(m):
                         continue
                     cand = _SEP_RE.sub("", lines[m]).strip(_TRIM)
@@ -513,29 +617,46 @@ def sabrina_marker_count(text: str) -> int:
 def parse_sabrina_text(text: str) -> dict:
     """Pull every spec'd field out of already-extracted Sabrina PDF text."""
     lines = _reflow_wrapped(_split_lines(text))
+    table = _benefit_detail_bounds(lines)
 
     values: dict[str, str | None] = {}
     cursor: dict[int, int] = {}     # line index → words already claimed
-    missing_labels: list[str] = []
+    missing: list[tuple[str, str]] = []
 
     for field in _SPEC:
         if field.get("derived"):
             continue                     # filled in from the row pass below
-        value, idx = _find_value(lines, field, cursor)
+        cdt = field["section"] == "Coverage by CDT Code"
+        value, idx = _find_value(lines, field, cursor, bounds=table if cdt else None)
         values[field["key"]] = value
         if idx is None:
-            missing_labels.append(field["label"])
+            missing.append((field["key"], field["label"]))
 
-    # Frequency / Age Limit / History for each CDT row.
+    # Every cell of each CDT row. The table row is where the sheet states a
+    # code's coverage, so its Percentage cell is the one compared; the label
+    # pass above still stands where no row was found.
     benefit_rows = _capture_benefit_rows(lines)
+    quads = _srp_quads_per_day(lines)
+    if quads and "d4341" in benefit_rows and not benefit_rows["d4341"]["age_limit"]:
+        benefit_rows["d4341"]["age_limit"] = quads
     for row_key, columns in benefit_rows.items():
+        if columns["percentage"] is not None:
+            values[row_key] = columns["percentage"]
         values[f"{row_key}__freq"] = columns["frequency"]
         values[f"{row_key}__age"] = columns["age_limit"]
         values[f"{row_key}__hist"] = columns["history"]
     for field in _SPEC:
         if field.get("derived"):
             values.setdefault(field["key"], None)
+    if quads and not values.get("d4341__age"):
+        values["d4341__age"] = quads
 
+    ortho = _ortho_max_and_used(lines)
+    if ortho:
+        values["ortho_max"], values["ortho_max_paid"] = ortho
+
+    missing_labels = [label for key, label in missing
+                      if key not in benefit_rows and not values.get(key)]
     if _DEBUG and missing_labels:
         log.warning("Sabrina labels not found in PDF (%d): %s",
                     len(missing_labels), ", ".join(missing_labels))

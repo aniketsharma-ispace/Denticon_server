@@ -76,8 +76,12 @@ _DD_COUNT_RE = re.compile(
 #
 # The article varies by programme: "within a contract period" and "within the
 # contract period" (Deion Reid) are the same benefit year.
+#
+# Some limits say "per" rather than "within": D4341's "limited to four
+# quadrants per calendar year" is 4X1Year. Only a period may follow it — "per
+# tooth", "per quadrant" and "per lifetime" are not periods.
 _DD_PERIOD_RE = re.compile(
-    r'within\s+(?:a\s+|an\s+|the\s+)?'
+    r'(?:within|per)\s+(?:a\s+|an\s+|the\s+)?'
     r'(?:(one|two|three|four|five|six|seven|eight|nine|ten|\d+)[\s-]+)?'
     r'(?:calendar\s+|consecutive\s+)?(year|month|day(?=s?\s+period)|contract\s+period)s?',
     re.IGNORECASE)

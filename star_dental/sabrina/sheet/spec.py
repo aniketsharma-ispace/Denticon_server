@@ -56,7 +56,8 @@ _SPEC: list[dict] = [
     {"key": "patient_name",    "label": "Patient Name",    "kind": "name", "section": "Patient / Subscriber", "portal": "patient_name"},
     {"key": "patient_dob",     "label": "Date of Birth",   "kind": "date", "section": "Patient / Subscriber", "portal": "patient_dob",
      "after": "Patient Name"},
-    {"key": "member_id",       "label": "Member ID#",      "kind": "id",   "section": "Patient / Subscriber", "portal": "member_id",
+    # The subscriber's number or the patient's own — see rules._dd_member_id.
+    {"key": "member_id",       "label": "Member ID#",      "kind": "id",   "section": "Patient / Subscriber", "portal": "_member_id",
      "aliases": ["Member ID", "Member Id #", "Subscriber ID", "Member/Subscriber ID"]},
     {"key": "subscriber_name", "label": "Subscriber Name", "kind": "name", "section": "Patient / Subscriber", "portal": "subscriber_name"},
     {"key": "subscriber_dob",  "label": "Date of Birth",   "kind": "date", "section": "Patient / Subscriber", "portal": "subscriber_dob",
@@ -118,10 +119,9 @@ _SPEC: list[dict] = [
     {"key": "waiting_period", "label": "Is there a Waiting Period",  "kind": "yesno", "section": "Plan Provisions", "portal": "waiting_period",
      "aliases": ["Waiting Period", "Is there a Waiting Period?"]},
     {"key": "cob",            "label": "Coordination Of Benefits",   "kind": "cob",   "section": "Plan Provisions", "portal": "_cob",
-     "aliases": ["Coordination of Benefits", "COB"]},
+     "aliases": ["Coordination of Benefits", "COB",
+                 "Is Coordination of Benefits Nonduplication"]},
 
-    {"key": "subscriber_age_limit", "label": "Subscriber Age Limit", "kind": "agelimit", "section": "Plan Provisions", "portal": None},
-    {"key": "dep_age_limit",        "label": "Dependent Age Limit",  "kind": "agelimit", "section": "Plan Provisions", "portal": "_dep_age_limit"},
     # The breakdown's pre-authorization value is a per-carrier default
     # ("Recommended-300"), not something the portal states, so comparing
     # against it would invent mismatches. Review only.
@@ -137,6 +137,16 @@ _SPEC: list[dict] = [
      "aliases": ["Ortho Deductible", "Orthodontics Deductible Amount"]},
     {"key": "ortho_ded_paid", "label": "Orthodontics Deductible Met Amount $",  "kind": "money", "section": "Orthodontics", "portal": "_ortho_ded_met",
      "aliases": ["Ortho Deductible Met", "Orthodontics Deductible Met Amount"]},
+
+    # Star Dental's "Subscriber Age Limit?" and "Dependent Age Limit?" follow
+    # its orthodontic codes, and Sabrina prints them under Orthodontics: they
+    # are the orthodontic age ceilings for an adult and for a child (99 = no
+    # limit), not the plan's dependent age (often 26). The Toolkit audit reads
+    # them the same way.
+    {"key": "subscriber_age_limit", "label": "Subscriber Age Limit", "kind": "agelimit", "section": "Orthodontics",
+     "portal": "_ortho_subscriber_age", "aliases": ["Subscriber Age Limit?"]},
+    {"key": "dep_age_limit",        "label": "Dependent Age Limit",  "kind": "agelimit", "section": "Orthodontics",
+     "portal": "_ortho_dependent_age", "aliases": ["Dependent Age Limit?"]},
 
     # ── Clauses ──────────────────────────────────────────────────────────────
     {"key": "missing_tooth",  "label": "Does Missing Tooth Clause Apply?",     "kind": "yesno", "section": "Clauses", "portal": "missing_tooth",
@@ -163,20 +173,25 @@ _SPEC: list[dict] = [
     {"key": "major_paid_on",
      "label": "Are Major Services Paid on Prep or Seat date?", "kind": "text",
      "section": "Clauses", "portal": "_major_paid_on",
-     "aliases": ["Are Major Services Paid on Prep or Seat date"]},
+     "aliases": ["Are Major Services Paid on Prep or Seat date",
+                 "Are major paid at prep or seat date?"]},
 
-    # Star Dental's own confirmative questions. No portal export states any of
-    # them, so they are shown for review and can never be a mismatch. "SRP
-    # Quads per day?" is not here: Sabrina prints it in D4341's Age Limit cell
-    # (see _build_aspect_spec).
+    # Star Dental's own confirmative questions. Delta answers four of them in
+    # its limitation prose (see rules.py); whether D9944 is for bruxism only it
+    # never states, so that row is for review and can never be a mismatch.
+    # "SRP Quads per day?" is not here: it is compared on D4341's row (see
+    # _build_aspect_spec), wherever the sheet prints it.
     {"key": "d0150_freq_per_provider", "label": "D0150 freq per provider?", "kind": "text",
-     "section": "Clauses", "portal": None, "aliases": ["D0150 Frequency per Provider?"]},
+     "section": "Clauses", "portal": "_d0150_per_provider", "aliases": ["D0150 Frequency per Provider?"]},
     {"key": "d0120_d0140_share_freq", "label": "D0120 and D0140 share freq?", "kind": "yesno",
-     "section": "Clauses", "portal": None, "aliases": ["D0120 and D0140 Share Frequency?"]},
+     "section": "Clauses", "portal": "_share_frequency", "shares": ("D0120", "D0140"),
+     "aliases": ["D0120 and D0140 Share Frequency?"]},
     {"key": "fmx_pano_share_freq", "label": "FMX and Pano share freq?", "kind": "yesno",
-     "section": "Clauses", "portal": None, "aliases": ["FMX and Pano Share Frequency?"]},
+     "section": "Clauses", "portal": "_share_frequency", "shares": ("D0210", "D0330"),
+     "aliases": ["FMX and Pano Share Frequency?"]},
     {"key": "prophy_perio_share_freq", "label": "Prophy and Perio maintenance share freq?", "kind": "yesno",
-     "section": "Clauses", "portal": None, "aliases": ["Prophy and Perio Maintenance Share Frequency?"]},
+     "section": "Clauses", "portal": "_share_frequency", "shares": ("D1110", "D4910"),
+     "aliases": ["Prophy and Perio Maintenance Share Frequency?"]},
     {"key": "d9944_bruxism_only", "label": "D9944 Bruxism only?", "kind": "yesno",
      "section": "Clauses", "portal": None},
 
@@ -187,12 +202,18 @@ _SPEC: list[dict] = [
     # rest are labelled by the bare code, which also matches the code followed
     # by any description.
     #
-    # Each row compares a coverage percentage. Where Sabrina's label names one
-    # code but the portal commonly reports the sibling code, extra codes are
-    # listed as fallbacks and the first one the portal states is used.
+    # Offices print the rows differently — "D0120 Periodic Exam" on one
+    # template, "Periodic Exam D0120" or "Core Buildup (D2950) %" on another —
+    # so the parser also finds a row by its CDT code wherever the label puts
+    # it. Aliases are only needed where the row names no code at all.
+    #
+    # Each row compares a coverage percentage for exactly the code the sheet
+    # names: the extension reads every code on the sheet, so a sibling code
+    # never stands in. D1516 is the one exception: Sabrina's other template
+    # prints the space maintainer as D1510.
     {"key": "d0120", "label": "D0120 Periodic Exam",   "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0120")},
     {"key": "d1110", "label": "D1110 Adult Prophy",    "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1110")},
-    {"key": "d0220", "label": "D0220 Pas",             "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0220", "D0230")},
+    {"key": "d0220", "label": "D0220 Pas",             "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0220")},
     {"key": "d0230", "label": "D0230",                 "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0230")},
     {"key": "d0240", "label": "D0240",                 "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0240")},
     {"key": "d0150", "label": "D0150 Diagnostic Exam", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0150"),
@@ -201,14 +222,12 @@ _SPEC: list[dict] = [
     {"key": "d1120", "label": "D1120",                 "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1120")},
     {"key": "d0210", "label": "D0210 FMX",             "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0210")},
     {"key": "d0330", "label": "D0330 Pano",            "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0330")},
-    {"key": "d0274", "label": "D0274 Bitewings",       "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0274", "D0272")},
+    {"key": "d0274", "label": "D0274 Bitewings",       "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0274"),
+     "aliases": ["Diagnostic: XraysBitewings"]},
 
     {"key": "d1351", "label": "D1351 Sealants",         "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1351")},
-    # Cigna states one fluoride age limit, on its "Topical Fluoride" (D1208)
-    # row, and it governs the varnish too — so D1208 stands in when D1206
-    # carries no age of its own.
-    {"key": "d1206", "label": "D1206 Fluoride Varnish", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1206", "D1208")},
-    {"key": "d1208", "label": "D1208 Fluoride",         "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1208", "D1206")},
+    {"key": "d1206", "label": "D1206 Fluoride Varnish", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1206")},
+    {"key": "d1208", "label": "D1208 Fluoride",         "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1208")},
     {"key": "d0367", "label": "D0367",                  "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0367")},
     # Star Dental lists the space maintainer as D1516; Sabrina's template
     # prints D1510, so either is read.
@@ -217,13 +236,14 @@ _SPEC: list[dict] = [
 
     {"key": "d2331", "label": "D2331",                    "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D2331")},
     {"key": "d2140", "label": "D2140",                    "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D2140")},
-    {"key": "d2391", "label": "D2391 Composite Fillings", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D2391", "D2331")},
+    {"key": "d2391", "label": "D2391 Composite Fillings", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D2391")},
     {"key": "d2610", "label": "D2610",                    "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D2610")},
     {"key": "d2642", "label": "D2642",                    "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D2642")},
 
     {"key": "d4381", "label": "D4381 Arestin",                "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D4381")},
     {"key": "d4355", "label": "D4355 Full Mouth Debridement", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D4355")},
-    {"key": "d4346", "label": "D4346 Gingival Inflammation",  "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D4346")},
+    {"key": "d4346", "label": "D4346 Gingival Inflammation",  "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D4346"),
+     "aliases": ["Scaling in presence of Gingival Inflammation"]},
     {"key": "d4341", "label": "D4341 Scaling Root Planing",   "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D4341")},
     {"key": "d4910", "label": "D4910 Perio Maintenance",      "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D4910")},
 
@@ -232,19 +252,22 @@ _SPEC: list[dict] = [
     {"key": "d2950", "label": "D2950 Core Buildups", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D2950")},
 
     {"key": "d5110", "label": "D5110 Dentures",         "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D5110")},
-    {"key": "d5212", "label": "D5212 Partial Dentures", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D5212", "D5213")},
+    {"key": "d5212", "label": "D5212 Partial Dentures", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D5212")},
     {"key": "d5511", "label": "D5511",                  "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D5511")},
     {"key": "d5650", "label": "D5650",                  "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D5650")},
     {"key": "d5810", "label": "D5810",                  "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D5810")},
     {"key": "d5821", "label": "D5821",                  "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D5821")},
     {"key": "d5912", "label": "D5912",                  "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D5912")},
 
-    {"key": "d6010", "label": "D6010 Implants", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6010", "D6194")},
-    {"key": "d6104", "label": "D6104",          "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6104")},
-    {"key": "d6190", "label": "D6190",          "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6190")},
+    {"key": "d6010", "label": "D6010 Implants", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6010")},
+    # Sabrina's table drops the leading D on these two implant rows.
+    {"key": "d6104", "label": "D6104",          "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6104"),
+     "aliases": ["Implant Crown 6104"]},
+    {"key": "d6190", "label": "D6190",          "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6190"),
+     "aliases": ["Implant 6190"]},
     {"key": "d6056", "label": "D6056",          "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6056")},
-    {"key": "d6057", "label": "D6057",          "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6057", "D6056")},
-    {"key": "d6058", "label": "D6058",          "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6058", "D6065")},
+    {"key": "d6057", "label": "D6057",          "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6057")},
+    {"key": "d6058", "label": "D6058",          "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6058")},
     {"key": "d6240", "label": "D6240",          "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6240")},
     {"key": "d6245", "label": "D6245",          "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6245")},
 
@@ -252,7 +275,7 @@ _SPEC: list[dict] = [
     {"key": "d9222", "label": "D9222",                 "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D9222")},
     {"key": "d9230", "label": "D9230 Nitrous",         "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D9230")},
     {"key": "d9239", "label": "D9239",                 "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D9239")},
-    {"key": "d9243", "label": "D9243 Anesthesia",      "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D9243", "D9223", "D9222")},
+    {"key": "d9243", "label": "D9243 Anesthesia",      "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D9243")},
     {"key": "d9310", "label": "D9310",                 "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D9310")},
     {"key": "d9612", "label": "D9612",                 "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D9612")},
     {"key": "d9630", "label": "D9630",                 "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D9630")},
@@ -270,15 +293,18 @@ _SPEC: list[dict] = [
     {"key": "d4921", "label": "D4921",                 "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D4921")},
 
     {"key": "d7140", "label": "D7140 Simple Ext",   "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D7140")},
-    {"key": "d7210", "label": "D7210 Surgical Ext", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D7210", "D7240")},
+    {"key": "d7210", "label": "D7210 Surgical Ext", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D7210")},
     {"key": "d7230", "label": "D7230",              "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D7230")},
     {"key": "d7240", "label": "D7240",              "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D7240")},
     {"key": "d7310", "label": "D7310",              "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D7310")},
     {"key": "d7953", "label": "D7953",              "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D7953")},
 
-    {"key": "ortho_coverage", "label": "Ortho Coverage", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D8080", "D8090", "D8010"),
+    {"key": "ortho_coverage", "label": "Ortho Coverage", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D8080"),
      "aliases": ["Orthodontic Coverage", "Ortho %", "D8080"]},
-    {"key": "d8090", "label": "D8090", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D8090")},
+    # One template asks D8090 as a question rather than a row; its Percentage
+    # cell is the code's coverage all the same.
+    {"key": "d8090", "label": "D8090", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D8090"),
+     "aliases": ["Is D8090 Comprehensive orthodontic treatment of the adult dentition a covered benefit?"]},
     {"key": "d8220", "label": "D8220", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D8220")},
     {"key": "d8680", "label": "D8680", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D8680")},
 ]
@@ -304,8 +330,9 @@ _ASPECT_SECTION = "Coverage by CDT Code"
 # sheet" flags that were nothing of the kind — the sheet is right to leave
 # those cells empty. D4341 is in the age list for a different reason: it is
 # Star Dental's "SRP Quads per day?". Sabrina puts the QUADRANT COUNT in its
-# Age Limit column, not an age, so that row is compared as "Quads" against
-# `_d4341_quads` (see _build_aspect_spec).
+# Age Limit column, not an age — or, on another template, on a question row
+# of its own, which the parser reads into the same cell — so that row is
+# compared as "Quads" against `_d4341_quads` (see _build_aspect_spec).
 _AGE_LIMIT_CODES = {"D1206", "D1208", "D1351", "D4341"}
 
 
