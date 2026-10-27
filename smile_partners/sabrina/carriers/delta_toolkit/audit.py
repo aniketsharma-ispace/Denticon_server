@@ -24,9 +24,8 @@ from .rules import (
     _pdf_eligibility,
     _pdf_major_payment_timing,
     _pdf_ortho_coverage,
-    _pdf_ortho_max_type,
-    _pdf_ortho_payment_timing,
     _pdf_relationship,
+    _toolkit_eligibility,
     _toolkit_identity_gate,
 )
 
@@ -58,6 +57,20 @@ def _age_from_dob(dob) -> int | None:
 
 def _is_freq_not_available(value) -> bool:
     return bool(re.fullmatch(r"\s*(?:frequency\s+)?not\s+available\s*", str(value or ""), re.IGNORECASE))
+
+
+def _toolkit_row_code(field: dict, procs: dict) -> str | None:
+    """The CDT code a Toolkit row was read from: its own code, or for a row
+    with a fallback, the first of its codes the portal returned."""
+    src = field.get("portal")
+    if not (isinstance(src, tuple) and src and src[0] in ("code", "codefield")):
+        return None
+    codes = [str(c).upper() for c in (src[1:] if src[0] == "code" else src[2:])]
+    if field.get("toolkit_fallback"):
+        for code in codes:
+            if code in procs:
+                return code
+    return codes[0] if codes else None
 
 
 def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
@@ -119,10 +132,6 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             sab_raw = _pdf_major_payment_timing(sabrina_parsed.get("text", ""))
         elif portal_norm.get("_toolkit") and key == "ortho_coverage":
             sab_raw = _pdf_ortho_coverage(sabrina_parsed.get("text", ""))
-        elif portal_norm.get("_toolkit") and key == "ortho_max_type":
-            sab_raw = _pdf_ortho_max_type(sabrina_parsed.get("text", ""))
-        elif portal_norm.get("_toolkit") and key == "ortho_payment_timing":
-            sab_raw = _pdf_ortho_payment_timing(sabrina_parsed.get("text", ""))
         # Benefit Details is the canonical source for procedure percentages.
         # The same CDT label can appear in the page-1 coverage summary with a
         # different display token such as "Optional"; never let that summary
@@ -155,6 +164,13 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
 
         if sab_blank and por_blank:
             status = STATUS_NOT_STATED
+            if (
+                portal_norm.get("_toolkit")
+                and key == "term_date"
+                and _toolkit_eligibility({}, portal_norm) == "Yes"
+            ):
+                status = STATUS_MATCH
+                note = "no termination date on either side; the member is active"
         elif por_blank:
             # The portal never stated it → cannot be called a mismatch.
             status = STATUS_NOT_IN_PORTAL
@@ -189,10 +205,7 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
         # Toolkit data has a hard retrieval failure signal.  A failed CDT lookup
         # is data-unavailable, never a benefit mismatch.
         if portal_norm.get("_toolkit") and field.get("section") == "Coverage by CDT Code":
-            code_src = field.get("portal")
-            code = None
-            if isinstance(code_src, tuple) and code_src and code_src[0] in ("code", "codefield"):
-                code = str(code_src[1] if code_src[0] == "code" else code_src[2]).upper()
+            code = _toolkit_row_code(field, bd.get("procs") or {})
             if code in toolkit_failed:
                 status = STATUS_NOT_COMPARABLE
                 note = f"Toolkit lookup failed for {code}; no source benefit data was retrieved."
@@ -234,9 +247,8 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             "note": note,
         }
         if portal_norm.get("_toolkit") and field.get("section") == "Coverage by CDT Code":
-            code_src = field.get("portal")
-            if isinstance(code_src, tuple) and code_src:
-                code = str(code_src[1] if code_src[0] == "code" else code_src[2]).upper()
+            code = _toolkit_row_code(field, bd.get("procs") or {})
+            if code:
                 proc = (bd.get("procs") or {}).get(code) or {}
                 row["source_trace"] = {
                     "cdt_code": code,

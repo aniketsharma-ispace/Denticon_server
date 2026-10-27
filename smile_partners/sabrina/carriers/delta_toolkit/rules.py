@@ -39,14 +39,6 @@ def _toolkit_major_payment_timing(bd: dict, portal_raw: dict, sab_raw=None) -> s
     return _toolkit_meta_value(portal_raw, "major_payment_timing")
 
 
-def _toolkit_ortho_max_type(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
-    return _toolkit_meta_value(portal_raw, "ortho_max_type")
-
-
-def _toolkit_ortho_payment_timing(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
-    return _toolkit_meta_value(portal_raw, "ortho_payment_timing")
-
-
 def _toolkit_relationship(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """Map Toolkit relationship wording to the Sabrina sheet wording."""
     if not isinstance(portal_raw, dict) or not portal_raw.get("_toolkit"):
@@ -112,22 +104,6 @@ def _pdf_ortho_coverage(text: str) -> str | None:
     return m.group(1) if m else None
 
 
-def _pdf_ortho_max_type(text: str) -> str | None:
-    m = re.search(r"Ortho\s+Maximum\s+Covered\s+(Lifetime|Annual|Calendar Year)", text or "", re.IGNORECASE)
-    return m.group(1).title() if m else None
-
-
-def _pdf_ortho_payment_timing(text: str) -> str | None:
-    m = re.search(r"Ortho\s+Payment\s+Timing\s*[:\-]?\s*([^\n\r]+)", text or "", re.IGNORECASE)
-    if not m:
-        return None
-    value = m.group(1).strip()
-    # In the flattened Sabrina text the blank Timing cell is immediately
-    # followed by the next CDT row (for this PDF, D8090). Do not misread that
-    # row as the timing value.
-    if re.match(r"D\d{4}\b", value, re.IGNORECASE):
-        return None
-    return value or None
 
 
 def _toolkit_identity_gate(sabrina_parsed: dict, portal_norm: dict) -> tuple[bool, list[str]]:
@@ -205,6 +181,15 @@ def _toolkit_raw_section(portal_raw: dict, *path: str):
             return None
         node = node.get(step)
     return node
+
+
+def _toolkit_insurance_phone(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """Claims/inquiry phone as the Toolkit states it; None when the field is null."""
+    value = _toolkit_raw_section(
+        portal_raw, "more_information", "claim_and_inquiry_mailing_addresses", "phoneNumber")
+    if isinstance(value, (dict, list)) or _blank(value):
+        return None
+    return str(value).strip()
 
 
 def _toolkit_srp_quads_per_day(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
