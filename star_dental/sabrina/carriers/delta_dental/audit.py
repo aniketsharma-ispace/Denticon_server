@@ -15,7 +15,7 @@ from .spec import _SPEC
 from .compare import _compare
 from .portal import (_breakdown_for_sheet, _portal_breakdown, _portal_for_sheet,
                      _portal_normalized, _portal_value)
-from .rules import _dd_wrapped_history
+from .rules import _dd_member_active, _dd_wrapped_history
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -99,6 +99,9 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
 
         if sab_blank and por_blank:
             status = STATUS_NOT_STATED
+            if key == "term_date" and _dd_member_active(portal_norm):
+                status = STATUS_MATCH
+                note = "no termination date on either side; the member is active"
         elif por_blank:
             # The portal never stated it → cannot be called a mismatch.
             status = STATUS_NOT_IN_PORTAL

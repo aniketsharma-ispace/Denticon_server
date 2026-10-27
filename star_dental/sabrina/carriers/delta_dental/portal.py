@@ -16,8 +16,10 @@ import re
 from .common import _UNLIMITED_MAX
 from .vocabulary import (_blank, _coalesce_keys, _norm_network, _num_cob, _num_money,
                          _num_yesno)
-from .rules import (_dd_code_override, _dd_export, _dd_major_paid_on,
-                    _dd_network_export, _dd_perio_after_srp, _dd_selected_network)
+from .rules import (_dd_code_override, _dd_d0150_per_provider, _dd_downgraded, _dd_export,
+                    _dd_general_ortho_deductible, _dd_major_paid_on, _dd_member_id,
+                    _dd_network_export, _dd_ortho_age_limit, _dd_perio_after_srp,
+                    _dd_selected_network, _dd_shares_frequency)
 
 
 def _portal_for_sheet(portal_raw: dict, sab_fields: dict, fee_schedule=None) -> dict:
@@ -298,14 +300,19 @@ def _portal_ortho_age(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
 
 
 def _portal_ortho_ded(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
-    """Orthodontic deductible, as the breakdown states it."""
-    value = bd.get("ortho_ded")
+    """
+    Orthodontic deductible, as the breakdown states it — or the ordinary
+    deductible, where that is the one orthodontic work draws on.
+    """
+    general = _dd_general_ortho_deductible(bd, portal_raw)
+    value = general[0] if general else bd.get("ortho_ded")
     return None if _blank(value) else str(value)
 
 
 def _portal_ortho_ded_met(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
-    """Amount met against the orthodontic deductible, as the breakdown states it."""
-    value = bd.get("ortho_ded_paid")
+    """Amount met against the orthodontic deductible, read the same way."""
+    general = _dd_general_ortho_deductible(bd, portal_raw)
+    value = general[1] if general else bd.get("ortho_ded_paid")
     return None if _blank(value) else str(value)
 
 
@@ -470,6 +477,26 @@ def _portal_d4341_quads(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     return value if value.isdigit() else None
 
 
+def _portal_member_id(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """The patient's or the subscriber's member ID, whichever the sheet records."""
+    return _dd_member_id(bd, portal_raw, sab_raw)
+
+
+def _portal_d0150_per_provider(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """D0150's per-provider limit, from its limitation."""
+    return _dd_d0150_per_provider(portal_raw)
+
+
+def _portal_ortho_subscriber_age(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """Orthodontic age ceiling for an adult."""
+    return _dd_ortho_age_limit(portal_raw, adult=True, sab_raw=sab_raw)
+
+
+def _portal_ortho_dependent_age(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """Orthodontic age ceiling for a child."""
+    return _dd_ortho_age_limit(portal_raw, adult=False, sab_raw=sab_raw)
+
+
 # Portal values that must be computed rather than read from one breakdown key.
 # All three share the (breakdown, raw_portal) signature so `_portal_value` can
 # call them uniformly, even where one of the two arguments isn't needed.
@@ -489,7 +516,16 @@ _DERIVED = {
     "_perio_after_srp": _portal_perio_after_srp,
     "_d4341_quads": _portal_d4341_quads,
     "_dep_age_limit": _portal_dep_age_limit,
+    "_member_id": _portal_member_id,
+    "_d0150_per_provider": _portal_d0150_per_provider,
+    "_ortho_subscriber_age": _portal_ortho_subscriber_age,
+    "_ortho_dependent_age": _portal_ortho_dependent_age,
 }
+
+
+def _first_stated(procs: dict, codes: tuple[str, ...]) -> dict | None:
+    """The first of `codes` the portal reports."""
+    return next((procs[c.upper()] for c in codes if (procs or {}).get(c.upper())), None)
 
 
 def _portal_value(field: dict, bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
@@ -497,12 +533,19 @@ def _portal_value(field: dict, bd: dict, portal_raw: dict, sab_raw=None) -> str 
     src = field.get("portal")
     if src is None:
         return None
+    procs = bd.get("procs", {})
     if isinstance(src, tuple) and src and src[0] == "code":
-        return _pct_from_procs(bd.get("procs", {}), src[1:])
+        if _dd_downgraded(_first_stated(procs, src[1:])):
+            return "Not Covered"
+        return _pct_from_procs(procs, src[1:])
     if isinstance(src, tuple) and src and src[0] == "codefield":
-        value = _procfield_from_procs(bd.get("procs", {}), src[1], src[2:])
+        if src[1] == "frequency_limit" and _dd_downgraded(_first_stated(procs, src[2:])):
+            return "NC"
+        value = _procfield_from_procs(procs, src[1], src[2:])
         handled, corrected = _dd_code_override(value, portal_raw, src[2:], src[1], sab_raw)
         return corrected if handled else value
+    if src == "_share_frequency":
+        return _dd_shares_frequency(portal_raw, *field["shares"])
     if isinstance(src, str) and src in _DERIVED:
         return _DERIVED[src](bd, portal_raw, sab_raw)
     val = bd.get(src) if isinstance(src, str) else None

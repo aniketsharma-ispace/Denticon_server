@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "Insurance Auditor Pro",
-    "version": "1.46",
+    "version": "1.47",
     "permissions": [
         "storage",
         "activeTab",
@@ -98,6 +98,18 @@
                 "https://www.deltadentalins.com/*"
             ],
             "js": [
+                "content_DD_INS.js"
+            ],
+            "all_frames": true,
+            "run_at": "document_start",
+            "world": "MAIN"
+        },
+        {
+            "matches": [
+                "https://www.deltadentalins.com/*"
+            ],
+            "js": [
+                "toolkit_requirements.generated.js",
                 "content_DD_INS.js"
             ],
             "all_frames": true

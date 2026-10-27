@@ -177,6 +177,182 @@ def _dd_major_paid_on(portal_raw: dict) -> str | None:
     return None
 
 
+def _dd_pays(proc: dict | None) -> bool:
+    """Whether Delta pays anything for a translated procedure."""
+    level = str((proc or {}).get("benefit_level") or "").lower()
+    m = re.search(r"(\d+(?:\.\d+)?)\s*%", level)
+    return bool(m) and float(m.group(1)) > 0 and "not covered" not in level
+
+
+def _dd_downgraded(proc: dict | None) -> bool:
+    """
+    Whether Delta pays this code only at another code's benefit.
+
+    For a posterior composite Delta says "it is not a benefit of the member's
+    plan. When amalgam restorations are a benefit, the applicable amalgam
+    benefit will be applied." The translation fills in the amalgam's benefit
+    (D2391 at D2140's 80%) for the readers that want the substitution. Star
+    Dental's sheet records the composite itself as Delta states it — NC, 0 —
+    and answers the substitution on "Posterior composite downgrade?" instead,
+    so this sheet reads such a code as not covered.
+    """
+    return bool((proc or {}).get("alternate_benefit_from"))
+
+
+def _dd_shares_frequency(portal_raw: dict, code_a: str, code_b: str) -> str | None:
+    """
+    Whether two codes draw on one frequency limit, as Delta's prose says.
+
+    Delta states a shared limit in one of two ways: one code's limitation names
+    the other ("either one (D0210) intraoral complete series, or (D0330)
+    panoramic radiographic image"; "two of any prophylaxis procedures … for
+    codes D1110, D1120, D4346, D4355, and D4910"), or both codes carry the same
+    pooled sentence ("two of any oral evaluation procedure within a calendar
+    year"). Limits stated separately are not shared. A code Delta does not pay
+    for, or that states no limit, settles nothing.
+    """
+    a, b = _dd_procedure(portal_raw, code_a), _dd_procedure(portal_raw, code_b)
+    if not (_dd_pays(a) and _dd_pays(b)):
+        return None
+    text_a = re.sub(r"\s+", " ", str(a.get("limitation") or "")).strip()
+    text_b = re.sub(r"\s+", " ", str(b.get("limitation") or "")).strip()
+    if not text_a or not text_b:
+        return None
+    if re.search(rf"\b{code_b}\b", text_a) or re.search(rf"\b{code_a}\b", text_b):
+        return "Yes"
+    if text_a.lower() == text_b.lower() and re.search(r"\b(?:any|either)\b", text_a, re.IGNORECASE):
+        return "Yes"
+    return "No"
+
+
+_DD_COUNT_WORDS = {"once": 1, "twice": 2, "one": 1, "two": 2, "three": 3, "four": 4}
+
+
+# "This procedure is a benefit once per provider per lifetime." The count is
+# the one nearest "per provider": the scraper may join that sentence to the
+# one before it without a full stop ("… within a calendar year This procedure
+# is a benefit once per provider …"), and the earlier count is not this limit.
+_DD_PER_PROVIDER_RE = re.compile(
+    r"(?:limited to|is a benefit)\s+(once|twice|one|two|three|four|\d+)\b"
+    r"(?:(?!limited to|is a benefit)[^.])*?\bper\s+(?:provider|dentist|office|location)\b",
+    re.IGNORECASE)
+
+
+def _dd_d0150_per_provider(portal_raw: dict) -> str | None:
+    """
+    "D0150 freq per provider?" — the sheet's "1XProvider".
+
+    Delta adds the per-provider limit to D0150's limitation: "Benefit is
+    limited to two of any oral evaluation procedure within a calendar year
+    This procedure is a benefit once per provider per lifetime." Where it says
+    nothing of the kind, nothing is stated.
+    """
+    proc = _dd_procedure(portal_raw, "D0150")
+    m = _DD_PER_PROVIDER_RE.search(str((proc or {}).get("limitation") or ""))
+    if not m:
+        return None
+    word = m.group(1).lower()
+    count = int(word) if word.isdigit() else _DD_COUNT_WORDS[word]
+    return f"{count}XProvider"
+
+
+def _dd_provision(portal_raw: dict, name: str) -> str:
+    """A plan provision's text, by the start of its name; "" where there is none."""
+    ml = (portal_raw or {}).get("metlife_data") or {}
+    for prov in ml.get("provisions") or []:
+        if isinstance(prov, dict) and str(prov.get("rule") or "").lower().startswith(name.lower()):
+            return re.sub(r"\s+", " ", str(prov.get("value") or "")).strip()
+    return ""
+
+
+def _dd_ortho_age_limit(portal_raw: dict, adult: bool, sab_raw=None) -> str | None:
+    """
+    The orthodontic age ceiling — Star Dental's "Subscriber Age Limit?" for an
+    adult, "Dependent Age Limit?" for a child — with 99 meaning none.
+
+    Delta states it in the "Orthodontic Age Limit" provision ("Child and adult
+    ;no age limit", "Child to age 19") and, for a child, sometimes as an age
+    band on D8080. Where that class's orthodontics is not covered at all (no
+    D8090 benefit for an adult) there is no age to state, and the sheet's 0 is
+    compared as with any code Delta does not pay for. Where the provision is
+    only the portal's "Click here for age limits." link, the limit sits behind
+    it and nothing is stated.
+    """
+    proc = _dd_procedure(portal_raw, "D8090" if adult else "D8080")
+    text = _dd_provision(portal_raw, "Orthodontic Age Limit").lower()
+    not_covered = (proc is not None and not _dd_pays(proc)) or "not a covered benefit" in text
+    if not_covered:
+        return None if _blank(sab_raw) else "0"
+    if "no age limit" in text and (not adult or "adult" in text or "child" not in text):
+        return "99"
+    m = re.search(r"\bage\s*(\d{1,2})\b", text)
+    if m and (not adult or "adult" in text):
+        return m.group(1)
+    if not adult:
+        band = str((proc or {}).get("age_limit") or "").strip()
+        if band.isdigit() and int(band) < 99:
+            return band
+    return None
+
+
+def _dd_member_id(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """
+    The member ID, as this sheet records it.
+
+    Delta numbers a family once and suffixes each member — …001 for the
+    subscriber, …002 for a spouse. The translation reports the subscriber's,
+    the number the policy is filed under; a Star Dental sheet for a dependent
+    may record the patient's own instead. Both identify the patient's coverage,
+    so whichever of the two the sheet names is reported, and the subscriber's
+    otherwise.
+    """
+    subscriber = None if _blank(bd.get("member_id")) else str(bd.get("member_id")).strip()
+    raw = (portal_raw or {}).get("_raw_export") or {}
+    fields = (raw.get("primary_patient") or {}).get("static_fields") or {}
+    own = next((str(v).strip() for k, v in fields.items()
+                if str(k).strip().lower() == "member id" and not _blank(v)), None)
+    sheet = re.sub(r"\D", "", str(sab_raw or ""))
+    for candidate in (own, subscriber):
+        if candidate and sheet and re.sub(r"\D", "", candidate) == sheet:
+            return candidate
+    return subscriber or own
+
+
+def _dd_general_ortho_deductible(bd: dict, portal_raw: dict) -> tuple[str, str] | None:
+    """
+    The orthodontic deductible and amount met, where the plan has no separate
+    orthodontic deductible.
+
+    Delta lists the treatment types each deductible applies to. Where the
+    ordinary individual deductible names Orthodontics among them, orthodontic
+    work draws on that same deductible, and the sheet records it as the
+    orthodontic deductible. A separate orthodontic deductible, which the
+    translation reads on its own, stands.
+    """
+    if ((portal_raw or {}).get("_dd_meta") or {}).get("ortho_deductible"):
+        return None
+    if not (_dd_pays(_dd_procedure(portal_raw, "D8080")) or _dd_pays(_dd_procedure(portal_raw, "D8090"))):
+        return None
+    raw = (portal_raw or {}).get("_raw_export") or {}
+    overview = (raw.get("tabs") or {}).get("overview") or {}
+    for record in overview.get("deductibles") or []:
+        if not isinstance(record, dict) or "individual" not in str(record.get("type") or "").lower():
+            continue
+        if any("orthodont" in str(t).lower() for t in record.get("treatment_types") or []):
+            total, used = bd.get("indiv_ded"), bd.get("indiv_ded_paid")
+            return None if _blank(total) else (str(total), "" if _blank(used) else str(used))
+    return None
+
+
+def _dd_member_active(portal_raw: dict) -> bool:
+    """Whether the patient's coverage runs to the present ("08/09/2021 - present")."""
+    raw = (portal_raw or {}).get("_raw_export") or {}
+    fields = (raw.get("primary_patient") or {}).get("static_fields") or {}
+    eligibility = next((str(v) for k, v in fields.items()
+                        if str(k).strip().lower() == "member eligibility"), "")
+    return bool(re.search(r"-\s*present\s*$", eligibility, re.IGNORECASE))
+
+
 # "Prophylaxis procedures are a benefit following active periodontal therapy
 # once a 30 day post-operative period has completed."
 _DD_POST_OP_RE = re.compile(r"(\d+)[\s-]*day\s+post[\s-]*operative\s+period", re.IGNORECASE)
