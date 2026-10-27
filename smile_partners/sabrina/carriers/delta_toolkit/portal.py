@@ -14,10 +14,9 @@ from .common import _UNLIMITED_MAX
 from .vocabulary import _blank, _coalesce_keys, _norm_network, _num_cob, _num_money
 from .rules import (
     _toolkit_eligibility,
+    _toolkit_insurance_phone,
     _toolkit_major_payment_timing,
     _toolkit_meta_value,
-    _toolkit_ortho_max_type,
-    _toolkit_ortho_payment_timing,
     _toolkit_perio_after_srp,
     _toolkit_relationship,
     _toolkit_srp_quads_per_day,
@@ -444,8 +443,7 @@ _DERIVED = {
     "_toolkit_eligibility": _toolkit_eligibility,
     "_toolkit_relationship": _toolkit_relationship,
     "_toolkit_major_payment_timing": _toolkit_major_payment_timing,
-    "_toolkit_ortho_max_type": _toolkit_ortho_max_type,
-    "_toolkit_ortho_payment_timing": _toolkit_ortho_payment_timing,
+    "_toolkit_insurance_phone": _toolkit_insurance_phone,
     "_toolkit_srp_quads_per_day": _toolkit_srp_quads_per_day,
     "_toolkit_perio_after_srp": _toolkit_perio_after_srp,
 }
@@ -456,15 +454,19 @@ def _portal_value(field: dict, bd: dict, portal_raw: dict, sab_raw=None) -> str 
     src = field.get("portal")
     if src is None:
         return None
+    # Toolkit comparison is exact CDT-to-CDT, unless the spec row opts in to
+    # its fallback code (the D1510/D1516 space maintainer row).
+    exact = (isinstance(portal_raw, dict) and portal_raw.get("_toolkit")
+             and not field.get("toolkit_fallback"))
     if isinstance(src, tuple) and src and src[0] == "code":
         codes = src[1:]
-        if isinstance(portal_raw, dict) and portal_raw.get("_toolkit"):
-            codes = codes[:1]  # Toolkit comparison is exact CDT-to-CDT only.
+        if exact:
+            codes = codes[:1]
         return _pct_from_procs(bd.get("procs", {}), codes)
     if isinstance(src, tuple) and src and src[0] == "codefield":
         codes = src[2:]
-        if isinstance(portal_raw, dict) and portal_raw.get("_toolkit"):
-            codes = codes[:1]  # no fallback code for Toolkit
+        if exact:
+            codes = codes[:1]
         return _procfield_from_procs(bd.get("procs", {}), src[1], codes)
     if isinstance(src, str) and src in _DERIVED:
         return _DERIVED[src](bd, portal_raw, sab_raw)

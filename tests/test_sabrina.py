@@ -2973,7 +2973,7 @@ _tk_sheet = {"fields": {
     "patient_name": "Jane Doe", "patient_dob": "01/15/1985", "group_number": "12345-0001",
     "payor_id": "DDPMI", "yearly_max": "1500.00", "yearly_max_paid": "250.00",
     "indiv_ded": "50.00", "family_ded": "150.00", "ded_prev": "No",
-    "pct_prev": "100%", "pct_basic": "80%", "pct_major": "50%",
+    "d0120": "100%", "d2160": "80%", "d2740": "50%",
     "major_payment_timing": "Seat Date",
     "d0120__freq": "2X1Year", "d0120__hist": "03/10/2026", "d1110__hist": "NH",
     "d2740__freq": "1X5Years", "ortho_coverage": "0%", "d9944": "100%",
@@ -2986,9 +2986,9 @@ check("without the Delta page inside the PDF the identity gate holds back every 
       (_tk_res["diagnostics"]["toolkit"]["identity_valid"],
        {r["status"] for s in _tk_res["sections"] for r in s["rows"]} - {"not_comparable"}),
       (False, set()))
-check("headline percentages are the named codes' own",
-      tuple(_tk_rows[k]["portal"] for k in ("pct_prev", "pct_basic", "pct_major")),
-      ("100%", "80%", "50%"))
+check("the sheet's D0120 / D2160 / D2740 rows read their own codes",
+      tuple(_tk_rows[k]["portal"] for k in ("d0120", "d2160", "d2740")),
+      ("100", "80", "50"))
 check("a code whose Toolkit lookup failed is never a mismatch",
       (_tk_rows["d9944"]["status"] != "mismatch", _tk_res["diagnostics"]["toolkit"]["failed_codes"]),
       (True, ["D9944"]))
