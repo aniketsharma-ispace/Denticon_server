@@ -103,13 +103,13 @@
     const clean = (s) => (s || "").trim().replace(/\s+/g, ' ');
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-    // CDT codes to search for: every code any client's sheet in "Updated Sabrina
+    // CDT codes to export: every code any client's sheet in "Updated Sabrina
     // Codes & C Q's Data - All Clients" asks for, plus the Toolkit's supplemental
     // codes, read from the same bundled spec the Toolkit uses
     // (toolkit_requirements.generated.js). The list is never edited here: change
     // the workbook and regenerate the spec, and both scrapers follow.
     const REQUIREMENTS_SPEC = globalThis.__DELTA_TOOLKIT_REQUIREMENTS_SPEC__ || null;
-    // The codes this scraper searched before it read the spec. Used only if the
+    // The codes this scraper covered before it read the spec. Used only if the
     // spec failed to load, so a packaging mistake costs codes rather than the run.
     const LEGACY_CODES = [
         "D0120", "D0180", "D0140", "D0150", "D0274", "D0210", "D0330", "D0220", "D0230", "D0240",
@@ -127,14 +127,11 @@
             ...(Array.isArray(universe?.supplemental_codes) ? universe.supplemental_codes : [])
         ].map(code => String(code).toUpperCase()).filter(code => /^D\d{4}$/.test(code));
         if (!codes.length) {
-            console.error("Delta Dental: requirements spec missing; searching the legacy code list only.");
+            console.error("Delta Dental: requirements spec missing; exporting the legacy code list only.");
             return [...new Set(LEGACY_CODES)].sort();
         }
         return [...new Set(codes)].sort();
     })();
-    // The search box takes ten codes at a time.
-    const BATCHES = Array.from({ length: Math.ceil(SHEET_CODES.length / 10) },
-        (_, i) => SHEET_CODES.slice(i * 10, i * 10 + 10));
     console.log(`Delta Dental scraper V2.0 initialized - ${SHEET_CODES.length} sheet codes - Ready to audit benefits`);
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -738,471 +735,14 @@
 
         return { headers, rows };
     }
-    // ══════════════════════════════════════════════════════════════════════════
-    // STEP 6: BENEFITS SEARCH TAB SCRAPER
-    // ══════════════════════════════════════════════════════════════════════════
-
-    async function searchBenefitCodes(codes) {
-        const searchInput = document.querySelector('[data-testid="autocompleteSearchInput"]');
-        const searchButton = document.querySelector('[data-testid="autocompleteSearchButton"]');
-
-        if (!searchInput || !searchButton) {
-            console.warn("Cannot find search input or button");
-            return [];
-        }
-
-    // Activate the input first
-    searchInput.focus();
-    searchInput.click();
-    await sleep(500);
-
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-
-    setter.call(searchInput, "");
-    searchInput.dispatchEvent(new Event("input", { bubbles: true }));
-    searchInput.dispatchEvent(new Event("change", { bubbles: true }));
-    await sleep(800);
-
-    const codeString = codes.join(",");
-    console.log(`Searching batch: ${codeString}`);
-
-    setter.call(searchInput, codeString);
-    searchInput.dispatchEvent(new Event("input", { bubbles: true }));
-    searchInput.dispatchEvent(new Event("change", { bubbles: true }));
-    await sleep(800);
-
-    // Guard: if React stomped the value, retry once
-    if (searchInput.value !== codeString) {
-        setter.call(searchInput, codeString);
-        searchInput.dispatchEvent(new Event("input", { bubbles: true }));
-        searchInput.dispatchEvent(new Event("change", { bubbles: true }));
-        await sleep(500);
-    }
-
-    searchButton.click();
-
-        // Wait for all results to render (~500ms per code + 2s base)
-        await sleep(2000 + codes.length * 500);
-
-        const container = document.querySelector('.search-results-root');
-        if (!container) return [];
-
-        const footnotes = collectFootnoteDefinitions(container);
-        const expanded = await expandLimitationLinks(container);
-
-        return parseMultipleBenefitResults(container, footnotes, expanded);
-    }
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // Footnotes
-    //
-    // Each result card prints "Contract benefit level percentage covered by Delta
-    // Dental" followed by superscript numbers, and the numbers are footed out once
-    // at the bottom of the page:
-    //
-    //     1 Amount does not apply to deductible
-    //     2 Amount does not apply to maximum
-    //
-    // The card text alone never contains those sentences, so reading it always
-    // concluded that both applied. Whether the deductible comes out of preventive
-    // and diagnostic work, and whether preventive draws the annual maximum down,
-    // are read off exactly these two footnotes.
-    // ──────────────────────────────────────────────────────────────────────────
-
-    function collectFootnoteDefinitions(container) {
-        const definitions = {};
-        const text = (container.innerText || "");
-        const re = /(?:^|\n)\s*(\d)\s*(Amount does not apply to [^\n]+)/g;
-        let m;
-        while ((m = re.exec(text)) !== null) {
-            definitions[m[1]] = clean(m[2]);
-        }
-        return definitions;
-    }
-
-    function cardFootnoteMarkers(cardEl) {
-        if (!cardEl) return [];
-        const sups = Array.from(cardEl.querySelectorAll("sup"))
-            .map(el => clean(el.innerText))
-            .filter(t => /^\d$/.test(t));
-        if (sups.length) return Array.from(new Set(sups));
-        // Some builds render the markers as plain text rather than <sup>.
-        const m = (cardEl.innerText || "").match(/covered by Delta Dental\s*([\d\s]+)/);
-        if (!m) return [];
-        return Array.from(new Set(
-            m[1].trim().split(/\s+/).filter(t => /^\d$/.test(t))));
-    }
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // "Limitations apply"
-    //
-    // Where a code carries more than one limitation Delta shows a link reading
-    // "Limitations apply" instead of the sentence, and the sentences only appear
-    // once it is opened. A cell that reads exactly that and nothing else is the
-    // portal withholding the limit, so each one is opened and read.
-    //
-    // Anything unexpected leaves the page as it was and the code keeps whatever
-    // the cell already said, so a change to the portal can only cost this detail —
-    // never the scrape.
-    // ──────────────────────────────────────────────────────────────────────────
-
-    function codeForElement(el, container) {
-        let node = el;
-        while (node && node !== container) {
-            const m = (node.innerText || "").match(/\b(D\d{3,4})\b/);
-            if (m) return m[1];
-            node = node.parentElement;
-        }
-        return null;
-    }
-
-    function readLimitationPanel(container) {
-        // The opened panel repeats the code as a heading and lists the limitations
-        // in a table whose first column is "Limitation".
-        const tables = Array.from(document.querySelectorAll("table"))
-            .filter(t => !container.contains(t));
-        const sentences = [];
-        tables.forEach(table => {
-            const headers = Array.from(table.querySelectorAll("thead th, thead td"))
-                .map(th => clean(th.innerText).toLowerCase());
-            if (!headers.length || headers[0] !== "limitation") return;
-            table.querySelectorAll("tbody tr").forEach(row => {
-                const first = row.querySelector("th, td");
-                const text = clean(first ? first.innerText : "");
-                if (text && !/^limitations apply$/i.test(text)) sentences.push(text);
-            });
-        });
-        return sentences;
-    }
-
-    function dismissLimitationPanel() {
-        const close = document.querySelector(
-            '[data-testid*="close"], [aria-label*="lose"], .modal-close, button.close');
-        if (close) {
-            close.click();
-            return;
-        }
-        document.body.dispatchEvent(
-            new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    }
-
-    async function expandLimitationLinks(container) {
-        const expanded = new Map();
-        let cells;
-        try {
-            cells = Array.from(container.querySelectorAll("td, th"))
-                .filter(cell => /^limitations apply$/i.test(clean(cell.innerText)));
-        } catch (e) {
-            return expanded;
-        }
-
-        for (const cell of cells) {
-            try {
-                const code = codeForElement(cell, container);
-                if (!code || expanded.has(code)) continue;
-                const target = cell.querySelector("a, button") || cell;
-                target.click();
-                await sleep(1200);
-                const sentences = readLimitationPanel(container);
-                if (sentences.length) {
-                    expanded.set(code, sentences.join(" "));
-                    console.log(`Limitations for ${code}: ${sentences.join(" | ")}`);
-                }
-                dismissLimitationPanel();
-                await sleep(600);
-            } catch (e) {
-                console.warn("Could not open a limitation link:", e);
-                try { dismissLimitationPanel(); } catch (e2) { /* nothing to close */ }
-            }
-        }
-        return expanded;
-    }
-
-    function parseMultipleBenefitResults(container, footnotes, expanded) {
-        footnotes = footnotes || {};
-        expanded = expanded || new Map();
-        const resultsByCode = new Map();
-
-        const addResult = (parsed) => {
-            if (!parsed) return;
-
-            if (resultsByCode.has(parsed.code)) {
-                const existing = resultsByCode.get(parsed.code);
-
-                // Merge rows for duplicate codes
-                existing.rows.push(...parsed.rows);
-
-                // Keep the first valid benefit level if current is N/A
-                if (
-                    existing.benefit_level === "N/A" &&
-                    parsed.benefit_level !== "N/A"
-                ) {
-                    existing.benefit_level = parsed.benefit_level;
-                }
-
-                // Prefer "Does not apply" if any table reports it
-                if (parsed.deductible === "Does not apply") {
-                    existing.deductible = "Does not apply";
-                }
-                ["applies_to_deductible", "applies_to_maximum"].forEach(key => {
-                    if (!existing[key] && parsed[key]) existing[key] = parsed[key];
-                });
-            } else {
-                resultsByCode.set(parsed.code, parsed);
-            }
-        };
-
-        // ───────────────────────────────────────────────────────────
-        // Strategy 1: each direct child is one result card
-        // ───────────────────────────────────────────────────────────
-        const directChildren = Array.from(container.children)
-            .filter(el => /\bD\d{3,4}\b/.test(el.innerText));
-
-        if (directChildren.length > 0) {
-            directChildren.forEach(card => {
-                const match = (card.innerText || "").match(/\b(D\d{3,4})\b/);
-                if (!match) return;
-
-                const code = match[1];
-
-                card.querySelectorAll("table").forEach(table => {
-                    const parsed = parseTableContent(table, code, card, footnotes, expanded);
-                    addResult(parsed);
-                });
-            });
-
-            if (resultsByCode.size > 0) {
-                return Array.from(resultsByCode.values());
-            }
-        }
-
-        // ───────────────────────────────────────────────────────────
-        // Strategy 2: find cards from tables
-        // ───────────────────────────────────────────────────────────
-        const seen = new Set();
-
-        container.querySelectorAll("table").forEach(table => {
-            let card = table;
-
-            while (card.parentElement && card.parentElement !== container) {
-                card = card.parentElement;
-            }
-
-            if (seen.has(card)) return;
-            seen.add(card);
-
-            const match = (card.innerText || "").match(/\b(D\d{3,4})\b/);
-            if (!match) return;
-
-            const code = match[1];
-
-            card.querySelectorAll("table").forEach(t => {
-                const parsed = parseTableContent(t, code, card, footnotes, expanded);
-                addResult(parsed);
-            });
-        });
-
-        return Array.from(resultsByCode.values());
-    }
-
-    function parseTableContent(table, code, cardEl, footnotes, expanded) {
-        // cardEl is the isolated card element for this code — use it for metadata
-        footnotes = footnotes || {};
-        expanded = expanded || new Map();
-        const contextText = (cardEl || table).innerText || "";
-
-        const pctMatch = contextText.match(/(\d+)%/);
-        const benefit_level = pctMatch ? pctMatch[1] + "%" : "N/A";
-
-        // The card's superscripts, resolved against the page's footnote list.
-        const notes = cardFootnoteMarkers(cardEl)
-            .map(marker => (footnotes[marker] || "").toLowerCase());
-        const footnotesRead = Object.keys(footnotes).length > 0;
-        const notDeductible = notes.some(t => t.includes("deductible")) ||
-            contextText.includes("Amount does not apply to deductible");
-        const notMaximum = notes.some(t => t.includes("maximum"));
-
-        const deductible = notDeductible ? "Does not apply" : "Applies";
-        // Left empty where no footnote list was found at all, so that an export
-        // made by an older build reads as "the portal did not say" rather than as
-        // a confident "Yes".
-        const applies_to_deductible = footnotesRead ? (notDeductible ? "No" : "Yes") : "";
-        const applies_to_maximum = footnotesRead ? (notMaximum ? "No" : "Yes") : "";
-
-        // The sentence behind the "Limitations apply" link, where one was read.
-        const expandedLimitation = expanded.get(code) || "";
-        const withLimitation = (stated) => {
-            if (!expandedLimitation) return stated;
-            if (!stated || stated === "None" || /^limitations apply$/i.test(stated)) {
-                return expandedLimitation;
-            }
-            return stated;
-        };
-
-        const headers = [];
-        table.querySelectorAll("thead th, thead td").forEach(th => {
-            headers.push(clean(th.innerText).toLowerCase());
-        });
-
-        // Handle "Comments" tables (invalid procedure codes)
-        if (headers.length === 1 && headers[0] === "comments") {
-            const comment = clean(table.querySelector("tbody")?.innerText || "");
-            return {
-                code,
-                benefit_level,
-                deductible,
-                applies_to_deductible,
-                applies_to_maximum,
-                rows: [{
-                    description: comment || "None",
-                    limitation: "None",
-                    service_date: "None",
-                    age_limits: "None",
-                    pre_approval: "None"
-                }]
-            };
-        }
-
-        const rows = [];
-
-        table.querySelectorAll("tbody tr").forEach(row => {
-            const th = row.querySelector("th");
-            const cells = row.querySelectorAll("td");
-
-            if (!th && cells.length === 0) return;
-
-            const description = th ? clean(th.innerText) : "None";
-
-            const get = (i) =>
-                cells[i] ? clean(cells[i].innerText) || "None" : "None";
-
-            rows.push({
-                description,
-                limitation: withLimitation(get(0)),
-                service_date: get(1),
-                age_limits: get(2),
-                pre_approval: get(3)
-            });
-        });
-
-        if (rows.length === 0) return null;
-
-        return {
-            code,
-            benefit_level,
-            deductible,
-            applies_to_deductible,
-            applies_to_maximum,
-            rows
-        };
-    }
-    async function searchAllBatches(networkLabel, batches = BATCHES) {
-        const allResults = [];
-
-        for (let i = 0; i < batches.length; i++) {
-            console.log(`Benefits search batch ${i + 1}/${batches.length} (${networkLabel || "default network"})...`);
-            const batchResults = await searchBenefitCodes(batches[i]);
-            allResults.push(...batchResults);
-            if (i < batches.length - 1) await sleep(1500);
-        }
-
-        console.log(`Benefits search complete (${networkLabel || "default network"}): ${allResults.length} codes scraped`);
-        return allResults;
-    }
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // Provider network
-    //
-    // Benefits Search answers for one network at a time, chosen in the "Search
-    // the provider network" dropdown above the results. The same D0150 is 100%
-    // for a Delta Dental PPO dentist and 50% for a non-Delta dentist, so the
-    // network has to match the office's participation. The user chooses it
-    // (PPO, Premier or Out of Network — see askProviderNetwork) and every code is
-    // searched under that network alone.
-    //
-    // The portal remembers the last network chosen, so the choice is always set
-    // explicitly rather than trusting whatever is showing.
-    //
-    // Anything unexpected leaves the dropdown alone and records why, so a change
-    // to the portal can only cost the network choice — never the scrape.
-    // ──────────────────────────────────────────────────────────────────────────
-
-    const NETWORK_LABEL_RE = /^search the provider network$/i;
-    const OUT_OF_NETWORK_RE = /non[-\s]?delta/i;
-    // Most specific first: the search-result chips beside the dropdown are
-    // buttons too, so a bare button is only taken when nothing better is there.
-    const NETWORK_CONTROL_SELECTORS =
-        ['select', '[role="combobox"]', '[aria-haspopup="listbox"]', '.MuiSelect-select', '[role="button"]'];
-    const looksLikeNetwork = (el) => /delta|dentist|network/i.test(readNetwork(el));
-
-    function findNetworkControl() {
-        // The label's own text is exactly the caption; its ancestors also carry
-        // the selected network's name, so an exact match finds the label itself.
-        const label = Array.from(document.querySelectorAll("label, legend, p, span, div, h1, h2, h3, h4, h5, h6"))
-            .find(el => NETWORK_LABEL_RE.test(clean(el.innerText)));
-        let node = label;
-        for (let depth = 0; node && depth < 5; depth++, node = node.parentElement) {
-            for (const selector of NETWORK_CONTROL_SELECTORS) {
-                const control = Array.from(node.querySelectorAll(selector)).find(looksLikeNetwork);
-                if (control) return control;
-            }
-        }
-        // No caption found: a native dropdown that offers a non-Delta network.
-        return Array.from(document.querySelectorAll("select"))
-            .find(sel => Array.from(sel.options).some(o => OUT_OF_NETWORK_RE.test(o.text))) || null;
-    }
-
-    function readNetwork(control) {
-        if (!control) return "";
-        if (control.tagName === "SELECT") return clean(control.selectedOptions[0]?.text || "");
-        return clean(control.innerText || control.value || "");
-    }
-
-    function visibleNetworkOptions() {
-        return Array.from(document.querySelectorAll('[role="option"], [role="listbox"] li'))
-            .filter(el => el.offsetParent !== null);
-    }
-
-    // Choose the first option the predicate accepts. Returns the network now
-    // showing, or "" when no option was accepted or the choice did not stick.
-    async function chooseNetwork(predicate) {
-        const control = findNetworkControl();
-        if (!control) return "";
-
-        if (control.tagName === "SELECT") {
-            const option = Array.from(control.options).find(o => predicate(clean(o.text)));
-            if (!option) return "";
-            const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
-            setter.call(control, option.value);
-            control.dispatchEvent(new Event("input", { bubbles: true }));
-            control.dispatchEvent(new Event("change", { bubbles: true }));
-        } else {
-            // Material UI opens its menu on mousedown; a plain click covers the rest.
-            control.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-            control.click();
-            await sleep(800);
-            const option = visibleNetworkOptions().find(el => predicate(clean(el.innerText)));
-            if (!option) {
-                document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-                await sleep(300);
-                return "";
-            }
-            option.click();
-        }
-        await sleep(1500);
-
-        // The control may have re-rendered; read the choice back from the page.
-        const now = readNetwork(findNetworkControl());
-        return predicate(now) ? now : "";
-    }
 
     // ──────────────────────────────────────────────────────────────────────────
     // Provider network choice
     //
     // Which network this office participates in is something the user knows and
-    // the portal does not say. Before the procedure-code search the user is asked
+    // the portal does not say. Before the benefits are read the user is asked
     // — Delta Dental PPO, Delta Dental Premier, or Out of Network — and only that
-    // network is searched. The export records the choice as
+    // network's coverage is exported. The export records the choice as
     // `benefits_search_selected`, and the audit reads the sheet against it.
     // ──────────────────────────────────────────────────────────────────────────
 
@@ -1241,7 +781,7 @@
             const text = document.createElement("div");
             text.textContent = "Which network does this office participate in" +
                 (patientName ? ` for ${patientName}` : "") +
-                "? Only that network's benefits are searched.";
+                "? Only that network's benefits are exported.";
             text.style.cssText = "margin-bottom:14px;color:#475569";
 
             box.append(title, text);
@@ -1274,54 +814,14 @@
         });
     }
 
-    async function scrapeBenefitsSearchTab(choice, batches = BATCHES) {
-        const result = { answers: [], network: "", choice: "", error: "" };
-        const isInNetwork = (text) => !!text && !OUT_OF_NETWORK_RE.test(text);
-        const wanted = {
-            ppo:     (text) => isInNetwork(text) && /\b(ppo|dpo)\b/i.test(text),
-            premier: (text) => isInNetwork(text) && /\bpremier\b/i.test(text),
-            oon:     (text) => OUT_OF_NETWORK_RE.test(text),
-        }[choice] || isInNetwork;
-
-        // The dropdown is drawn above a set of results, so before the first
-        // search of a patient there is nothing to read or set. One search is run
-        // to bring it up (its answers are not kept), and the chosen network is
-        // then set explicitly — the portal remembers the last network picked,
-        // which may be another patient's.
-        try {
-            if (!findNetworkControl()) {
-                await searchBenefitCodes(batches[0]);
-                await sleep(1000);
-            }
-            const showing = readNetwork(findNetworkControl());
-            if (!findNetworkControl()) {
-                result.error = "network dropdown not found";
-            } else if (!wanted(showing)) {
-                const chosen = await chooseNetwork(wanted);
-                if (!chosen) result.error = `could not switch from "${showing}" to the chosen network (${choice})`;
-            }
-        } catch (e) {
-            result.error = `network dropdown: ${e.message}`;
-        }
-
-        // The choice is only recorded if the dropdown really shows it; otherwise
-        // the answers are labelled with the network they were read under and the
-        // audit falls back to the sheet's own In Network and fee schedule.
-        result.network = readNetwork(findNetworkControl());
-        if (choice && wanted(result.network)) result.choice = choice;
-        result.answers = await searchAllBatches(result.network, batches);
-
-        if (result.error) console.warn(`Provider network not set: ${result.error}`);
-        return result;
-    }
-
     // ──────────────────────────────────────────────────────────────────────────
     // Benefits from the portal's own data
     //
     // Benefits Search filters data the page already holds; typing codes into it
-    // asks the server nothing. installPageHook (top of this file) keeps those responses as the
-    // page receives them, and every sheet code is answered from them in the same
-    // shape the search cards are read into:
+    // asks the server nothing. installPageHook (top of this file) keeps those
+    // responses as the page receives them, and every sheet code is answered from
+    // them, one entry per code with one row per age band, as the search cards
+    // print them:
     //
     //   benefits-package   procedure → network[] (##PPO / ##PMR / ##NP) →
     //                      coverageDetail[] (level, deductible and maximum
@@ -1335,8 +835,9 @@
     // A code in neither list is one the search answers with "This procedure code
     // could not be recognized."
     //
-    // Anything missing or belonging to another patient sends the run back to the
-    // search box, so this path can only make a scrape faster, never thinner.
+    // Nothing is typed into the search box. If the data is missing or belongs to
+    // another patient, no benefits are exported and the user is told to reload
+    // the patient page, so the page fetches the data again, and crawl again.
     // ──────────────────────────────────────────────────────────────────────────
 
     const NETWORK_CODES = { ppo: "##PPO", premier: "##PMR", oon: "##NP" };
@@ -1454,6 +955,7 @@
         const serviceDate = (code) => (approvedDates.get(code) || []).join(", ") || "None";
 
         const answers = [];
+        const unrecognized = [];
         const unanswered = [];
         for (const code of codes) {
             const procedure = packaged.get(code);
@@ -1508,7 +1010,7 @@
 
             const other = notPaid.get(code);
             if (other || captured.other) {
-                if (!other) unanswered.push(code);
+                if (!other) unrecognized.push(code);
                 answers.push({
                     code,
                     benefit_level: "N/A",
@@ -1525,60 +1027,36 @@
                 });
                 continue;
             }
-            // Not in the package and the not-paid list never arrived: only the
-            // search box can say whether the code is unpaid or unknown.
+            // Not in the package and the not-paid list never arrived: nothing
+            // says whether the code is unpaid or unknown, so it is left out.
             unanswered.push(code);
         }
-        return { answers, network: networkName, unanswered, searchNeeded: !captured.other };
+        return { answers, network: networkName, unrecognized, unanswered };
     }
 
-    // Every sheet code, answered from the captured data where possible and from
-    // the search box for whatever it cannot answer.
+    // Every sheet code, answered from the captured data, in sheet order. What
+    // the data cannot answer is reported in `error`, never guessed.
     async function scrapeBenefits(choice, patientName) {
-        const codeOrder = new Map(SHEET_CODES.map((code, i) => [code, i]));
-        const byCode = (a, b) => (codeOrder.get(a.code) ?? 1e9) - (codeOrder.get(b.code) ?? 1e9);
-        const result = { answers: [], network: "", choice: "", method: "", missing: [], error: "" };
+        const result = { answers: [], network: "", choice: "", missing: [], error: "" };
 
         const captured = await capturedBenefits(patientName);
-        if (captured.reason) console.warn(`Benefits not read from the page's data (${captured.reason}); using the search box.`);
-
-        let searchCodes = SHEET_CODES;
-        if (!captured.reason) {
-            const fromData = benefitsFromCaptured(SHEET_CODES, captured, choice);
-            result.answers = fromData.answers;
-            result.network = fromData.network;
-            result.choice = choice || "";
-            result.method = "api";
-            searchCodes = fromData.searchNeeded ? fromData.unanswered : [];
-            if (!fromData.searchNeeded) result.missing = fromData.unanswered;
-            console.log(`Benefits read from the page's data (${result.network}): ${result.answers.length} codes`);
+        if (captured.reason) {
+            result.error = `${captured.reason}. Reload the patient page and crawl again.`;
+            console.warn(`Benefits not read: ${result.error}`);
+            return result;
         }
 
-        if (searchCodes.length) {
-            const batches = Array.from({ length: Math.ceil(searchCodes.length / 10) },
-                (_, i) => searchCodes.slice(i * 10, i * 10 + 10));
-            const search = await scrapeBenefitsSearchTab(choice, batches);
-            const wanted = new Set(searchCodes);
-            const seen = new Set(result.answers.map(a => a.code));
-            for (const answer of search.answers) {
-                const code = String(answer?.code || "").toUpperCase();
-                if (!wanted.has(code) || seen.has(code)) continue;
-                seen.add(code);
-                result.answers.push(answer);
-            }
-            result.missing.push(...searchCodes.filter(code => !seen.has(code)));
-            result.method = result.method ? "mixed" : "dom";
-            if (!result.network) result.network = search.network;
-            if (!result.choice) result.choice = search.choice;
-            result.error = search.error;
+        const fromData = benefitsFromCaptured(SHEET_CODES, captured, choice);
+        result.answers = fromData.answers;
+        result.network = fromData.network;
+        result.choice = choice || "";
+        result.missing = fromData.unrecognized;
+        if (fromData.unanswered.length) {
+            result.error = `other procedures not captured, so ${fromData.unanswered.length} codes are left out: ` +
+                `${fromData.unanswered.join(", ")}. Reload the patient page and crawl again.`;
+            console.warn(`Benefits incomplete: ${result.error}`);
         }
-
-        result.answers.sort(byCode);
-        // The search box answers an unknown code with a card saying so.
-        const unrecognized = result.answers.filter(answer => (answer.rows || [])
-            .some(row => /could not be recognized/i.test(row?.description || ""))).map(answer => answer.code);
-        result.missing = [...new Set([...result.missing, ...unrecognized])]
-            .sort((a, b) => (codeOrder.get(a) ?? 1e9) - (codeOrder.get(b) ?? 1e9));
+        console.log(`Benefits read from the page's data (${result.network}): ${result.answers.length} codes`);
         return result;
     }
 
@@ -1672,47 +1150,28 @@
             auditData.tabs.waiting_periods = scrapeWaitingPeriodsTab();
 
             // BENEFITS SEARCH TAB
-            console.log("Scraping Benefits Search tab...");
-        await clickTab("benefitsSearchTab");
-    // Wait until search UI is ready
-        let input = null;
-        let button = null;
+            // Opening the tab is what makes the page fetch other-procedures;
+            // the benefits themselves are read from the captured data.
+            console.log("Reading Benefits Search data...");
+            await clickTab("benefitsSearchTab");
+            const choice = await askProviderNetwork(auditData.primary_patient?.name);
+            const search = await scrapeBenefits(choice, auditData.primary_patient?.name);
+            auditData.tabs.benefits_search = search.answers;
+            auditData.tabs.benefits_search_network = search.network;
+            // "ppo" | "premier" | "oon"
+            auditData.tabs.benefits_search_selected = search.choice;
+            if (search.error) {
+                auditData.tabs.benefits_search_error = search.error;
+                alert(`Delta Dental benefits: ${search.error}`);
+            }
+            auditData.tabs.benefits_search_codes_requested = SHEET_CODES.join(", ");
+            // Codes the portal does not recognise at all.
+            auditData.tabs.benefits_search_codes_not_in_portal = search.missing.join(", ");
+            auditData.tabs.benefits_search_spec = {
+                source_workbook_sha256: REQUIREMENTS_SPEC?.source_workbook_sha256 || "",
+                generated_at_utc: REQUIREMENTS_SPEC?.generated_at_utc || ""
+            };
 
-        const start = Date.now();
-
-        while (Date.now() - start < 10000) {
-        input = document.querySelector('[data-testid="autocompleteSearchInput"]');
-        button = document.querySelector('[data-testid="autocompleteSearchButton"]');
-
-        if (
-            input &&
-            button &&
-            !input.disabled &&
-            input.offsetParent !== null
-        ) {
-            break;
-        }
-
-        await sleep(250);
-    }
-    // Small buffer for React rendering
-    await sleep(1500);
-    const choice = await askProviderNetwork(auditData.primary_patient?.name);
-    const search = await scrapeBenefits(choice, auditData.primary_patient?.name);
-    auditData.tabs.benefits_search = search.answers;
-    auditData.tabs.benefits_search_network = search.network;
-    // "ppo" | "premier" | "oon"; empty when the choice could not be applied.
-    auditData.tabs.benefits_search_selected = search.choice;
-    if (search.error) auditData.tabs.benefits_search_network_error = search.error;
-    // "api" (the page's data), "dom" (the search box) or "mixed".
-    auditData.tabs.benefits_search_method = search.method;
-    auditData.tabs.benefits_search_codes_requested = SHEET_CODES.join(", ");
-    // Codes the portal does not recognise at all.
-    auditData.tabs.benefits_search_codes_not_in_portal = search.missing.join(", ");
-    auditData.tabs.benefits_search_spec = {
-        source_workbook_sha256: REQUIREMENTS_SPEC?.source_workbook_sha256 || "",
-        generated_at_utc: REQUIREMENTS_SPEC?.generated_at_utc || ""
-    };
             // TREATMENT HISTORY TAB
             console.log("Scraping Treatment History tab...");
             const historyTabClicked = await clickTab("treatmentHistoryTab");
