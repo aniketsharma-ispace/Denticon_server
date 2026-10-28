@@ -40,10 +40,12 @@ _WORD_COUNTS = {
 # when the code is named directly or the phrase below explicitly identifies the
 # procedure represented by that code.
 _FREQUENCY_PHRASES: dict[str, tuple[str, ...]] = {
-    "D0120": ("oral examinations",),
-    "D0140": ("oral examinations",),
-    "D0150": ("oral examinations",),
-    "D0180": ("oral examinations",),
+    # Plans word the exam limit either way: "Oral examinations are payable …"
+    # or "Oral exams rendered by general dentists … are payable …".
+    "D0120": ("oral examinations", "oral exams"),
+    "D0140": ("oral examinations", "oral exams"),
+    "D0150": ("oral examinations", "oral exams"),
+    "D0180": ("oral examinations", "oral exams"),
     "D0210": ("full mouth x-rays", "panorex"),
     "D0330": ("panorex",),
     "D0272": ("bitewing x-rays",),
@@ -713,6 +715,18 @@ def _no_deductible_stated(raw: dict[str, Any]) -> bool:
     return False
 
 
+def _no_deductible_row(maximums: list[dict[str, Any]]) -> bool:
+    """True when the Maximums and Deductibles table was read and lists no deductible.
+
+    The table holds every accumulator the plan has, deductibles included, so a
+    captured table without one is the Toolkit's way of saying there is none.
+    Exports made since 10/23 no longer carry the page's "There is no deductible
+    for this contract" banner, which leaves this as the only signal they give.
+    """
+    rows = [row for row in maximums if isinstance(row, dict)]
+    return bool(rows) and not any("deductible" in str(row.get("type", "")).lower() for row in rows)
+
+
 def _ortho_payment_timing_from_notes(ortho_info: dict[str, Any]) -> str:
     """Read an explicit "<Frequency> payment:" heading from the ortho notes.
 
@@ -771,9 +785,11 @@ def _latest_service_date(value: Any) -> str | None:
 def _history_for_code(code: str, result: dict[str, Any], routine_by_code: dict[str, dict[str, Any]]) -> str | None:
     """Service history for exactly this CDT code, or None when the source says nothing.
 
-    History is never inherited from another code.  A routine-procedure row for
-    this exact code with no service dates is an explicit "no history" (NH); a
-    code with no row at all is simply not stated by the portal.
+    History is read per code here; the one exception, a panorex sharing the
+    full-mouth date, is applied afterwards by `_share_radiograph_history`.  A
+    routine-procedure row for this exact code with no service dates is an
+    explicit "no history" (NH); a code with no row at all is simply not stated
+    by the portal.
     """
     direct = (
         _latest_service_date(result.get("serviceDates"))
@@ -798,8 +814,9 @@ def _history_for_code(code: str, result: dict[str, Any], routine_by_code: dict[s
 def _share_frequency(procedures: list[dict[str, Any]]) -> None:
     """Adult and child prophylaxis share one frequency sentence (when both are covered).
 
-    Service history is deliberately NOT shared: a date recorded for one CDT
-    code says nothing about another code that happens to share a limitation.
+    Service history is not shared here: a date recorded for one CDT code says
+    nothing about another code that happens to share a limitation.  Full mouth
+    x-rays and the panorex are the exception (`_share_radiograph_history`).
     """
     by_code = {p["procedure_code"]: p for p in procedures}
     adult, child = by_code.get("D1110"), by_code.get("D1120")
@@ -814,6 +831,37 @@ def _share_frequency(procedures: list[dict[str, Any]]) -> None:
                 target["frequency_limit"] = donor["frequency_limit"]
                 target["frequency_source"] = donor["frequency_source"]
                 target["frequency_scope"] = donor["frequency_scope"]
+
+
+def _share_radiograph_history(procedures: list[dict[str, Any]]) -> None:
+    """Full mouth x-rays and the panorex share one service history.
+
+    When a single limitation sentence names both ("Full mouth x-rays … or a
+    panorex are payable once in a five-year period"), a service on either uses
+    up the shared frequency, and the sheet records that date for both.  A code
+    that already carries its own date keeps it.
+    """
+    by_code = {p["procedure_code"]: p for p in procedures}
+    fmx, pano = by_code.get("D0210"), by_code.get("D0330")
+    if not fmx or not pano:
+        return
+    shared_sentence = any(
+        re.search(r"full\s+mouth", sentence, re.IGNORECASE)
+        and re.search(r"panorex|panoramic", sentence, re.IGNORECASE)
+        for proc in (fmx, pano)
+        for sentence in (proc.get("toolkit_source_limitations") or [])
+    )
+    if not shared_sentence:
+        return
+    fmx_date, pano_date = fmx.get("late_date_of_service"), pano.get("late_date_of_service")
+    if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", str(fmx_date or "")) and not re.fullmatch(
+        r"\d{1,2}/\d{1,2}/\d{4}", str(pano_date or "")
+    ):
+        pano["late_date_of_service"] = fmx_date
+    elif re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", str(pano_date or "")) and not re.fullmatch(
+        r"\d{1,2}/\d{1,2}/\d{4}", str(fmx_date or "")
+    ):
+        fmx["late_date_of_service"] = pano_date
 
 
 def _inherit_perio_maintenance_frequency(procedures: list[dict[str, Any]]) -> None:
@@ -1061,7 +1109,7 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
     annual_description = _text(general_max.get("description"))
     ded_description = _text(general_ded.get("description") or general_ded.get("name"))
 
-    no_deductible = not general_ded and _no_deductible_stated(raw)
+    no_deductible = not general_ded and (_no_deductible_stated(raw) or _no_deductible_row(maximums))
     if no_deductible:
         ded_individual = {"amount": 0, "used": 0, "remaining": 0}
         ded_family = {"amount": 0, "used": 0, "remaining": 0}
@@ -1159,6 +1207,7 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
     _resolve_optional_coverage(procedures, coverage_row_list)
 
     _share_frequency(procedures)
+    _share_radiograph_history(procedures)
     _inherit_perio_maintenance_frequency(procedures)
 
     coverage_notes_text = " ".join(_text(x) for x in ((raw.get("coverages") or {}).get("notes") or []))

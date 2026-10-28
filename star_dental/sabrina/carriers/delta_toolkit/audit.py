@@ -26,6 +26,7 @@ from .rules import (
     _pdf_ortho_payment_timing,
     _pdf_relationship,
     _pdf_srp_quads_per_day,
+    _toolkit_benefit_network,
     _toolkit_code_looked_up,
     _toolkit_eligibility,
     _toolkit_identity_gate,
@@ -44,6 +45,14 @@ STATUS_NOT_COMPARABLE = "not_comparable"
 _NO_BENEFIT_WORDS = {
     "0", "0%", "nc", "n/c", "not covered", "not a covered benefit",
     "no frequency", "none",
+}
+
+# Rows read from the Maximums and Deductibles table, whose figures can differ
+# from one network to another.
+_NETWORK_AMOUNT_KEYS = {
+    "yearly_max", "yearly_max_paid", "indiv_ded", "indiv_ded_paid",
+    "family_ded", "family_ded_paid", "ortho_max", "ortho_max_paid",
+    "ortho_ded", "ortho_ded_paid",
 }
 
 
@@ -71,9 +80,13 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     what each system says.
     """
     sab_fields = sabrina_parsed.get("fields", {})
-    bd = _portal_breakdown(portal_raw)
+    # The sheet's In Network answer decides which network's benefits it is
+    # compared with: an out-of-network sheet records the Nonparticipating
+    # Dentist figures, not the PPO ones.
+    network = _toolkit_benefit_network(sab_fields)
+    bd = _portal_breakdown(portal_raw, network)
     # Derived readers work off the translated export, not the raw one.
-    portal_norm = _portal_normalized(portal_raw)
+    portal_norm = _portal_normalized(portal_raw, network)
 
     if portal_norm.get("_toolkit") and sabrina_parsed.get("text"):
         if not sabrina_parsed.get("toolkit_parse"):
@@ -140,6 +153,11 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             if isinstance(benefit_row, dict) and benefit_row.get("percentage") is not None:
                 sab_raw = benefit_row.get("percentage")
         por_raw = _portal_value(field, bd, portal_norm, sab_raw)
+        if toolkit_meta.get("accumulators_unavailable") and key in _NETWORK_AMOUNT_KEYS:
+            # The export holds the PPO table alone, and the sheet records another
+            # network's maximums, which can differ (PPO $1,500 against a
+            # Nonparticipating Dentist $1,000 on one plan).
+            por_raw = None
         source_note = ""
         if (
             portal_norm.get("_toolkit")
@@ -259,6 +277,13 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             elif forced_match:
                 status = STATUS_MATCH
                 note = forced_match
+            elif (
+                por_blank and not sab_blank and key in _NETWORK_AMOUNT_KEYS
+                and toolkit_meta.get("accumulators_unavailable")
+            ):
+                status = STATUS_NOT_COMPARABLE
+                note = ("This export carries only the PPO maximums and deductibles; re-export with "
+                        f"extension 1.45+ to compare the {toolkit_meta.get('benefit_network')} figures.")
             elif por_blank and not sab_blank:
                 # Toolkit missing data is an evidence gap, not a negative answer.
                 status = STATUS_NOT_COMPARABLE
@@ -361,6 +386,8 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                 "codes_not_in_portal": sorted(toolkit_not_in_portal),
                 "identity_valid": toolkit_identity_ok,
                 "identity_issues": toolkit_identity_issues,
+                "benefit_network": toolkit_meta.get("benefit_network") or "PPO Dentist",
+                "accumulators_unavailable": bool(toolkit_meta.get("accumulators_unavailable")),
             } if portal_norm.get("_toolkit") else None,
         },
     }

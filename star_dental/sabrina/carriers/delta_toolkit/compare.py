@@ -98,6 +98,10 @@ def _compare(kind: str, sab, por, ctx: dict | None = None) -> tuple[bool | None,
                 other = normalized[1] if alias_a else normalized[0]
                 if re.fullmatch(r"pre[\s-]?d(?:etermination)?", other):
                     return None, "Pre-D is a pre-determination instruction, not a frequency limit"
+                if normalized[1] == "frequency not available":
+                    # The Toolkit stating no frequency sentence for a code is
+                    # silence, not a statement that the sheet's limit is wrong.
+                    return None, "the Toolkit states no frequency for this code; the sheet's limit cannot be checked"
                 return False, "one side states no frequency while the other states a different limit"
         age = (ctx or {}).get("age")
         a, b = _num_frequency(sab, age), _num_frequency(por, age)

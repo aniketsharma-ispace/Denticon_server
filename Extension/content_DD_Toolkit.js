@@ -3285,10 +3285,14 @@
         const contract = benefitRoot.contract || {};
         const clientRoot = state.clientSearchResponse?.client || state.clientSearchResponse || {};
         const subClientContract = clientRoot?.subClient?.contract || {};
-        const ppoAccumulatorBuckets = toArray(benefitRoot.maximumsAndDeductions)
-            .filter(isExactPpoBucket)
+        const ppoAccumulatorSource = toArray(benefitRoot.maximumsAndDeductions).filter(isExactPpoBucket);
+        const ppoAccumulatorBuckets = ppoAccumulatorSource
             .map(item => sanitizePpoNetworkDataForOutput(item))
             .filter(Boolean);
+        // The networks that share the PPO maximums/deductibles table, so the
+        // comparator can tell "same table" from "not exported" when a sheet is
+        // filled in for another network.
+        const ppoAccumulatorNetworks = uniqueStrings(ppoAccumulatorSource.flatMap(bucketNetworkNames));
         const ppoRoutineBuckets = extractPpoRoutineBuckets(state.routineProceduresResponse);
         const ppoNetworkBenefits = extractPpoNetworkBenefitBuckets(benefitRoot);
 
@@ -3381,7 +3385,9 @@
         const termination = findTerminationDate(patient.record, subscriber, benefitRoot?.member, benefitRoot?.contract);
         const nonPpoEvidence = collectNonPpoEvidence(rawByCode);
         const routineFromPdf = canonical.routine_procedures;
-        const maximumsAndDeductibles = canonical.maximums_and_deductibles;
+        const maximumsAndDeductibles = canonical.maximums_and_deductibles
+            ? { ...canonical.maximums_and_deductibles, networks: ppoAccumulatorNetworks }
+            : canonical.maximums_and_deductibles;
         const moreInformation = {
             section_title: "More Information",
             ...canonical.more_information,
@@ -6560,7 +6566,9 @@
         const memberDetails = sectionBase("member_details", ["section_title", "memberAlternateId", "columns", "members", "selectedMember"]);
         if (memberDetails) output.member_details = memberDetails;
 
-        const networks = sectionBase("networks", ["section_title", "selected", "available_in_output"]);
+        const networks = sectionBase("networks", [
+            "section_title", "selected", "available_in_output", "benefit_values_network", "out_of_network_networks"
+        ]);
         if (networks) output.networks = networks;
 
         if (data?.claim_reminders && typeof data.claim_reminders === "object") {
@@ -6599,11 +6607,19 @@
         const limitations = sectionBase("exclusions_and_limitations", ["section_title", "network", "notes", "records"]);
         if (limitations) output.exclusions_and_limitations = limitations;
 
-        const maxima = sectionBase("maximums_and_deductibles", ["section_title", "network", "notes", "accumulationPeriodType"]);
+        const maxima = sectionBase("maximums_and_deductibles", ["section_title", "network", "networks", "notes", "accumulationPeriodType"]);
         if (maxima) {
             maxima.rows = deduplicateAccumulatorRows(stripSourceFields(data?.maximums_and_deductibles?.rows));
             output.maximums_and_deductibles = maxima;
         }
+
+        // Benefits under the networks that do not pay as PPO does. A sheet filled
+        // in for an out-of-network office is compared with these.
+        const outOfNetwork = sectionBase("out_of_network", [
+            "section_title", "networks", "coverage_rows", "maximums_and_deductibles",
+            "maximums_shared_with_ppo", "maximums_note"
+        ]);
+        if (outOfNetwork) output.out_of_network = outOfNetwork;
 
         const ortho = sectionBase("ortho_information", [
             "section_title", "network", "ortho_age_limit_under", "ortho_age_limit_note",

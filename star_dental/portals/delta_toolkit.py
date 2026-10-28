@@ -59,10 +59,12 @@ _WORD_COUNTS = {
 # when the code is named directly or the phrase below explicitly identifies the
 # procedure represented by that code.
 _FREQUENCY_PHRASES: dict[str, tuple[str, ...]] = {
-    "D0120": ("oral examinations",),
-    "D0140": ("oral examinations",),
-    "D0150": ("oral examinations",),
-    "D0180": ("oral examinations",),
+    # Plans word the exam limit either way: "Oral examinations are payable …"
+    # or "Oral exams rendered by general dentists … are payable …".
+    "D0120": ("oral examinations", "oral exams"),
+    "D0140": ("oral examinations", "oral exams"),
+    "D0150": ("oral examinations", "oral exams"),
+    "D0180": ("oral examinations", "oral exams"),
     # D9110 is palliative/emergency treatment.  Only use the general oral-exam
     # limitation for it when the source explicitly includes emergency exams;
     # a generic oral-exam rule must not bleed into D9110.
@@ -761,6 +763,18 @@ def _no_deductible_stated(raw: dict[str, Any]) -> bool:
     return False
 
 
+def _no_deductible_row(maximums: list[dict[str, Any]]) -> bool:
+    """True when the Maximums and Deductibles table was read and lists no deductible.
+
+    The table holds every accumulator the plan has, deductibles included, so a
+    captured table without one is the Toolkit's way of saying there is none.
+    Exports made since 10/23 no longer carry the page's "There is no deductible
+    for this contract" banner, which leaves this as the only signal they give.
+    """
+    rows = [row for row in maximums if isinstance(row, dict)]
+    return bool(rows) and not any("deductible" in str(row.get("type", "")).lower() for row in rows)
+
+
 def _ortho_payment_timing_from_notes(ortho_info: dict[str, Any]) -> str:
     """Read an explicit "<Frequency> payment:" heading from the ortho notes.
 
@@ -1068,16 +1082,110 @@ def _plan_ortho_age_cap(config: dict[str, Any]) -> str:
     return str(max(caps)) if caps else ""
 
 
-def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
-    """Translate the Toolkit extraction into the canonical Portal contract."""
+# The Toolkit returns one benefit bucket per group of networks that pay alike.
+# The export keeps the PPO Dentist bucket as each lookup's own figures and every
+# other bucket under that lookup's `out_of_network`, each naming its networks.
+
+def _network_entry(result: dict[str, Any], network: str) -> dict[str, Any] | None:
+    """The `out_of_network` entry of one code lookup that names `network`."""
+    for entry in result.get("out_of_network") or []:
+        if isinstance(entry, dict) and network in (entry.get("networks") or []):
+            return entry
+    return None
+
+
+def _network_level(
+    result: dict[str, Any],
+    network: str | None,
+    separate_networks: set[str],
+    offered_networks: set[str],
+) -> str:
+    """
+    A code's coverage under `network` (None is PPO Dentist).
+
+    A network with an entry of its own reads that entry. A network the plan
+    offers but no lookup in the export lists separately pays as PPO does. Any
+    other case is not stated, so the row is left with nothing to compare.
+    """
+    if not network:
+        return _coverage_level(result)
+    entry = _network_entry(result, network)
+    if entry is not None:
+        return _coverage_level(entry)
+    if network not in separate_networks and network in offered_networks:
+        return _coverage_level(result)
+    return ""
+
+
+def _network_category_rows(
+    raw: dict[str, Any],
+    ppo_rows: list[dict[str, Any]],
+    network: str | None,
+    separate_networks: set[str],
+) -> list[dict[str, Any]]:
+    """Category coverage rows under `network`, the last resort for an Optional code."""
+    if not network or network not in separate_networks:
+        return ppo_rows
+    return [
+        row for row in ((raw.get("out_of_network") or {}).get("coverage_rows") or [])
+        if isinstance(row, dict) and network in (row.get("networks") or [])
+    ]
+
+
+def _network_accumulator_rows(raw: dict[str, Any], network: str) -> list[dict[str, Any]] | None:
+    """
+    The maximum and deductible rows that apply under `network`, or None when
+    the export cannot say.
+
+    From extension 1.45 the export carries the other buckets' rows under
+    `out_of_network.maximums_and_deductibles`, each naming its networks, and
+    names the networks that share the PPO table in
+    `maximums_and_deductibles.networks`. An earlier export holds the PPO table
+    alone, which says nothing about another network's maximums.
+    """
+    table = raw.get("maximums_and_deductibles") or {}
+    out_of_network = raw.get("out_of_network") or {}
+    own = [
+        row for row in (out_of_network.get("maximums_and_deductibles") or [])
+        if isinstance(row, dict) and network in (row.get("networks") or [])
+    ]
+    if own:
+        return own
+    if network in (table.get("networks") or []) or out_of_network.get("maximums_shared_with_ppo") is True:
+        return table.get("rows") or []
+    return None
+
+
+def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = None) -> dict[str, Any]:
+    """
+    Translate the Toolkit extraction into the canonical Portal contract.
+
+    `network` names the Delta network whose benefits the sheet records; None
+    (or "PPO Dentist") reads the export's own PPO Dentist figures.
+    """
+    network = None if _text(network).casefold() in ("", "ppo dentist") else _text(network)
     selected = ((raw.get("member_details") or {}).get("selectedMember") or {})
     client = ((raw.get("more_information") or {}).get("client_benefit_information") or {})
     display = client.get("display_fields") or {}
     cob = ((raw.get("more_information") or {}).get("cob_information") or {})
     maximums = (raw.get("maximums_and_deductibles") or {}).get("rows") or []
+    # When the export cannot say what the maximums and deductibles are under
+    # the sheet's network, the PPO table stays for the plan-level facts (plan
+    # year, benefit period) and the amounts are reported as unavailable.
+    network_maximums = _network_accumulator_rows(raw, network) if network else maximums
+    accumulators_unavailable = network_maximums is None
+    if network_maximums is not None:
+        maximums = network_maximums
     ortho_info = raw.get("ortho_information") or {}
     search = (raw.get("coverages") or {}).get("procedure_code_search") or {}
     results = [r for r in (search.get("results") or []) if isinstance(r, dict)]
+    separate_networks = {
+        name
+        for result in results
+        for entry in (result.get("out_of_network") or []) if isinstance(entry, dict)
+        for name in (entry.get("networks") or [])
+    }
+    offered_networks = {_text(name) for name in ((raw.get("networks") or {}).get("available_in_output") or [])}
     failed = set(_code_list(search.get("failed_codes")))
     not_in_portal = set(_code_list(search.get("codes_not_in_portal")))
     requested_code_list = _code_list(search.get("codes_requested"))
@@ -1162,7 +1270,7 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
     annual_description = _text(general_max.get("description"))
     ded_description = _text(general_ded.get("description") or general_ded.get("name"))
 
-    no_deductible = not general_ded and _no_deductible_stated(raw)
+    no_deductible = not general_ded and (_no_deductible_stated(raw) or _no_deductible_row(maximums))
     if no_deductible:
         ded_individual = {"amount": 0, "used": 0, "remaining": 0}
         ded_family = {"amount": 0, "used": 0, "remaining": 0}
@@ -1215,7 +1323,9 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
 
         frequency, frequency_source, frequency_scope = _derive_frequency(code, limitations)
         age_limit, age_source = _derive_age(code, limitations)
-        waiting = result.get("waitingPeriod") or {}
+        level = _network_level(result, network, separate_networks, offered_networks)
+        network_entry = _network_entry(result, network) if network else None
+        waiting = (network_entry or result).get("waitingPeriod") or {}
         direct_history = _history_for_code(code, result, routine_by_code)
         status = _text(result.get("status")).upper() or "OK"
         path = result.get("procedurePath") or []
@@ -1223,14 +1333,16 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
         # Plan-level prose can still name it (e.g. "Prophylaxes ... payable
         # three times per calendar year ... A child prophylaxis or full mouth
         # debridement is not a covered benefit"), so a frequency derived from
-        # that sentence must never be attached to a Not Covered code.
-        if _coverage_level(result).lower() == "not covered" or status == "NOT COVERED":
+        # that sentence must never be attached to a Not Covered code. The
+        # export's status is the PPO bucket's; it speaks for the sheet's
+        # network only when that network has no entry of its own.
+        if level.lower() == "not covered" or (status == "NOT COVERED" and network_entry is None):
             frequency, frequency_source, frequency_scope = "Not Covered", None, None
 
         procedures.append({
             "procedure_code": code,
             "description": _procedure_description(path, code),
-            "benefit_level": _coverage_level(result),
+            "benefit_level": level,
             "frequency_limit": frequency,
             "frequency_source": frequency_source or "",
             "frequency_scope": frequency_scope or "",
@@ -1245,7 +1357,7 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
             "toolkit_http_status": result.get("httpStatus"),
             "toolkit_error": result.get("error"),
             "toolkit_waiting_period": waiting,
-            "toolkit_waiting_period_met_date": result.get("waitingPeriodMetDate"),
+            "toolkit_waiting_period_met_date": (network_entry or result).get("waitingPeriodMetDate"),
             "toolkit_service_dates": [],
             "toolkit_source_limitations": limitations,
             "toolkit_history_status": _text(result.get("history_status")),
@@ -1257,7 +1369,8 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
     coverage_row_list = [
         r for r in ((raw.get("coverages") or {}).get("coverage_rows") or []) if isinstance(r, dict)
     ]
-    _resolve_optional_coverage(procedures, coverage_row_list)
+    _resolve_optional_coverage(
+        procedures, _network_category_rows(raw, coverage_row_list, network, separate_networks))
 
     _share_frequency(procedures)
     _share_radiograph_history(procedures)
@@ -1403,7 +1516,13 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
     if cob_method:
         provisions.append({"rule": "Coordination of Benefits", "value": cob_method})
 
-    active_wait, active_categories = _waiting_is_active(results)
+    # A waiting period, like the percentage, is read under the sheet's network.
+    waiting_rows = results if not network else [
+        {**result, "waitingPeriod": entry.get("waitingPeriod"), "waitingPeriodMetDate": entry.get("waitingPeriodMetDate")}
+        if (entry := _network_entry(result, network)) is not None else result
+        for result in results
+    ]
+    active_wait, active_categories = _waiting_is_active(waiting_rows)
     if active_wait:
         provisions.append({
             "rule": "Waiting Period",
@@ -1487,6 +1606,8 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
             "ortho_max_type": ortho_max_type,
             "ortho_payment_timing": ortho_payment_timing,
             "no_deductible": no_deductible,
+            "benefit_network": network or "PPO Dentist",
+            "accumulators_unavailable": accumulators_unavailable,
             "claim_payor_id": _text(((raw.get("more_information") or {}).get("claim_and_inquiry_mailing_addresses") or {}).get("payorId")),
             "group_name": group_name,
             "source_limitations": all_limits,

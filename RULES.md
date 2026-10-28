@@ -1,19 +1,25 @@
 # Toolkit comparator rules (Star and Smile Partners)
 
-Rules marked **[NEW]** were added in this version (10/26). Rules marked **[10/23]** were added in the previous version. Rules marked **[CLARIFIED]** keep their meaning but state how the code applies them.
+Rules marked **[NEW]** were added in this version (10/28). Rules marked **[10/26]** and **[10/23]** were added in earlier versions. Rules marked **[CLARIFIED]** keep their meaning but state how the code applies them.
 
 The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolkit JSON) and `sabrina/carriers/delta_toolkit/` (the audit; Toolkit-only rules are in its `rules.py`), under `star_dental/` and `smile_partners/`.
 
 ## Star only
 
+- **Out-of-network sheets [NEW]:** a sheet whose In Network is **Out** records the plan's **Nonparticipating Dentist** benefits, and is compared with them instead of the PPO ones. The audit's Toolkit legend names the network used.
+  - A code's % (and its Not Covered status and waiting period) comes from its `out_of_network` entry naming Nonparticipating Dentist. A network the plan offers but no lookup lists separately shares the PPO bucket, so the PPO figure applies. A code with no entry while other codes have one is not comparable.
+  - An Optional code inherits from a Nonparticipating sibling, then from that network's own category rows; PPO category rows are never used for it.
+  - Maximums and deductibles come from the export's `out_of_network.maximums_and_deductibles` rows for that network, or from the PPO table when it names that network (`maximums_and_deductibles.networks`) or `maximums_shared_with_ppo` is set. Exports made before extension 1.45 hold the PPO table alone: the 10 maximum/deductible amount rows are then not comparable, with a note to re-export.
+  - Any other In Network answer, or none, is compared with PPO Dentist as before.
 - **Frequency alias:** “No Frequency” equals “Frequency not available” on the Toolkit path. If both sides use an alias it’s a match. If only one does and the other states a real limit, it’s a mismatch.
-  - **[NEW]** “Pre-D” is not a limit. Pre-D against an alias is not comparable.
+  - **[10/26]** “Pre-D” is not a limit. Pre-D against an alias is not comparable.
+  - **[NEW]** A portal “Frequency not available” against a real sheet limit is not comparable: the Toolkit states no frequency sentence for that code, which is silence, not proof the sheet is wrong (e.g. a sheet 1X36Months for fillings). A sheet alias against a real portal limit, and a portal “No Frequency” against a real sheet limit, are still mismatches.
 - **Portal frequency Not Covered/NC/N/C:** the row matches if the sheet says 0, 0%, NC, N/C, not covered, no frequency or none. Any other sheet value is not comparable.
 - **Subscriber Age Limit:** a sheet value of 0 or 00 with a blank portal is a forced match.
 - **Age limit “NC”:** a sheet “NC” with a blank portal is not comparable.
 - **Payer ID:** compared as a set, split on , ; / |. DDPOH is treated as DDPO, and any overlap is a match.
 - **Payer ID source:** the claim payer ID wins over the display field (e.g. 07000 over DDMN). The fallback is the site domain: deltadentalmi.com gives DDPMI, deltadentalin.com gives DDPIN, any other deltadental*.com gives DDPOH.
-  - **[NEW]** When the claim payer ID lists several IDs (e.g. “DDPOH, DDPMI, DDPIN”), it is narrowed to one, the way Smile reads the payer: the ID the plan names in the display fields (payorId, payor_id, payor_plan_id, plan), else the one the website domain gives. If neither names an ID in the list, the whole list is compared as a set, as before.
+  - **[10/26]** When the claim payer ID lists several IDs (e.g. “DDPOH, DDPMI, DDPIN”), it is narrowed to one, the way Smile reads the payer: the ID the plan names in the display fields (payorId, payor_id, payor_plan_id, plan), else the one the website domain gives. If neither names an ID in the list, the whole list is compared as a set, as before.
 - **CDT % blank on both sides:** it’s a match if the code was requested and didn’t fail in the crawl.
 - **SRP Quads per day:**
   - The value comes from a D4341 limitation sentence that names quadrants plus same date/per day.
@@ -21,11 +27,12 @@ The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolki
   - The cap phrase must read “limited to / maximum of / no more than / up to” one to five.
   - If the Toolkit has nothing, it falls back to the embedded Delta PDF.
   - Both paths need exactly one distinct value, otherwise the row stays blank.
-- **D0150 freq per provider [NEW]:** read from D0150’s own limitation sentences. A sentence scoped per provider/dentist/office/location/practice gives its frequency; otherwise the portal value is “Frequency not available”, compared under the frequency alias rule. Non-Toolkit exports are not read.
-- **Eligibility Term Date [NEW]:** blank on both sides is a match when the Toolkit member is Active (no termination on either side). Otherwise it stays not stated.
+- **D0150 freq per provider [10/26]:** read from D0150’s own limitation sentences. A sentence scoped per provider/dentist/office/location/practice gives its frequency; otherwise the portal value is “Frequency not available”, compared under the frequency alias rule. Non-Toolkit exports are not read.
+- **Eligibility Term Date [10/26]:** blank on both sides is a match when the Toolkit member is Active (no termination on either side). Otherwise it stays not stated.
 - **Share-frequency confirmations:** D0120/D0140, D0210/D0330 and D1110/D4910.
   - Yes if both have the same counted frequency, No if they differ.
-  - For D1110/D4910 with no perio frequency, it reads the prophy sentence: “in addition” gives No, otherwise Yes.
+  - For D1110/D4910 with no perio frequency, it reads the prophy sentence: “in addition” gives No; a sentence naming periodontal maintenance/prophylaxes (or D4910) gives Yes. **[NEW]** A sentence that never mentions periodontal maintenance (“Prophylaxes (cleanings) are payable three times per calendar year.”) gives no answer, so a sheet value is not comparable (it used to be Yes).
+  - **[NEW]** For D1110/D4910, a cleaning sentence that grants periodontal prophylaxes or maintenance on top of the cleanings (“Two additional periodontal prophylaxes are payable…”, “…in addition to periodontal maintenance”) gives No first, even when both counts are equal.
 - **Posterior crown downgrade [10/23]:**
   - **No** if the JSON says “Posterior porcelain or resin crown(s) are covered services”. “Covered benefits” is read the same way.
   - **Yes** if the JSON says posterior porcelain or resin crowns are not covered.
@@ -44,8 +51,7 @@ The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolki
   - D4341 matches either word order.
   - D6056/57/58 match “implants and/or the restorations”.
   - D9944 also matches “night guard/nightguard”.
-  - **[NEW]** D1516 matches “space maintainers”, D2642 “cast restorations/onlays”, D2750 “cast restorations/crowns”, D6240 “bridgework”, and D9946 “occlusal guard/night guard/nightguard”. The 10/23 crawl attaches these sentences to the codes themselves.
-- **Radiograph history:** FMX and Pano share history when a sentence mentions both full mouth and panorex/panoramic.
+  - **[10/26]** D1516 matches “space maintainers”, D2642 “cast restorations/onlays”, D2750 “cast restorations/crowns”, D6240 “bridgework”, and D9946 “occlusal guard/night guard/nightguard”. The 10/23 crawl attaches these sentences to the codes themselves.
 - **“no age limitation” sentence:** it becomes 99.
 - **D4910 frequency:** it is never inherited from D1110 (Smile does this).
 - **Sheet constants:**
@@ -57,13 +63,14 @@ The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolki
   - D2610 “Pre-D” printed in both the Frequency and % cells counts as the %.
   - Reversed labels like “Periodic Exam D0120” are matched by CDT token inside the Benefit Details table only.
   - Ortho Max and Used are paired from the two-header layout.
-- **12 codes with no phrase:** D0367, D2610, D5511, D5650, D5810, D5821, D5912, D6104, D6190, D9612, D9630 and D9947 always come out as “Frequency not available” unless the source names the code directly. That means a real sheet frequency on those rows shows as a mismatch.
+- **12 codes with no phrase:** D0367, D2610, D5511, D5650, D5810, D5821, D5912, D6104, D6190, D9612, D9630 and D9947 always come out as “Frequency not available” unless the source names the code directly. **[NEW]** A real sheet frequency on those rows (and on D4910, which never inherits) is not comparable; it used to show as a mismatch.
 
 ## Smile only
 
 - **“Frequency Not Available” / “Not Available”:** equal only if both sides say it. There is no “No Frequency” alias.
-- **SRP Quads per day [NEW]** (workbook “Smile Partner Dental” line 21): the sheet’s value is the number Sabrina prints in D4341’s Age Limit cell, shown as the row “D4341 Scaling Root Planing · Quads”. The portal value is only a same-day/per-day quadrant cap stated in the Toolkit JSON (e.g. “limited to two quadrants … on the same date of service”). A per-quadrant frequency (“once per quadrant in 24 months”) is not a cap. With no stated cap the portal side stays blank and the row is not comparable.
-- **When Is First Perio Maintenance Allowed After SRP? [NEW]** (workbook line 74): the portal value is only an N-day post-operative period stated in one of D4910’s own limitation sentences that names periodontal treatment, read as “N Days”. Otherwise the portal side stays blank and the row is not comparable; the sheet’s “Not available in web” is never matched against a blank portal.
+- **SRP Quads per day [10/26]** (workbook “Smile Partner Dental” line 21): the sheet’s value is the number Sabrina prints in D4341’s Age Limit cell, shown as the row “D4341 Scaling Root Planing · Quads”. The portal value is only a same-day/per-day quadrant cap stated in the Toolkit JSON (e.g. “limited to two quadrants … on the same date of service”). A per-quadrant frequency (“once per quadrant in 24 months”) is not a cap. With no stated cap the portal side stays blank and **[NEW]** the Quads cell reads Not on portal (it was not comparable), so a D4341 whose percentage, frequency and history agree reads Match. The identity gate still makes it not comparable.
+- **Age limit of a code the Toolkit marks Not Covered [NEW]:** the portal age reads “Not Covered”, as the code’s frequency already does. A sheet age of 0, 00, NC, N/C or Not Covered matches; a positive age is a mismatch; anything else is not comparable. A blank sheet age stays not stated.
+- **When Is First Perio Maintenance Allowed After SRP? [10/26]** (workbook line 74): the portal value is only an N-day post-operative period stated in one of D4910’s own limitation sentences that names periodontal treatment, read as “N Days”. Otherwise the portal side stays blank and the row is not comparable; the sheet’s “Not available in web” is never matched against a blank portal.
 - **D4910 frequency:** it inherits D1110’s frequency when D4910 has none. This is skipped if D4910 is Not Covered or the prophy sentence says “in addition to periodontal”.
 - **Fallback CDT codes:** the first code the portal states wins. Toolkit is exact-code only. The sheet-to-portal fallbacks are:
   - D0220 → D0230
@@ -103,12 +110,14 @@ The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolki
   - Patient name, DOB, eligibility, group/client and the network must be exactly “PPO Dentist”. Any failure makes every row not comparable.
   - **[CLARIFIED]** Every one of these must be present on both sides and agree. A missing eligibility or group is a failure.
   - The name check passes if the Delta page inside the PDF prints the portal’s name and the sheet’s name is a subset of it.
+  - **[NEW]** Names are compared with apostrophes removed: the Toolkit prints O’Callaghan as OCALLAGHAN. (An apostrophe used to split the name and drop the “O” as an initial, failing the gate for every row.)
 - **Failed CDT lookup:** it is not comparable, never a mismatch.
   - **[CLARIFIED]** Codes the Toolkit lists in `codes_not_in_portal` are treated like failed lookups.
 - **Portal blank with the sheet filled:** it is not comparable.
 - **Frequency source:**
   - A sentence is used only if it names the code or contains a whitelisted phrase for that code. There is no category inheritance.
   - The “(which include…)” aside is stripped.
+  - **[NEW]** The exam codes (D0120, D0140, D0150, D0180) take “oral exams” as well as “oral examinations”, e.g. “Oral exams rendered by general dentists and pedodontists are payable twice per calendar year.”
   - A Not Covered code gets “Not Covered”.
 - **Frequency conversion:**
   - “once … lifetime” becomes 1XLifetime.
@@ -119,7 +128,8 @@ The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolki
 - **D1110/D1120:** they share a frequency only when both are covered.
 - **“Optional” coverage:** it inherits the % of a numeric sibling in the same top-level category, then the category row.
 - **History:**
-  - It is read per exact code.
+  - It is read per exact code, with one exception:
+  - **Radiograph history** (Star since 10/23, **[NEW]** for Smile): FMX and Pano share history when a sentence mentions both full mouth and panorex/panoramic. A blank D0330 takes D0210’s date (and the reverse); a code with its own date keeps it. Bitewings (D0272/D0274) are not shared.
   - Service dates come from the code’s own lookup (serviceDates / utilization_history) or its routine-procedure row.
   - A routine-procedure row with no dates becomes NH.
   - No row means not stated. A lookup’s `history_status: NO_HISTORY_ON_FILE` on its own is not turned into NH.
@@ -128,6 +138,7 @@ The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolki
 - **Relationship mapping:** Subscriber becomes Self.
 - **Major payment timing:** “seat date” gives Seat Date, and “prep” gives Prep Date.
 - **No deductible:** “There is no deductible for this contract” sets every deductible to 0.
+  - **[NEW]** So does a Maximums and Deductibles table that has rows but none of type Deductible: the table lists every accumulator the plan has. Exports made since 10/23 no longer carry the banner. An empty table says nothing.
 - **Plan year start:** it is January when the accumulation type is calendar year.
 - **Alternate benefit composite:** No only if “posterior composite resin restorations are covered services”, otherwise Yes.
 - **Missing tooth clause:** Yes only if the “payment will be made to replace a tooth missing prior to the effective date” sentence is present.
