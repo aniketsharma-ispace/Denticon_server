@@ -388,7 +388,10 @@ def _portal_prev_in_max(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
         # Cigna states the same thing as the maximum's class description.
         applies = _cigna_annual_max_classes(portal_raw)
     if _blank(applies):
-        return None
+        # Cigna (business rule): Yes only when "Preventive" is listed under the
+        # Benefit Maximums card. A plan with no yearly maximum at all ("No
+        # ADVANTAGE Benefit Maximums") has nothing listed, so the answer is No.
+        return "No" if _cigna_export(portal_raw) else None
     text = str(applies).lower()
     return "Yes" if ("preventive" in text or "preventative" in text) else "No"
 
@@ -498,6 +501,11 @@ def _portal_d4341_quads(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
     standard = _cigna_standard_answer(portal_raw, "d4341_quads")
     if standard:
+        # No quads to state when D4341 itself is not covered — the sheet
+        # leaves the cell blank then.
+        d4341 = (bd.get("procs") or {}).get("D4341") or {}
+        if d4341.get("_cigna_covered") is not True:
+            return None
         return standard
     value = str(bd.get("d4341_number_of_quads") or "").strip()
     return value if value.isdigit() else None
@@ -524,8 +532,31 @@ _DERIVED = {
 }
 
 
+# Business rule (Cigna): an amount the portal does not state is recorded as 0
+# on the sheet (no deductible card -> deductible 0, no ortho maximum -> 0, ...),
+# so it is compared as 0 rather than reported as "not on portal".
+# Yearly Max is not included: the sheet records an unstated maximum as 99999
+# (unlimited), not 0.
+_CIGNA_ZERO_WHEN_ABSENT = {
+    "yearly_max_paid",
+    "indiv_ded", "indiv_ded_paid",
+    "family_ded", "family_ded_paid",
+    "ortho_max", "ortho_max_paid",
+    "ortho_ded", "ortho_ded_paid",
+}
+
+
 def _portal_value(field: dict, bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """Resolve one spec'd field's value on the portal side."""
+    value = _portal_value_stated(field, bd, portal_raw, sab_raw)
+    if (value is None and field.get("key") in _CIGNA_ZERO_WHEN_ABSENT
+            and _cigna_export(portal_raw)):
+        return "0.00"
+    return value
+
+
+def _portal_value_stated(field: dict, bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """The value the portal itself states for one spec'd field, or None."""
     src = field.get("portal")
     if src is None:
         return None
