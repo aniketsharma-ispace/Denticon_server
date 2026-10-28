@@ -139,6 +139,9 @@ def _reflow_wrapped(lines: list[str]) -> list[str]:
 
     Only a first piece that is NOT itself a complete label may absorb a
     follower, so two genuinely separate labels are never fused.
+
+    A long question can wrap over four lines on a narrow column — Rachel
+    Dent's "Are Posterior / Composites / Downgraded To / Amalgam?".
     """
     out = list(lines)
     for _ in range(3):                      # a cell can wrap more than once
@@ -148,7 +151,7 @@ def _reflow_wrapped(lines: list[str]) -> list[str]:
         while i < len(out):
             joined = None
             if _norm_label(out[i]) not in _STOP_LABELS:
-                for take in (3, 2):         # longest wrap first
+                for take in (4, 3, 2):      # longest wrap first
                     if i + take > len(out):
                         continue
                     cand = " ".join(out[i:i + take])
@@ -164,6 +167,64 @@ def _reflow_wrapped(lines: list[str]) -> list[str]:
                 i += 1
         out = merged
         if not changed:
+            break
+    return out
+
+
+_CDT_CODE_RE = re.compile(r"^D\d{4}$", re.IGNORECASE)
+
+
+def _rejoin_page_split_labels(lines: list[str]) -> list[str]:
+    """
+    Put back a CDT row label that a page break cut in two.
+
+    A row near the bottom of a page keeps its first words and its values there,
+    and the rest of its label is printed alone at the top of the next page,
+    under the repeated table header:
+
+        D4910 Perio / 4X1Year / 100% / NH / Benefit Name / Frequency / … /
+        History / Maintenance                                 (Rachel Dent)
+
+    Where a row's full label is nowhere on the sheet, a line reading exactly
+    its first words (the code and at least one more) is that row, provided the
+    rest of the label turns up alone after a "Benefit Name" header within the
+    next few lines. The line is given its full label and the orphan removed.
+    """
+    out = list(lines)
+    normed = [_norm_label(line) for line in out]
+    for field in _SPEC:
+        if field.get("derived") or field["section"] != "Coverage by CDT Code":
+            continue
+        for label in [field["label"], *field.get("aliases", ())]:
+            words = label.split()
+            if len(words) < 3 or not _CDT_CODE_RE.match(words[0]):
+                continue
+            if _norm_label(label) in normed:
+                break                       # the full label is on the sheet
+            for k in range(len(words) - 1, 1, -1):
+                head, tail = _norm_label(" ".join(words[:k])), _norm_label(" ".join(words[k:]))
+                for i, line in enumerate(normed):
+                    if line != head:
+                        continue
+                    window = normed[i + 1:i + 16]
+                    if "benefit name" not in window:
+                        continue
+                    after = window.index("benefit name")
+                    for j in range(i + 1 + after, min(i + 16, len(out))):
+                        if normed[j] == tail:
+                            out[i] = label
+                            del out[j]
+                            del normed[j]
+                            normed[i] = _norm_label(label)
+                            break
+                    else:
+                        continue
+                    break
+                else:
+                    continue
+                break
+            else:
+                continue
             break
     return out
 
@@ -511,7 +572,7 @@ def sabrina_marker_count(text: str) -> int:
 
 def parse_sabrina_text(text: str) -> dict:
     """Pull every spec'd field out of already-extracted Sabrina PDF text."""
-    lines = _reflow_wrapped(_split_lines(text))
+    lines = _rejoin_page_split_labels(_reflow_wrapped(_split_lines(text)))
 
     values: dict[str, str | None] = {}
     cursor: dict[int, int] = {}     # line index → words already claimed

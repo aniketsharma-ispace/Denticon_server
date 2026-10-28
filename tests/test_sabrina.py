@@ -2192,6 +2192,35 @@ check("delta sheet: the fee schedule is read",
 check("delta sheet: the fee schedule is kept beside the fields, not among them",
       "fee_schedule" in _fee_parsed["fields"], False)
 
+# Rachel Dent (2026-10-28): the sheet as the PDF extractor gives it. A page
+# break cuts "D4910 Perio Maintenance" after "D4910 Perio" (its values stay on
+# the first page, "Maintenance" is printed alone under the next page's table
+# header), and the composite question wraps over four lines.
+_RACHEL_TEXT = "\n".join([
+    "Benefit Details", "D2391 Composite ", "Fillings", "1X24Months", "70%",
+    "Are Posterior ", "Composites ", "Downgraded To ", "Amalgam?", "No",
+    "D2740 Crowns", "1X5Years", "50%",
+    "D4381 Arestin", "1X24Months", "70%",
+    "D4910 Perio ", "4X1Year", "100%", "NH", "",
+    "Benefit Name", "Frequency", "Percentage", "Coverage", "Age ", "Limit", "History",
+    "Maintenance", "When Is First Perio ", "Maintenance Allowed ", "After SRP ?", "30 Days",
+    "D5110 Dentures", "1X5Years", "50%",
+])
+_rachel = _dd_parse_text(_RACHEL_TEXT)["fields"]
+check("delta sheet: a question wrapped over four lines is read",
+      _rachel.get("posterior_composite_downgrade"), "No")
+check("delta sheet: a row whose label a page break cut in two is read",
+      (_rachel.get("d4910"), _rachel.get("d4910__freq"), _rachel.get("d4910__hist")),
+      ("100%", "4X1Year", "NH"))
+check("delta sheet: the row before it no longer takes its history",
+      _rachel.get("d4381__hist"), None)
+check("delta sheet: the question after the page break is still read",
+      _rachel.get("perio_maint_after_srp"), "30 Days")
+_rachel_whole = _dd_parse_text(_RACHEL_TEXT.replace("D4910 Perio \n", "D4910 Perio Maintenance\n")
+                               .replace("History\nMaintenance\n", "History\n"))["fields"]
+check("delta sheet: an unbroken label reads the same",
+      (_rachel_whole.get("d4910"), _rachel_whole.get("d4910__freq")), ("100%", "4X1Year"))
+
 # Delta Dental INS (2026-10-16): the user picks the office's network in the
 # extension's pop-up, only that network is searched, and the export says which.
 from smile_partners.sabrina.carriers.delta_dental.rules import _dd_selected_network
