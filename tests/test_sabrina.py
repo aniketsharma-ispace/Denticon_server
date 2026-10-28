@@ -3243,6 +3243,101 @@ check("Delta Dental picks its network from the fee schedule",
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  1s. PARK DENTAL — Star Dental's rules, Park's own field list
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Added 2026-10-28 as a copy of star_dental/, with the field list replaced by
+# the "Park Dental" tab of the codes workbook. That tab ticks 21 codes for
+# Frequency but not Coverage %, so those codes compare no percentage. Inline
+# data only, so this section always runs.
+
+print("── 1s. PARK DENTAL ──")
+
+import importlib as _importlib
+from park_dental import sabrina as _pk
+
+check("Park Dental is registered for the Sabrina audit",
+      _main.resolve_client("Park Dental", "sabrina_audit")[0], "park_dental")
+check("and refused for jobs that need a Denticon export",
+      tuple(_refused("park_dental", c) for c in ("match", "notes", "new_plan")),
+      (400, 400, 400))
+check("a carrier's rules come from Park Dental's own folder",
+      _pk.carrier_rules(_tk)[1].__name__, "park_dental.sabrina.carriers.delta_toolkit")
+
+_PK_CODES = set(
+    "D0120 D0140 D0150 D0220 D0210 D0330 D0274 D0364 D1110 D1208 D1351 D1510 "
+    "D2331 D2391 D2740 D5110 D2950 D3310 D3330 D4260 D4266 D4341 D4346 D4355 "
+    "D4381 D4910 D5510 D5911 D6010 D6058 D6190 D7140 D7220 D7230 D7240 D7280 "
+    "D7283 D7310 D7950 D7952 D7953 D7961 D7971 D9110 D9222 D9944 D8080".split())
+_PK_NO_PCT = set("D0210 D4346 D4381 D4910 D5110 D5510 D6010 D6190 D7140 D7220 D7230 "
+                 "D7240 D7280 D7283 D7310 D7950 D7952 D7953 D7961 D7971 D9222".split())
+_PK_NO_FREQ = {"D3310", "D3330", "D4260", "D4266", "D5911", "D8080"}
+_PK_HIST = {"D0120", "D0140", "D0150", "D0210", "D0274", "D0330", "D1208", "D4341"}
+_PK_EXPECTED = {c: (({"pct"} if c not in _PK_NO_PCT else set())
+                    | (set() if c in _PK_NO_FREQ else {"freq"})
+                    | ({"age"} if c in {"D1208", "D1351", "D8080"} else set())
+                    | ({"hist"} if c in _PK_HIST else set()))
+                for c in _PK_CODES}
+
+
+def _pk_columns(spec):
+    """The columns each code is compared on, leaving out a no-percentage %."""
+    by_key = {f["key"]: f for f in spec}
+    out = {}
+    for f in spec:
+        if f["section"] != "Coverage by CDT Code":
+            continue
+        base = by_key[f.get("row_key", f["key"])]
+        cols = out.setdefault(base["portal"][1], set())
+        if not (f.get("aspect", "pct") == "pct" and base.get("no_percentage")):
+            cols.add(f.get("aspect", "pct"))
+    return out
+
+
+for _carrier in ("aetna", "cigna", "delta_dental", "delta_toolkit", "metlife"):
+    check(f"{_carrier}: Park audits exactly its codes, each on the columns its list ticks",
+          _pk_columns(_importlib.import_module(f"park_dental.sabrina.carriers.{_carrier}.spec")._SPEC),
+          _PK_EXPECTED)
+check("the upload preview's copy agrees",
+      _pk_columns(_importlib.import_module("park_dental.sabrina.sheet.spec")._SPEC), _PK_EXPECTED)
+check("Ortho - Age limit is the plan's orthodontic age on every carrier",
+      {c: next(f["portal"] for f in _importlib.import_module(f"park_dental.sabrina.carriers.{c}.spec")._SPEC
+               if f["key"] == "ortho_coverage__age")
+       for c in ("aetna", "cigna", "delta_dental", "delta_toolkit", "metlife")},
+      {c: "_ortho_age" for c in ("aetna", "cigna", "delta_dental", "delta_toolkit", "metlife")})
+
+_pk_text = "\n".join([
+    "Fee Schedule", "GA Delta PPO RC42", "Ortho Payment Timing", "Yearly", "Benefit Details",
+    "Periodic Exam D0120", "2X1Year", "100%", "04/09/2026",
+    "D0210 Full-Mouth Xray", "1X5Years", "03/03/2024",
+    "D2391 Composite Fillings", "1X24Months", "80%",
+    "D2391 Composite Fillings downgraded to Amalgam", "Yes",
+    "D3310", "Endodontics", "80%",
+    "D4355 Debridement", "1XLifetime", "80%", "D4355 Debridement Share Freq", "No",
+    "D4910 Perio Maintenance", "4X1Year", "D4910 Shares frequency with Prophy?", "Yes",
+    "D7140_Ora_Surgery", "1X1Day", "D7961_D7962", "1XLifetime",
+    "Ortho Coverage", "50%", "19",
+])
+_PK_READ = ("d0120", "d0120__hist", "d0210__freq", "d0210__hist", "posterior_composite_downgrade",
+            "d3310", "d4355", "d4355_share_freq", "d4910__freq", "prophy_perio_share_freq",
+            "d7140__freq", "d7961_d7962__freq", "ortho_coverage", "ortho_coverage__age",
+            "ortho_payment_timing")
+for _carrier in ("metlife", "delta_dental", "delta_toolkit"):
+    _pk_f = _importlib.import_module(f"park_dental.sabrina.carriers.{_carrier}.parser").parse_sabrina_text(_pk_text)["fields"]
+    check(f"{_carrier}: Park's rows read — a reversed label, History with no %, a wrapped label, the questions",
+          tuple(_pk_f.get(k) for k in _PK_READ),
+          ("100%", "04/09/2026", "1X5Years", "03/03/2024", "Yes", "80%", "80%", "No", "4X1Year", "Yes",
+           "1X1Day", "1XLifetime", "50%", "19", "Yearly"))
+
+_pk_res = _pk.compare_sabrina_to_portal({"fields": {"d0210__freq": "1X5Years", "d4910__freq": "4X1Year"},
+                                         "benefit_rows": {}, "labels_not_found": [], "text": ""}, _tk)
+_pk_rows = {r["key"] for s in _pk_res["sections"] for r in s["rows"]}
+check("a Frequency-only code shows its Frequency and never a percentage",
+      ("d0210" in _pk_rows, "d0210__freq" in _pk_rows, "d4910" in _pk_rows, "d4910__freq" in _pk_rows),
+      (False, True, False, True))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  2. DETECTION
 # ══════════════════════════════════════════════════════════════════════════════
 

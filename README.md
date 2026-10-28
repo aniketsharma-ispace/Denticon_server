@@ -45,12 +45,17 @@ star_dental/             a second Sabrina client (Star Dental)
 
 jefferson/               a third Sabrina client (Jefferson)
   …                      began 2026-10-26 as a copy of star_dental/
+
+park_dental/             a fourth Sabrina client (Park Dental)
+  …                      began 2026-10-28 as a copy of star_dental/
 ```
 
 A Sabrina client's field list — which codes it audits, and which of them carry
-a Frequency, Age Limit or History cell — comes from that client's tab of
-`Material/Comparison/Updated Sabrina Codes & C Q's Data - All Clients.xlsx`
-and lives in its `sabrina/carriers/*/spec.py` (and `sheet/spec.py`).
+a Frequency, Coverage %, Age Limit or History cell — comes from that client's
+tab of `Material/Comparison/Updated Sabrina Codes & C Q's Data - All Clients.xlsx`
+and lives in its `sabrina/carriers/*/spec.py` (and `sheet/spec.py`). A code
+ticked for Frequency but not Coverage % is listed in `_NO_PERCENTAGE_CODES`,
+and its percentage is never compared (Park Dental).
 
 **The `portals/` trees are separate copies on purpose.** A fix made for one
 client cannot reach another — that is the point of the split, not an oversight.
@@ -96,6 +101,7 @@ CLIENTS = {
     "smile_partners": {..., "supports": {"sabrina_audit", "parse_pdf"}},
     "star_dental":    {..., "supports": {"sabrina_audit", "parse_pdf"}},
     "jefferson":      {..., "supports": {"sabrina_audit", "parse_pdf"}},
+    "park_dental":    {..., "supports": {"sabrina_audit", "parse_pdf"}},
 }
 ```
 
