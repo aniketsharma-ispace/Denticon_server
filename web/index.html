@@ -1240,7 +1240,9 @@ function renderSabrina(result) {
         ? `<div class="sab-legend"><b>Delta Toolkit:</b> ${toolkitDiag.successful_codes ?? '—'}/${toolkitDiag.requested_codes ?? '—'} procedure lookups succeeded`
           + `${(toolkitDiag.failed_codes || []).length ? `; failed: ${escHtml(toolkitDiag.failed_codes.join(', '))}` : ''}`
           + `${(toolkitDiag.codes_not_in_portal || []).length ? `; not in portal code list: ${escHtml(toolkitDiag.codes_not_in_portal.join(', '))}` : ''}`
-          + `${toolkitDiag.identity_valid === false ? `; identity/network validation failed: ${escHtml((toolkitDiag.identity_issues || []).join(', '))}` : ''}</div>`
+          + `${toolkitDiag.identity_valid === false ? `; identity/network validation failed: ${escHtml((toolkitDiag.identity_issues || []).join(', '))}` : ''}`
+          + `${toolkitDiag.benefit_network && toolkitDiag.benefit_network !== 'PPO Dentist' ? `; benefits compared under <b>${escHtml(toolkitDiag.benefit_network)}</b> (sheet: In Network = Out)` : ''}`
+          + `${toolkitDiag.accumulators_unavailable ? '; this export has only the PPO maximums and deductibles — re-export with extension 1.45+ to compare them' : ''}</div>`
         : '';
 
     const allBlock = (result.sections || []).map(sec => {

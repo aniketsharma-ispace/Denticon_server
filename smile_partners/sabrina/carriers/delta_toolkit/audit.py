@@ -27,6 +27,7 @@ from .rules import (
     _pdf_relationship,
     _toolkit_eligibility,
     _toolkit_identity_gate,
+    _toolkit_not_covered_age_agrees,
 )
 
 
@@ -193,6 +194,12 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                 and (_is_freq_not_available(sab_raw) or _is_freq_not_available(por_raw))
             ):
                 equal, cmp_note = _is_freq_not_available(sab_raw) and _is_freq_not_available(por_raw), ""
+            elif (
+                portal_norm.get("_toolkit")
+                and field["kind"] == "agelimit"
+                and str(por_raw).strip().casefold() == "not covered"
+            ):
+                equal, cmp_note = _toolkit_not_covered_age_agrees(sab_raw)
             else:
                 equal, cmp_note = _compare(field["kind"], sab_raw, por_raw, ctx)
             note = cmp_note
@@ -222,6 +229,12 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                 # The safety gate applies to every plan/procedure comparison.
                 status = STATUS_NOT_COMPARABLE
                 note = "Identity/network validation failed: " + ", ".join(toolkit_identity_issues)
+            elif por_blank and not sab_blank and field.get("portal") == "_toolkit_srp_quads_per_day":
+                # Few Toolkit plans state a same-day quadrant cap. Its absence is
+                # no evidence against the sheet, and must not turn a D4341 whose
+                # percentage, frequency and history agree into "not comparable".
+                status = STATUS_NOT_IN_PORTAL
+                note = "the Toolkit states no same-day quadrant cap for D4341"
             elif por_blank and not sab_blank:
                 # Toolkit missing data is an evidence gap, not a negative answer.
                 status = STATUS_NOT_COMPARABLE

@@ -9,7 +9,7 @@ call these; the generic field readers stay there. RULES.md lists the rules.
 from __future__ import annotations
 
 import re
-from .vocabulary import _blank, _norm_id, _norm_name, _num_date
+from .vocabulary import _blank, _norm_id, _norm_name, _num_agelimit, _num_date
 
 
 def _toolkit_eligibility(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
@@ -268,3 +268,32 @@ def _toolkit_perio_after_srp(bd: dict, portal_raw: dict, sab_raw=None) -> str | 
         if match and _PERIO_RE.search(text):
             return f"{match.group(1)} Days"
     return None
+
+
+# How the sheet writes the age of a code that is not covered at all.
+_NO_BENEFIT_AGES = {"0", "00", "nc", "n/c", "not covered", "not a covered benefit"}
+
+
+def _toolkit_not_covered_age(bd: dict, code: str, sab_raw=None) -> str | None:
+    """
+    The age limit of a code the Toolkit itself reports Not Covered.
+
+    Such a code states no age, and the sheet writes its age as 0 (or NC) or
+    leaves it blank. Read it as "Not Covered", as the code's frequency already
+    is, so the pair is compared — but only when the sheet states something; a
+    blank sheet is left with nothing to compare.
+    """
+    proc = (bd.get("procs") or {}).get(code) or {}
+    not_covered = (str(proc.get("benefit_level") or "").strip().lower() == "not covered"
+                   or str(proc.get("toolkit_status") or "").strip().upper() == "NOT COVERED")
+    return "Not Covered" if not_covered and not _blank(sab_raw) else None
+
+
+def _toolkit_not_covered_age_agrees(sab_raw) -> tuple[bool | None, str]:
+    """Whether the sheet's age agrees with a code the Toolkit does not cover."""
+    if str(sab_raw or "").strip().casefold() in _NO_BENEFIT_AGES:
+        return True, "both sides state no benefit for this procedure"
+    age = _num_agelimit(sab_raw)
+    if age is not None and age > 0:
+        return False, "the sheet gives an age limit for a code the Toolkit does not cover"
+    return None, "the Toolkit says the procedure is not covered; an age limit does not apply"

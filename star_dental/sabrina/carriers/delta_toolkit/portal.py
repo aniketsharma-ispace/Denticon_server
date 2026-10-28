@@ -33,7 +33,7 @@ from .rules import (
 #  PORTAL SIDE
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _portal_normalized(portal_raw: dict) -> dict:
+def _portal_normalized(portal_raw: dict, network: str | None = None) -> dict:
     """
     The portal export in the shape the derived readers expect.
 
@@ -42,7 +42,8 @@ def _portal_normalized(portal_raw: dict) -> dict:
     financials / covered_services / provisions under `metlife_data`. The readers
     below look for exactly that, so they run against the translation rather than
     the raw export; without this every derived field reads "not on portal" no
-    matter what the portal actually said.
+    matter what the portal actually said. `network` is the Delta network the
+    sheet records (None for PPO Dentist).
     """
     from ....portals.delta_toolkit import _is_dd_toolkit_portal, _normalize_delta_toolkit_portal
 
@@ -58,7 +59,7 @@ def _portal_normalized(portal_raw: dict) -> dict:
         if not isinstance(candidate, dict):
             continue
         try:
-            normalized = (_normalize_delta_toolkit_portal(candidate)
+            normalized = (_normalize_delta_toolkit_portal(candidate, network)
                           if _is_dd_toolkit_portal(candidate) else None)
             if normalized is not None:
                 # A few answers live in carrier-specific corners of the export
@@ -71,20 +72,20 @@ def _portal_normalized(portal_raw: dict) -> dict:
     return portal_raw or {}
 
 
-def _portal_breakdown(portal_raw: dict) -> dict:
+def _portal_breakdown(portal_raw: dict, network: str | None = None) -> dict:
     """
     Normalize the insurance portal export (or parsed carrier PDF) into the
     client's standard breakdown dict via `breakdown._extract`.
 
     Denticon is intentionally empty — this flow has no Denticon data — and the
     LLM interpreter is skipped because every audited field is a hard portal
-    fact.
+    fact. `network` is the Delta network the sheet records (None for PPO).
     """
     from ....breakdown import _extract as _extract_breakdown
     from ....portals.delta_toolkit import _is_dd_toolkit_portal, _normalize_delta_toolkit_portal
 
     if _is_dd_toolkit_portal(portal_raw):
-        payload = _normalize_delta_toolkit_portal(portal_raw)
+        payload = _normalize_delta_toolkit_portal(portal_raw, network)
     else:
         payload = dict(portal_raw or {})
     payload["_skip_llm"] = True
@@ -388,11 +389,43 @@ def _frequencies_shared(freq_a, freq_b) -> str | None:
     return "Yes" if parsed[0] == parsed[1] else "No"
 
 
+# A cleaning sentence that grants periodontal prophylaxes or maintenance on top
+# of the cleanings ("Two additional periodontal prophylaxes are payable …",
+# "… in addition to periodontal maintenance") states two separate allowances,
+# even when the two counts happen to be equal.
+_SEPARATE_PERIO_ALLOWANCE_RE = re.compile(
+    r"\badditional\s+periodontal\b"
+    r"|\bin\s+addition\s+to\s+periodontal\b"
+    r"|\bperiodontal\s+(?:maintenance|prophylax\w*)\b[^.]*\bin\s+addition\b",
+    re.IGNORECASE,
+)
+
+
+_NAMES_PERIO_MAINTENANCE_RE = re.compile(
+    r"\bperiodontal\s+(?:maintenance|prophylax\w*)\b|\bperio\s+maintenance\b|\bD4910\b",
+    re.IGNORECASE,
+)
+
+
+def _perio_allowance_is_separate(procs: dict) -> bool:
+    prophy = procs.get("D1110") or {}
+    perio = procs.get("D4910") or {}
+    if not prophy or not perio or any(
+        str(p.get("benefit_level") or "").strip().lower() in ("", "not covered")
+        for p in (prophy, perio)
+    ):
+        return False
+    sources = " ".join(str(p.get("frequency_source") or "") for p in (prophy, perio))
+    return bool(_SEPARATE_PERIO_ALLOWANCE_RE.search(sources))
+
+
 def _portal_share_frequency(field: dict, bd: dict) -> str | None:
     codes = field.get("shares") or ()
     if len(codes) != 2:
         return None
     procs = bd.get("procs", {})
+    if tuple(codes) == ("D1110", "D4910") and _perio_allowance_is_separate(procs):
+        return "No"
     shared = _frequencies_shared(*(
         _procfield_from_procs(procs, "frequency_limit", (code,)) for code in codes))
     if shared is None and tuple(codes) == ("D1110", "D4910"):
@@ -417,7 +450,11 @@ def _prophy_perio_shared_from_text(procs: dict) -> str | None:
     if perio_freq is not None and isinstance(perio_freq[0], int):
         return None
     source = str(prophy.get("frequency_source") or "")
-    return "No" if re.search(r"in\s+addition", source, re.IGNORECASE) else "Yes"
+    if re.search(r"in\s+addition", source, re.IGNORECASE):
+        return "No"
+    # A cleaning sentence that never mentions periodontal maintenance says
+    # nothing about whether the two share a limit.
+    return "Yes" if _NAMES_PERIO_MAINTENANCE_RE.search(source) else None
 
 
 def _portal_oon_benefits(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:

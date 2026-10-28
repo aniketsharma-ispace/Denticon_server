@@ -17,6 +17,7 @@ from .rules import (
     _toolkit_insurance_phone,
     _toolkit_major_payment_timing,
     _toolkit_meta_value,
+    _toolkit_not_covered_age,
     _toolkit_perio_after_srp,
     _toolkit_relationship,
     _toolkit_srp_quads_per_day,
@@ -467,7 +468,10 @@ def _portal_value(field: dict, bd: dict, portal_raw: dict, sab_raw=None) -> str 
         codes = src[2:]
         if exact:
             codes = codes[:1]
-        return _procfield_from_procs(bd.get("procs", {}), src[1], codes)
+        value = _procfield_from_procs(bd.get("procs", {}), src[1], codes)
+        if value is None and exact and src[1] == "age_limit":
+            value = _toolkit_not_covered_age(bd, str(codes[0]).upper(), sab_raw)
+        return value
     if isinstance(src, str) and src in _DERIVED:
         return _DERIVED[src](bd, portal_raw, sab_raw)
     val = bd.get(src) if isinstance(src, str) else None

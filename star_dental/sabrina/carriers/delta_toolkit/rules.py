@@ -9,7 +9,7 @@ call these; the generic field readers stay there. RULES.md lists the rules.
 from __future__ import annotations
 
 import re
-from .vocabulary import _blank, _norm_id, _norm_name, _num_date
+from .vocabulary import _blank, _norm_id, _norm_name, _norm_network, _num_date
 
 
 def _toolkit_eligibility(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
@@ -356,6 +356,20 @@ def _pdf_ortho_payment_timing(text: str) -> str | None:
     if re.match(r"D\d{4}\b", value, re.IGNORECASE):
         return None
     return value or None
+
+
+_OUT_OF_NETWORK = "Nonparticipating Dentist"
+
+
+def _toolkit_benefit_network(fields: dict) -> str | None:
+    """
+    The Delta network whose benefits the sheet records.
+
+    A sheet answering In Network "Out" is filled in for a non-participating
+    office, from the Toolkit's Nonparticipating Dentist column. Any other
+    answer, or none, is compared with the PPO Dentist column as before.
+    """
+    return _OUT_OF_NETWORK if _norm_network(fields.get("in_network")) == "OUT" else None
 
 
 def _toolkit_identity_gate(sabrina_parsed: dict, portal_norm: dict) -> tuple[bool, list[str]]:

@@ -514,11 +514,14 @@ def _norm_name(v) -> tuple[str, ...] | None:
     Name → sorted significant tokens, so 'LAST, FIRST' (Sabrina/Denticon style)
     and 'First Last' (portal style) compare equal. Middle initials and
     generational suffixes are dropped: they differ between systems constantly
-    and are never the point of an audit.
+    and are never the point of an audit. An apostrophe joins rather than
+    splits: the Toolkit prints O'Callaghan as OCALLAGHAN, and a split would
+    drop the "O" as if it were an initial.
     """
     if _blank(v):
         return None
-    s = re.sub(r"[^A-Z ,]", " ", str(v).upper()).replace(",", " ")
+    s = re.sub(r"['‘’`]", "", str(v).upper())
+    s = re.sub(r"[^A-Z ,]", " ", s).replace(",", " ")
     tokens = [t for t in s.split() if len(t) > 1 and t not in _NAME_SUFFIXES]
     return tuple(sorted(tokens)) or None
 
