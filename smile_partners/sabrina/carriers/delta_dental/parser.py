@@ -171,62 +171,66 @@ def _reflow_wrapped(lines: list[str]) -> list[str]:
     return out
 
 
-_CDT_CODE_RE = re.compile(r"^D\d{4}$", re.IGNORECASE)
-
-
 def _rejoin_page_split_labels(lines: list[str]) -> list[str]:
     """
-    Put back a CDT row label that a page break cut in two.
+    Put back a label that a page break cut in two.
 
     A row near the bottom of a page keeps its first words and its values there,
     and the rest of its label is printed alone at the top of the next page,
     under the repeated table header:
 
         D4910 Perio / 4X1Year / 100% / NH / Benefit Name / Frequency / … /
-        History / Maintenance                                 (Rachel Dent)
+        History / Maintenance                                  (Rachel Dent)
 
-    Where a row's full label is nowhere on the sheet, a line reading exactly
-    its first words (the code and at least one more) is that row, provided the
-    rest of the label turns up alone after a "Benefit Name" header within the
-    next few lines. The line is given its full label and the orphan removed.
+        When Is First Perio / 30 DAYS / Benefit Name / … / History /
+        Maintenance Allowed / After SRP ?                    (Raquel Goshe)
+
+    Where a label is nowhere on the sheet whole, a line reading exactly its
+    first words is that label, provided the rest of it turns up — on one to
+    three lines — straight after a "Benefit Name" header within the next few
+    lines. The line is given its full label and the orphan removed. The head
+    must be at least two words.
     """
     out = list(lines)
     normed = [_norm_label(line) for line in out]
     for field in _SPEC:
-        if field.get("derived") or field["section"] != "Coverage by CDT Code":
+        if field.get("derived"):
             continue
         for label in [field["label"], *field.get("aliases", ())]:
             words = label.split()
-            if len(words) < 3 or not _CDT_CODE_RE.match(words[0]):
+            if len(words) < 3:
                 continue
             if _norm_label(label) in normed:
                 break                       # the full label is on the sheet
-            for k in range(len(words) - 1, 1, -1):
-                head, tail = _norm_label(" ".join(words[:k])), _norm_label(" ".join(words[k:]))
-                for i, line in enumerate(normed):
-                    if line != head:
-                        continue
-                    window = normed[i + 1:i + 16]
-                    if "benefit name" not in window:
-                        continue
-                    after = window.index("benefit name")
-                    for j in range(i + 1 + after, min(i + 16, len(out))):
-                        if normed[j] == tail:
-                            out[i] = label
-                            del out[j]
-                            del normed[j]
-                            normed[i] = _norm_label(label)
-                            break
-                    else:
-                        continue
-                    break
-                else:
-                    continue
+            if _join_split_label(out, normed, label, words):
                 break
-            else:
-                continue
-            break
     return out
+
+
+def _join_split_label(out: list[str], normed: list[str], label: str, words: list[str]) -> bool:
+    """Rejoin one page-split label in place; True when it was found and joined."""
+    for k in range(len(words) - 1, 1, -1):
+        head, tail = _norm_label(" ".join(words[:k])), _norm_label(" ".join(words[k:]))
+        if not head or not tail:
+            continue
+        for i, line in enumerate(normed):
+            if line != head:
+                continue
+            window_end = min(i + 16, len(out))
+            if "benefit name" not in normed[i + 1:window_end]:
+                continue
+            first = normed.index("benefit name", i + 1)
+            for j in range(first + 1, window_end):
+                for span in (1, 2, 3):
+                    if j + span > len(out):
+                        break
+                    if _norm_label(" ".join(out[j:j + span])) == tail:
+                        out[i] = label
+                        normed[i] = _norm_label(label)
+                        del out[j:j + span]
+                        del normed[j:j + span]
+                        return True
+    return False
 
 
 # Page furniture that sits directly after the last table row.

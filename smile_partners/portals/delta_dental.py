@@ -686,8 +686,12 @@ def _normalize_dd_portal(raw):
                     and not _dd_names_network(matching, network)):
                 return {'total': '$0.00', 'used': '$0.00', 'remaining': '$0.00'}
             return _as_amounts(_dd_for_network(matching, network)[0])
-        # An empty deductible table is the portal stating there is none.
-        if not deductibles:
+        # An empty deductible table is the portal stating there is none. An
+        # export whose Overview tab never loaded — no maximums, deductibles or
+        # benefits overview at all (Andrew Barrs) — says nothing, and is not $0.
+        overview_read = any(isinstance(overview.get(k), list)
+                            for k in ('maximums', 'deductibles', 'benefits_overview'))
+        if not deductibles and overview_read:
             return {'total': '$0.00', 'used': '$0.00', 'remaining': '$0.00'}
         return {'total': '', 'used': '', 'remaining': ''}
 
@@ -930,6 +934,10 @@ def _normalize_dd_portal(raw):
             'ortho_deductible': _ortho_deductible(),
             # The scraper found the Deductibles table (it may still be empty).
             'deductible_table_read': isinstance(overview.get('deductibles'), list),
+            # The Overview tab's tables were read at all. An export where they
+            # never loaded carries none of maximums / deductibles / overview.
+            'overview_read': any(isinstance(overview.get(k), list)
+                                 for k in ('maximums', 'deductibles', 'benefits_overview')),
             'waiting_period_rows': _dd_waiting_rows(tabs.get('waiting_periods')),
             'claims_address_lines': address_lines,
             'procedure_count': len(procedures),
@@ -1029,6 +1037,13 @@ def _apply_dd_output_rules(data, normalized):
     # A plan may hold a deductible for orthodontics alone, separate from the
     # one the general work draws on. Where there is none the shared default of
     # zero already says so.
+    # The plan year is read from the annual maximum's accumulation period. With
+    # the Overview tab missing, the shared reader falls back to the member's
+    # effective date — Andrew Barrs's March for a January plan — so the month
+    # is left unstated instead.
+    if not meta.get('overview_read') and not meta.get('benefit_period_start'):
+        data['plan_year_start'] = ''
+
     ortho_ded = meta.get('ortho_deductible') or {}
     if ortho_ded.get('total'):
         data['ortho_ded'] = _dollar(ortho_ded.get('total'), default='0.00')

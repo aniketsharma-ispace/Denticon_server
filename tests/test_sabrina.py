@@ -2221,6 +2221,43 @@ _rachel_whole = _dd_parse_text(_RACHEL_TEXT.replace("D4910 Perio \n", "D4910 Per
 check("delta sheet: an unbroken label reads the same",
       (_rachel_whole.get("d4910"), _rachel_whole.get("d4910__freq")), ("100%", "4X1Year"))
 
+# Raquel Goshe: the same page break cuts a question, and its remainder runs
+# over two lines on the next page.
+_raquel = _dd_parse_text("\n".join([
+    "Benefit Details", "D4910 Perio Maintenance", "4X1Year", "100%",
+    "11/07/2024, 07/03/2024,06/07/2023, 10/21/2022",
+    "When Is First Perio ", "30 DAYS", "",
+    "Benefit Name", "Frequency", "Percentage", "Coverage", "Age ", "Limit", "History",
+    "Maintenance Allowed ", "After SRP ?",
+    "D5110 Dentures", "1X5Years", "50%",
+]))["fields"]
+check("delta sheet: a question a page break cut over two lines is read",
+      _raquel.get("perio_maint_after_srp"), "30 DAYS")
+check("delta sheet: and the rows around it still read",
+      (_raquel.get("d4910__freq"), _raquel.get("d5110")), ("4X1Year", "50%"))
+
+# Andrew Barrs: the Overview tab never loaded, so the export carries no
+# maximums, deductibles or benefits overview. Nothing there is $0 or March.
+_no_overview_bd = sc._portal_breakdown({
+    "source": "Delta Dental",
+    "primary_patient": {"name": "X", "plan": "Delta Dental PPO",
+                        "static_fields": {"Member eligibility": "03/01/2025 - present"}},
+    "tabs": {"overview": {"deductible_applicability": {}}, "benefits_search": []}})
+# (the breakdown writes an unstated value as "—", which the audit reads as blank)
+check("delta overview missing: the deductibles are unstated, not $0",
+      (_no_overview_bd.get("indiv_ded"), _no_overview_bd.get("family_ded")), ("—", "—"))
+check("delta overview missing: the plan start month is not guessed from the effective date",
+      _no_overview_bd.get("plan_year_start") in (None, "", "—"), True)
+_no_ded_table_bd = sc._portal_breakdown({
+    "source": "Delta Dental", "primary_patient": {"name": "X", "plan": "Delta Dental PPO"},
+    "tabs": {"overview": {"maximums": [_dd_max(
+        "Calendar Individual Maximum Accumulation period for this program (1/1/2026 - 12/31/2026)",
+        _ALL_TYPES, [_PPO], "$1,000.00")]}, "benefits_search": []}})
+check("delta overview read but no Deductibles table: still no deductible ($0)",
+      _no_ded_table_bd.get("indiv_ded"), "0.00")
+check("delta overview read: the plan start month comes from the maximum's period",
+      _no_ded_table_bd.get("plan_year_start"), "January")
+
 # Delta Dental INS (2026-10-16): the user picks the office's network in the
 # extension's pop-up, only that network is searched, and the export says which.
 from smile_partners.sabrina.carriers.delta_dental.rules import _dd_selected_network

@@ -1087,6 +1087,19 @@
     // STEP 2: TAB NAVIGATION
     // ══════════════════════════════════════════════════════════════════════════
 
+    async function waitForAny(selectors, timeoutMs = 15000) {
+        /**
+         * Wait until any of the selectors matches an element on the page.
+         * Returns true when one did, false when the time ran out.
+         */
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            if (selectors.some(selector => document.querySelector(selector))) return true;
+            await sleep(300);
+        }
+        return false;
+    }
+
     async function clickTab(dataTestId) {
         /**
          * Click a tab and wait for content to load
@@ -1131,9 +1144,23 @@
             };
 
             // OVERVIEW TAB
+            // A fixed pause after the click was not always enough: on a slow
+            // page the tables had not rendered yet and the maximums,
+            // deductibles and claims address were all lost (Andrew Barrs).
+            // Wait for them to appear before reading.
             console.log("Scraping Overview tab...");
             await clickTab("overviewTab");
+            const overviewReady = await waitForAny([
+                '[data-testid="benefitsOverviewTable"]',
+                '[data-testid="maximumsTable"]',
+                '[data-testid="deductiblesTable"]',
+            ]);
+            if (overviewReady) await sleep(800);   // the rest of the tab renders with the first table
             auditData.tabs.overview = scrapeOverviewTab();
+            if (!overviewReady) {
+                auditData.tabs.overview.note = "Overview tables did not load within 15 seconds";
+                console.warn("Overview tables did not load — maximums and deductibles not captured");
+            }
 
             // Eligibility info is scraped from static fields visible on the overview tab
             console.log("Scraping eligibility/member info...");
@@ -1142,7 +1169,12 @@
             // PLAN PROVISIONS TAB
             console.log("Scraping Plan Provisions tab...");
             await clickTab("planProvisionsTab");
+            const provisionsReady = await waitForAny(['[data-testid="planProvisionsTable"]']);
             auditData.tabs.plan_provisions = scrapePlanProvisionsTab();
+            if (!provisionsReady) {
+                auditData.tabs.plan_provisions_note = "Plan provisions table did not load within 15 seconds";
+                console.warn("Plan provisions table did not load — provisions not captured");
+            }
 
             // WAITING PERIODS TAB
             console.log("Scraping Waiting Periods tab...");
