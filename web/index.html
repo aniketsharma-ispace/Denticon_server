@@ -224,6 +224,8 @@
         .sab-table tr:last-child td { border-bottom:none; }
         .sab-table tr.sab-row-bad { background:rgba(255,23,68,0.07); }
         .sab-table tr.sab-row-crit { background:rgba(255,112,67,0.1); }
+        .sab-table tr.sab-row-warn { background:rgba(255,171,64,0.08); }
+        .sab-val.sab-warn { color:#ffcc80; font-weight:700; }
         .sab-field { color:#c9d3e3; font-weight:600; width:34%; }
         .sab-val { color:#e6edf3; font-family:'SF Mono',Menlo,Consolas,monospace; font-size:0.76rem; width:24%; word-break:break-word; }
         .sab-val.sab-empty { color:#5c6478; font-style:italic; font-family:inherit; }
@@ -1083,13 +1085,19 @@ const SAB_THEAD = `<thead><tr>
     <th>Field</th><th>Sabrina PDF</th><th>Insurance Portal</th><th>Status</th><th>Note</th>
 </tr></thead>`;
 
+/* Not mismatches, but a person still has to look: the two sides could not be
+   compared, or one side states nothing. Shown up front, highlighted amber. */
+const SAB_REVIEW_STATUSES = ['not_comparable', 'missing_in_sabrina', 'not_in_portal'];
+
 function sabRow(r) {
     const st  = SAB_STATUS[r.status] || SAB_STATUS.not_stated;
     const bad = r.status === 'mismatch';
-    const rowCls = bad ? (r.critical ? ' class="sab-row-crit"' : ' class="sab-row-bad"') : '';
+    const warn = SAB_REVIEW_STATUSES.includes(r.status);
+    const rowCls = bad ? (r.critical ? ' class="sab-row-crit"' : ' class="sab-row-bad"')
+                 : (warn ? ' class="sab-row-warn"' : '');
     const cell = v => (v === null || v === undefined || v === '')
         ? '<td class="sab-val sab-empty">—</td>'
-        : `<td class="sab-val${bad ? ' sab-bad' : ''}">${escHtml(v)}</td>`;
+        : `<td class="sab-val${bad ? ' sab-bad' : (warn ? ' sab-warn' : '')}">${escHtml(v)}</td>`;
     return `<tr${rowCls}>
         <td class="sab-field">${bad && r.critical ? '<span class="sab-crit-dot">▸</span>' : ''}${escHtml(r.label)}</td>
         ${cell(r.sabrina)}
@@ -1235,6 +1243,18 @@ function renderSabrina(result) {
             ? `<div class="sab-clean">✓ No confirmed mismatches among comparable fields. ${s.not_comparable} field(s) are not comparable because one side lacks sufficient source data.</div>`
             : `<div class="sab-clean">✓ Every field the portal states agrees with the Sabrina PDF.</div>`);
 
+    // Fields to review: shown before the full list, worst kind first.
+    const review = (result.sections || [])
+        .flatMap(sec => sec.rows || [])
+        .filter(r => SAB_REVIEW_STATUSES.includes(r.status))
+        .sort((a, b) => SAB_REVIEW_STATUSES.indexOf(a.status) - SAB_REVIEW_STATUSES.indexOf(b.status));
+    const reviewBlock = review.length
+        ? `<div class="sab-section-title">Fields To Review
+               <span class="sab-section-count">${review.length}</span>
+               <span class="divider"></span></div>
+           <table class="sab-table">${SAB_THEAD}<tbody>${review.map(sabRow).join('')}</tbody></table>`
+        : '';
+
     const toolkitDiag = result.diagnostics?.toolkit;
     const toolkitBlock = toolkitDiag
         ? `<div class="sab-legend"><b>Delta Toolkit:</b> ${toolkitDiag.successful_codes ?? '—'}/${toolkitDiag.requested_codes ?? '—'} procedure lookups succeeded`
@@ -1274,6 +1294,7 @@ function renderSabrina(result) {
         </div>
         ${pills}
         ${mismBlock}
+        ${reviewBlock}
         ${toolkitBlock}
         <span class="sab-toggle" id="sabToggle">Show all ${s.total_fields} fields ▾</span>
         <div id="sabAll" style="display:none;">${allBlock}</div>

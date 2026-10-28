@@ -320,6 +320,8 @@ def _parse_single_frequency(v) -> tuple | None:
     if _blank(v):
         return None
     s = re.sub(r"\s+", " ", str(v)).strip().lower().lstrip("*")
+    # Cigna sometimes splits the word: "Once Per Life time".
+    s = re.sub(r"\blife\s+time\b", "lifetime", s)
     # Cigna words this "No benefits for this service"; the normalizer usually
     # shortens it to "NOT COVERED", but accept both so either can be compared.
     if ("not covered" in s or "no benefits" in s or "not a covered" in s

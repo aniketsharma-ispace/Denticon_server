@@ -267,7 +267,7 @@ const PROCEDURE_CODES = [
     "D0180", "D0120", "D0140", "D0150","D1208",
     "D0210", "D0220", "D0230", "D0240", "D0274", "D0330", "D0364", "D0431",
     "D1510", "D1110", "D1120", "D1206", "D1351",
-    "D2140", "D2331", "D2391", "D2620", "D2740", "D2950", "D2962", "D2991",
+    "D2140", "D2160", "D2331", "D2391", "D2620", "D2740", "D2950", "D2962", "D2991",
     "D3347", "D3310", "D3330",
     "D4260", "D4249", "D4341", "D4355", "D4381", "D4346", "D4910",
     "D5860", "D5110", "D5740", "D5982",
@@ -288,45 +288,49 @@ const CIGNA_VALID_CONTEXT_VALUES = {
     arch: ["UA", "LA"],
     quadrant: ["LR", "LL", "UR", "UL"]
 };
-const CIGNA_DEFAULT_CONTEXT = { tooth: "3", arch: "UA", quadrant: "LR" };
+const CIGNA_DEFAULT_CONTEXT = { tooth: "1", arch: "UA", quadrant: "LR" };
 // Do not infer "number of payable D4341 quads" from context probes. A single
 // quadrant response only proves that context is valid for coverage lookup.
 const CIGNA_ALL_QUADRANT_CONTEXT_CODES = new Set([]);
+// Business rule: every tooth-specific lookup uses tooth 1, the same tooth the
+// team enters on the Cigna website. Cigna's answer can depend on the tooth
+// (e.g. D7140: tooth 1 = 20% patient pays, tooth 3 = 50%).
 const CIGNA_CONTEXT_BY_CODE = {
-    D1351: { tooth: "3" },
+    D1351: { tooth: "1" },
     D1510: { quadrant: "LR" },
-    D2140: { tooth: "3" },
-    D2331: { tooth: "8" },
-    D2391: { tooth: "3" },
-    D2620: { tooth: "3" },
-    D2740: { tooth: "3" },
-    D2950: { tooth: "3" },
-    D2962: { tooth: "8" },
-    D2991: { tooth: "3" },
-    D3347: { tooth: "4" },
-    D3310: { tooth: "8" },
-    D3330: { tooth: "3" },
+    D2140: { tooth: "1" },
+    D2160: { tooth: "1" },
+    D2331: { tooth: "1" },
+    D2391: { tooth: "1" },
+    D2620: { tooth: "1" },
+    D2740: { tooth: "1" },
+    D2950: { tooth: "1" },
+    D2962: { tooth: "1" },
+    D2991: { tooth: "1" },
+    D3347: { tooth: "1" },
+    D3310: { tooth: "1" },
+    D3330: { tooth: "1" },
     D4260: { quadrant: "LR" },
-    D4249: { tooth: "3" },
+    D4249: { tooth: "1" },
     D4341: { quadrant: "LR" },
-    D4381: { tooth: "3" },
+    D4381: { tooth: "1" },
     D5860: { arch: "UA" },
     D5110: { arch: "UA" },
     D5740: { arch: "UA" },
     D5982: { arch: "UA" },
-    D6194: { tooth: "3" },
-    D6010: { tooth: "3" },
-    D6056: { tooth: "3" },
-    D6065: { tooth: "3" },
-    D6245: { tooth: "3" },
-    D6750: { tooth: "3" },
-    D7259: { tooth: "17" },
-    D7140: { tooth: "3" },
-    D7210: { tooth: "3" },
-    D7240: { tooth: "17" },
-    D7953: { tooth: "3" },
-    D2980: { tooth: "1"},
-    D5212: { arch: "LA"}
+    D6194: { tooth: "1" },
+    D6010: { tooth: "1" },
+    D6056: { tooth: "1" },
+    D6065: { tooth: "1" },
+    D6245: { tooth: "1" },
+    D6750: { tooth: "1" },
+    D7259: { tooth: "1" },
+    D7140: { tooth: "1" },
+    D7210: { tooth: "1" },
+    D7240: { tooth: "1" },
+    D7953: { tooth: "1" },
+    D2980: { tooth: "1" },
+    D5212: { arch: "LA" }
 };
 const CIGNA_CONTEXT_VARIANTS_BY_CODE = {
     D1351: [
@@ -1497,6 +1501,22 @@ const CIGNA_GROUPED_BENEFIT_BATCH_CODES = Object.freeze([
     "D6194", "D6010", "D6065", "D6056"
 ]);
 
+
+// Codes Cigna must evaluate together. Each set goes in its own request, never
+// mixed with other codes and never split: Cigna limits the codes in one
+// request as if they were done together, so the set decides the frequency it
+// reports (D0210 alone: "Once Per 60 Consecutive Months"; with D0330:
+// "Once Per 36 Consecutive Months").
+//   - Implants: most reliable implant details when evaluated together.
+//   - D0210 + D0330: business rule, searched together.
+//   - D0120 + D0140 + D0150: business rule, searched together.
+const CIGNA_DEDICATED_BENEFIT_BATCHES = Object.freeze([
+    CIGNA_GROUPED_BENEFIT_BATCH_CODES,
+    Object.freeze(["D0210", "D0330"]),
+    Object.freeze(["D0120", "D0140", "D0150"]),
+    Object.freeze(["D4910"]),
+    Object.freeze(["D7140"])
+]);
 // These are local crawler settings.  Do not try to read a same-named global in
 // their initializer: `const value = typeof value ...` throws before the crawl
 // starts because the local binding is still in its temporal dead zone.
@@ -2146,6 +2166,15 @@ function recordsForSelectedNetwork(records) {
     return (Array.isArray(records) ? records : []).filter(Boolean).filter(inSelectedNetwork);
 }
 
+function cignaMissingToothStatus(ageRecord) {
+    const limit = ageRecord?.missingtoothLimit || {};
+    const indicator = String(limit.missingToothLimitIndicator || "").trim().toUpperCase();
+    const pageText = document.body?.textContent || "";
+    if (indicator === "Y" || /missing\s+tooth\s+limitations?\s+apply\s+if/i.test(pageText)) return "Applies";
+    if (indicator === "N") return "Does not apply";
+    return apiValue(limit.missingToothLimitEndDate);
+}
+
 function applyCoverageApi(baseData, coverage) {
     const patient = coverage.patientDetails || {};
     const subscriber = coverage.subscriberDetails || {};
@@ -2241,7 +2270,7 @@ function applyCoverageApi(baseData, coverage) {
     ]).filter(Boolean), record => [record.type, record.age, record.ends, buildLimitationRecordKey(record.details)].map(normalizeComparableScalar).join("\u001f"));
     baseData.notes = {
         ...baseData.notes,
-        missing_tooth: age?.missingtoothLimit?.missingToothLimitIndicator === "N" ? "Does not apply" : apiValue(age?.missingtoothLimit?.missingToothLimitEndDate),
+        missing_tooth: cignaMissingToothStatus(age),
         ortho_note: "Orthodontic age limitations may differ from other age limitations on the plan; contact Customer Support for Orthodontic eligibility requirements.",
         plan_notes: uniqueStrings(coverage.planBenefits?.notes),
         waiting_period: uniqueStrings(coverage.waitingPeriod)
@@ -2250,26 +2279,30 @@ function applyCoverageApi(baseData, coverage) {
 
 function buildBenefitBatches(procedures) {
     const byCode = new Map(procedures.map(item => [normalizeProcedureCode(item?.code), item]));
-    const groupedBatch = CIGNA_GROUPED_BENEFIT_BATCH_CODES.map(code => byCode.get(code)).filter(Boolean);
-    if (groupedBatch.length !== CIGNA_GROUPED_BENEFIT_BATCH_CODES.length) {
-        const missing = CIGNA_GROUPED_BENEFIT_BATCH_CODES.filter(code => !byCode.has(code));
-        throw new Error(`Required grouped Cigna procedure batch is incomplete: ${missing.join(", ")}`);
+    const batches = [];
+    const dedicated = new Set();
+    for (const group of CIGNA_DEDICATED_BENEFIT_BATCHES) {
+        const batch = group.map(code => byCode.get(code)).filter(Boolean);
+        if (batch.length !== group.length) {
+            const missing = group.filter(code => !byCode.has(code));
+            throw new Error(`Required dedicated Cigna procedure batch is incomplete: ${missing.join(", ")}`);
+        }
+        group.forEach(code => dedicated.add(code));
+        batches.push(batch);
+        console.info("Cigna: Dedicated benefit batch", batch.map(procedureDebugEntry));
     }
-
-    const groupedCodes = new Set(CIGNA_GROUPED_BENEFIT_BATCH_CODES);
-    const remaining = procedures.filter(item => !groupedCodes.has(normalizeProcedureCode(item?.code)));
-    const batches = [groupedBatch];
+    const remaining = procedures.filter(item => !dedicated.has(normalizeProcedureCode(item?.code)));
     for (let i = 0; i < remaining.length; i += PROCEDURES_PER_REQUEST) {
         batches.push(remaining.slice(i, i + PROCEDURES_PER_REQUEST));
     }
-    console.info("Cigna: Dedicated grouped benefit batch", groupedBatch.map(procedureDebugEntry));
     return batches;
 }
 
 function isGroupedBenefitBatch(batch) {
-    if (!Array.isArray(batch) || batch.length !== CIGNA_GROUPED_BENEFIT_BATCH_CODES.length) return false;
+    if (!Array.isArray(batch)) return false;
     const codes = new Set(batch.map(item => normalizeProcedureCode(item?.code)));
-    return CIGNA_GROUPED_BENEFIT_BATCH_CODES.every(code => codes.has(code));
+    return CIGNA_DEDICATED_BENEFIT_BATCHES.some(group =>
+        group.length === codes.size && group.every(code => codes.has(code)));
 }
 
 function matchBenefitResponse(batch, data, found, failures, stats) {
@@ -2390,6 +2423,25 @@ function validateCignaNormalization(data) {
     }
     console.info("Cigna normalization:", summary);
     return summary;
+}
+
+// Cigna's code search marks some codes msgCode "N": the website then shows
+// "No Dental benefits for this procedure code" and refuses to look them up.
+// The benefits API can still answer with the plan's class-level benefit for
+// such a code (seen on D5995), so the search flag decides.
+function markNoDentalBenefits(result) {
+    Object.assign(result, {
+        covered: false,
+        benefit_status: "Not a covered service",
+        coinsurance_member_pct: "N/A",
+        maximum_remaining: "N/A",
+        maximum_total: "N/A",
+        frequency_used: "N/A",
+        frequency_limit: "No benefits for this service",
+        alternate_benefit: false
+    });
+    result.api_details = { ...(result.api_details || {}), no_dental_benefits: true };
+    return result;
 }
 
 async function crawlProcedureCodes(baseData, run) {
@@ -2517,6 +2569,7 @@ async function crawlProcedureCodes(baseData, run) {
     });
     for (const result of results) {
         result.api_details = { ...(result.api_details || {}), search_msg_code: msgCodes[result.procedure_code] || "" };
+        if (msgCodes[result.procedure_code] === "N") markNoDentalBenefits(result);
     }
     validateProcedureResultIntegrity(results);
     baseData.procedures.codes_searched = [...PROCEDURE_CODES];

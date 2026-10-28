@@ -378,6 +378,41 @@ def _cigna_is_ortho_only(record):
     return 'ortho' in str(record.get('desc', '')).lower()
 
 
+def _cigna_money(value):
+    """'$2,000.00' / '-$1,500.00' -> float, or None when not a money value."""
+    text = str(value or '').replace('$', '').replace(',', '').replace(' ', '')
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _cigna_capped_record(record):
+    """
+    An accumulator record as the Cigna website shows it.
+
+    Cigna's API can report more used than the total — e.g. an orthodontic
+    lifetime maximum of $500 with "met" $2,000 and "remaining" -$1,500, where
+    claims went past the limit. The website shows that as "Benefit Maximums
+    Met": used = the total, remaining = 0. Apply the same cap so the portal
+    value matches what staff see and record.
+    """
+    if not record:
+        return record
+    total = _cigna_money(record.get('amount'))
+    used = _cigna_money(record.get('met'))
+    remaining = _cigna_money(record.get('remaining'))
+    if total is None or used is None:
+        return record
+    if used <= total and (remaining is None or remaining >= 0):
+        return record
+    used = min(max(used, 0.0), total)
+    capped = dict(record)
+    capped['met'] = f'${used:,.2f}'
+    capped['remaining'] = f'${total - used:,.2f}'
+    return capped
+
+
 def _cigna_ortho_max_record(records, selected_network):
     return next(
         (
@@ -535,6 +570,12 @@ def _normalize_cigna_portal(raw):
     )
     ortho_max = _cigna_ortho_max_record(maximums, network)
     ortho_ded = _cigna_ortho_deductible_record(deductibles, network)
+    # Used can never exceed the total (the website shows such a record as
+    # "Met"); see _cigna_capped_record.
+    annual, individual_ded, family_ded, ortho_max, ortho_ded = (
+        _cigna_capped_record(record)
+        for record in (annual, individual_ded, family_ded, ortho_max, ortho_ded)
+    )
     deductible_applicability = _cigna_deductible_applicability(raw, network)
 
     normalized_procs = []
@@ -583,6 +624,11 @@ def _normalize_cigna_portal(raw):
             freq = ''
         elif covered is False:
             freq = 'NOT COVERED'
+        elif covered is True and re.search(r'no\s+benefits?\s+for\s+this\s+service', freq, re.IGNORECASE):
+            # A covered code whose limitation text reads "No benefits for this
+            # service" (seen on D9110, Out-of-Network) has no frequency limit:
+            # the website shows "No Frequency Limitation for this benefit".
+            freq = 'No Frequency Limitation for this benefit'
 
         limitation = matched_limitation or api_details.get('limitation') or {}
         age = (
@@ -854,12 +900,15 @@ def _apply_cigna_output_rules(data, normalized):
     deductible_applicability = meta.get('deductible_applicability') or {}
     missing_raw = str(meta.get('missing_tooth') or '').strip()
     missing_text = missing_raw.lower()
-    if missing_text in ('', 'n/a', 'na', 'none', '-', '—'):
+    if missing_text in ('', 'n/a', 'na', '-', '—'):
         missing_tooth = '-'
     elif (
         'does not apply' in missing_text
         or 'not applicable' in missing_text
-        or missing_text == 'no'
+        # The Missing Tooth Limitation row of Cigna's age-limit table states
+        # "None" / "No Limitations" when the clause does not apply.
+        or 'no limitation' in missing_text
+        or missing_text in ('no', 'none')
     ):
         missing_tooth = 'No'
     else:
@@ -1010,7 +1059,10 @@ def _apply_cigna_output_rules(data, normalized):
         ('D2740', 'porcelain_posterior_downgrade'),
     ):
         proc = procs.get(code) or {}
-        if proc.get('_cigna_covered') is None:
+        if proc.get('_cigna_covered') is not True:
+            # Not covered (or not resolved): there is nothing to downgrade, so
+            # the question is left blank — Cigna prints "Alternate benefit may
+            # apply" even on not-covered codes, which must not read as Yes.
             data[output_key] = '-'
         else:
             data[output_key] = (

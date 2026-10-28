@@ -114,11 +114,15 @@ _SPEC: list[dict] = [
     {"key": "cob",            "label": "Coordination Of Benefits",   "kind": "cob",   "section": "Plan Provisions", "portal": "_cob",
      "aliases": ["Coordination of Benefits", "COB"]},
 
-    {"key": "pct_prev",  "label": "D0120 Preventative", "kind": "pct", "section": "Plan Provisions", "portal": "pct_prev",
+    # Business rule: these three are the coverage % of the named CDT code
+    # itself, not the category table — on some plans the code sits in a
+    # different class (e.g. amalgams in "Class 7" at 50%, while "Basic
+    # Restorative" is 60%).
+    {"key": "pct_prev",  "label": "D0120 Preventative", "kind": "pct", "section": "Plan Provisions", "portal": ("code", "D0120"),
      "aliases": ["Preventative %", "Preventive"]},
-    {"key": "pct_basic", "label": "D2160 Basic",        "kind": "pct", "section": "Plan Provisions", "portal": "pct_basic",
+    {"key": "pct_basic", "label": "D2160 Basic",        "kind": "pct", "section": "Plan Provisions", "portal": ("code", "D2160"),
      "aliases": ["Basic %", "Basic"]},
-    {"key": "pct_major", "label": "D2740 Major",        "kind": "pct", "section": "Plan Provisions", "portal": "pct_major",
+    {"key": "pct_major", "label": "D2740 Major",        "kind": "pct", "section": "Plan Provisions", "portal": ("code", "D2740"),
      "aliases": ["Major %", "Major"]},
 
     # ── Orthodontics ─────────────────────────────────────────────────────────
