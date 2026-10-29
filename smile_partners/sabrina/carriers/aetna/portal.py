@@ -20,6 +20,7 @@ from .rules import (
     _aetna_field_override,
     _aetna_in_network_unverifiable,
     _aetna_breakdown_for_sheet,
+    _aetna_not_covered_value,
     _aetna_oon_benefits,
     _aetna_ortho_age,
     _aetna_portal_for_sheet,
@@ -303,8 +304,13 @@ def _portal_ortho_age(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     aetna = _aetna_ortho_age(portal_raw)
     if aetna:
         return aetna
-    procs = bd.get("procs", {})
     codes = ("D8080", "D8090", "D8010")
+    # Orthodontics Aetna marks Not Covered is age 0 (or blank), as the sheet
+    # records it.
+    handled, not_covered = _aetna_not_covered_value(portal_raw, codes, "age_limit", sab_raw)
+    if handled:
+        return not_covered
+    procs = bd.get("procs", {})
     return _procfield_from_procs(procs, "age_limit", codes)
 
 
@@ -503,7 +509,7 @@ def _portal_value_from_spec(field: dict, bd: dict, portal_raw: dict, sab_raw=Non
     if isinstance(src, tuple) and src and src[0] == "codefield":
         value = _procfield_from_procs(bd.get("procs", {}), src[1], src[2:])
         handled, corrected = _aetna_code_override(
-            field, value, bd, portal_raw, src[2:], src[1])
+            field, value, bd, portal_raw, src[2:], src[1], sab_raw)
         return corrected if handled else value
     if isinstance(src, str) and src in _DERIVED:
         return _DERIVED[src](bd, portal_raw, sab_raw)

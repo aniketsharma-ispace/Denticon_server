@@ -282,8 +282,39 @@ def _aetna_history(portal_raw: dict, code: str) -> str | None:
     return "\n".join(dates) if dates else "NH"
 
 
+def _aetna_not_covered_row(portal_raw: dict, codes) -> dict | None:
+    """The first of `codes` whose service row Aetna marks "Not Covered", if any."""
+    for code in codes:
+        row = _aetna_row(portal_raw, str(code))
+        if row:
+            said = " ".join(str(row.get(k) or "") for k in ("percentage_copay", "message"))
+            return row if re.search(r"not\s+covered", said, re.IGNORECASE) else None
+    return None
+
+
+def _aetna_not_covered_value(portal_raw: dict, codes, what: str, sab_raw=None):
+    """
+    Age limit and history for a code Aetna marks "Not Covered" (agreed with
+    the team, 2026-10-29).
+
+    The page gives such a code "N/A" for both, and the sheet records it as age
+    0 and history NH — Jerry Porter's D1206 / D1208 / D1351 / D1510 and his
+    ortho codes. Age reads 0 (a blank sheet age is also right, and is left with
+    nothing to compare); history reads "—", the same as the sheet's NH.
+
+    Returns (handled, value).
+    """
+    if _aetna_export(portal_raw) is None or not _aetna_not_covered_row(portal_raw, codes):
+        return False, None
+    if what == "late_date_of_service":
+        return True, "—"
+    if what == "age_limit":
+        return True, (None if str(sab_raw or "").strip() in ("", "-", "—") else "0")
+    return False, None
+
+
 def _aetna_code_override(field: dict, value, bd: dict, portal_raw: dict,
-                         codes: tuple[str, ...], what: str):
+                         codes: tuple[str, ...], what: str, sab_raw=None):
     """
     Correct a per-code value the way this sheet records it. Returns
     (handled, value), the same contract as the Cigna override.
@@ -296,6 +327,9 @@ def _aetna_code_override(field: dict, value, bd: dict, portal_raw: dict,
     """
     if not codes or _aetna_export(portal_raw) is None:
         return False, value
+    handled, not_covered = _aetna_not_covered_value(portal_raw, codes, what, sab_raw)
+    if handled:
+        return True, not_covered
     if what == "late_date_of_service":
         for code in codes:
             if _aetna_row(portal_raw, str(code)):

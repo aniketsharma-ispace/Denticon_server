@@ -3337,6 +3337,50 @@ check("a Frequency-only code shows its Frequency and never a percentage",
       (False, True, False, True))
 
 
+# Smile Partners / Aetna (Jerry Porter, 2026-10-29): a code Aetna marks "Not
+# Covered" has "N/A" age and history on the page; the sheet records age 0 and
+# history NH, and both now agree instead of reading "not on portal".
+def _aetna_slb(code, pct, message, history="N/A", age="N/A", frequency="N/A"):
+    return {"procedure_code": code, "percentage_copay": pct, "frequency": frequency,
+            "history": history, "age_limit": age, "shares_frequency_with": "",
+            "message": message, "source": ""}
+
+
+_JERRY_ROWS = [
+    _aetna_slb("D1206", "", "Not Covered"),
+    _aetna_slb("D8080", "", "Not Covered"),
+    _aetna_slb("D1110", "0% / 100% $0.00", "", history="1 Unit Remaining. Last paid date: 05/11/26",
+               frequency="2 Units Calendar Year."),
+]
+_JERRY = {"source": "ClaimConnect - Extended Plan Benefits", "payer": {"name": "AETNA"},
+          "in_network": {"maximums": [], "deductibles": [], "co_insurance": [],
+                         "service_level_benefits": _JERRY_ROWS},
+          "out_of_network": {"maximums": [], "deductibles": [], "co_insurance": [],
+                             "service_level_benefits": _JERRY_ROWS}}
+
+
+def _jerry(fields):
+    audit = _sp.compare_sabrina_to_portal({"fields": dict(fields, in_network="In"), "benefit_rows": {}},
+                                          _JERRY)
+    return audit["carrier"], {r["key"]: r for s in audit["sections"] for r in s["rows"]}
+
+
+_jc, _jr = _jerry({"d1206": "0", "d1206__age": "0", "d1206__hist": "NH",
+                   "ortho_coverage": "0", "ortho_coverage__age": "0", "d1110__hist": "05/11/2026"})
+check("aetna: the export is audited by the Aetna folder", _jc, "aetna")
+check("aetna not covered: age 0 agrees with the sheet's 0",
+      (_jr["d1206__age"]["portal"], _jr["d1206__age"]["status"]), ("0", "match"))
+check("aetna not covered: history agrees with the sheet's NH",
+      (_jr["d1206__hist"]["portal"], _jr["d1206__hist"]["status"]), ("—", "match"))
+check("aetna not covered: the ortho age agrees with the sheet's 0",
+      (_jr["ortho_coverage__age"]["portal"], _jr["ortho_coverage__age"]["status"]), ("0", "match"))
+check("aetna not covered: a covered code's history is unchanged",
+      _jr["d1110__hist"]["status"], "match")
+_, _jr_blank = _jerry({"d1206": "0"})
+check("aetna not covered: a blank sheet age is left with nothing to compare",
+      (_jr_blank["d1206__age"]["portal"], _jr_blank["d1206__age"]["status"]), (None, "not_stated"))
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  2. DETECTION
 # ══════════════════════════════════════════════════════════════════════════════
