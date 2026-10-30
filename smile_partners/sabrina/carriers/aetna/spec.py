@@ -70,7 +70,9 @@ _SPEC: list[dict] = [
      "aliases": ["Insurance Carrier", "Carrier Name"]},
     {"key": "group_name",   "label": "Group Name",        "kind": "text",    "section": "Insurance", "portal": "group_name",
      "aliases": ["Employer Group", "Employer Name"]},
-    {"key": "group_number", "label": "Group Number",      "kind": "id",      "section": "Insurance", "portal": "group_number",
+    # Exact: for Aetna PPO plans the leading 0 must be dropped, so a sheet
+    # that kept it is a mismatch, not "formatting differs".
+    {"key": "group_number", "label": "Group Number",      "kind": "id_exact", "section": "Insurance", "portal": "group_number",
      "aliases": ["Group #", "Group No", "Group Num"]},
     {"key": "ins_address",  "label": "Insurance Address",  "kind": "address", "section": "Insurance", "portal": "ins_address",
      "aliases": ["Carrier Address", "Claims Address"]},

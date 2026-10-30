@@ -176,12 +176,45 @@ def _aetna_financial_record(records, type_hint='', coverage=''):
             item for item in candidates
             if type_hint.lower() in str(item.get('type') or '').lower()
         ]
+    else:
+        # No type asked for means the dental (non-ortho) row: an "Ortho
+        # Individual" deductible must never stand in for the dental one, even
+        # when its table comes first on the page.
+        candidates = [
+            item for item in candidates
+            if 'ortho' not in str(item.get('type') or '').lower()
+        ]
     if coverage:
         candidates = [
             item for item in candidates
             if coverage.lower() in str(item.get('coverage') or '').lower()
         ]
     return candidates[0] if candidates else {}
+
+
+# Payer "Coverage" values that cover one person only, so that person is the
+# subscriber.
+_AETNA_SINGLE_COVERAGE = {
+    'employee', 'employee only', 'individual', 'single', 'subscriber',
+    'subscriber only', 'member', 'member only',
+}
+
+
+def _aetna_is_ppo_export(raw):
+    """A PPO plan: the payer's Plan Type says Preferred Provider / PPO."""
+    payer = (raw or {}).get('payer') if isinstance(raw, dict) else {}
+    plan_type = str((payer or {}).get('plan_type') or '').lower()
+    return 'ppo' in plan_type or 'preferred provider' in plan_type
+
+
+def _aetna_is_federal_export(raw):
+    """A Federal plan: the Group Name says Federal (e.g. FEDERAL EMPLOYEES ...)."""
+    if not isinstance(raw, dict):
+        return False
+    payer = raw.get('payer') if isinstance(raw.get('payer'), dict) else {}
+    coverage = raw.get('coverage_details') if isinstance(raw.get('coverage_details'), dict) else {}
+    name = f"{payer.get('group_name') or ''} {coverage.get('group_name') or ''}"
+    return 'federal' in name.lower()
 
 
 def _aetna_is_medicare_export(raw):
@@ -462,6 +495,13 @@ def _normalize_aetna_portal(raw):
                 break
     if not relationship and clean(patient_name).lower() == clean(subscriber.get('name')).lower():
         relationship = 'Self'
+    if not relationship:
+        # Coverage for one person only ("Employee", "Individual"): the patient
+        # is the subscriber, even when the crawl did not start from the
+        # results page and so has no member list.
+        coverage_level = clean((raw.get('payer') or {}).get('coverage') or '').lower()
+        if coverage_level in _AETNA_SINGLE_COVERAGE:
+            relationship = 'Self'
 
     member_id = (
         patient.get('member_id_or_ssn')
@@ -474,8 +514,13 @@ def _normalize_aetna_portal(raw):
     # Read by the extension from the subscriber's own Plan Benefits page when
     # the patient is a dependent (extension 10/2026+).
     subscriber_dob = clean(subscriber.get('date_of_birth') or '')
+    if relationship.lower() in ('self', 'subscriber') and not subscriber_name:
+        subscriber_name = patient_name
     if subscriber_dob:
         pass
+    elif relationship.lower() in ('self', 'subscriber'):
+        # The patient is the subscriber: same person, same DOB.
+        subscriber_dob = patient_dob
     elif subscriber_name and clean(subscriber_name).lower() == clean(patient_name).lower():
         subscriber_dob = patient_dob
     else:
@@ -635,6 +680,9 @@ def _normalize_aetna_portal(raw):
     claim = raw.get('claim_address') if isinstance(raw.get('claim_address'), dict) else {}
     normalized['_aetna_meta'] = {
         'remarks': remarks,
+        'is_ppo': _aetna_is_ppo_export(raw),
+        'is_federal': _aetna_is_federal_export(raw),
+        'is_medicare': _aetna_is_medicare_export(raw),
         # Medicare plans send claims to their own address, read from the
         # page's Provider Information > Claim Address (extension 10/2026+).
         'claim_address': clean(claim.get('address') or '') if _aetna_is_medicare_export(raw) else '',

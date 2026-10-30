@@ -46,6 +46,12 @@ def _apply_aetna_output_rules(data, normalized):
     """Apply only Aetna-specific meanings after the shared extraction path."""
     meta = normalized.get('_aetna_meta') or {}
     remarks = meta.get('remarks') or []
+
+    # Client update: Aetna PPO group numbers are captured without the leading
+    # 0 (Medicare plans keep their own numbering).
+    if (meta.get('is_ppo') and not meta.get('is_medicare')
+            and str(data.get('group_number') or '').startswith('0')):
+        data['group_number'] = str(data['group_number']).lstrip('0') or data['group_number']
     waiting_value, waiting_months, waiting_applies = _aetna_waiting_period(remarks)
 
     has_any_deductible = bool(
@@ -62,9 +68,11 @@ def _apply_aetna_output_rules(data, normalized):
             if meta.get('family_deductible_present')
             else _triple_individual_deductible(individual_ded)
         )
+        # No Family row: the individual is part of the family, so what the
+        # individual has paid toward the deductible counts for the family too.
         family_paid = (
             data.get('family_ded_paid')
-            if meta.get('family_deductible_present') else '-'
+            if meta.get('family_deductible_present') else individual_paid
         )
         ded_prev = ded_diag = '-'
     else:
@@ -90,7 +98,9 @@ def _apply_aetna_output_rules(data, normalized):
         'plan_type': _display_plan_type(data.get('plan_type')),
         'term_date': '-',
         'plan_year_start': plan_begin_month or _effective_date_month(data.get('eff_date')) or '-',
-        'yearly_max': data.get('yearly_max') if meta.get('annual_max_present') else '0.00',
+        # Federal plans with no Maximums section: 99999 (no annual maximum).
+        'yearly_max': (data.get('yearly_max') if meta.get('annual_max_present')
+                       else '99999' if meta.get('is_federal') else '0.00'),
         'yearly_rem': data.get('yearly_rem') if meta.get('annual_max_present') else '0.00',
         'indiv_ded': individual_ded,
         'indiv_ded_paid': individual_paid,
