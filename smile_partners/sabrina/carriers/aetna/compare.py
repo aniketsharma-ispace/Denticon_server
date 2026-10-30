@@ -130,6 +130,17 @@ def _compare(kind: str, sab, por, ctx: dict | None = None) -> tuple[bool | None,
             return True, f"service dates overlap; also on one side: {', '.join(missing)}"
         return False, ""
 
+    if kind == "id_exact":
+        # Same characters, in order. No leading-zero or padding tolerance.
+        a, b = _norm_id(sab), _norm_id(por)
+        if a is None or b is None:
+            return None, ""
+        if a == b:
+            return True, ""
+        if a.lstrip("0") == b.lstrip("0"):
+            return False, "differs only by leading zeros; Aetna PPO group numbers drop the leading 0"
+        return False, ""
+
     if kind == "id":
         a, b = _norm_id(sab), _norm_id(por)
         if a is None or b is None:

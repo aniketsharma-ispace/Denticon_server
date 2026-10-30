@@ -23,7 +23,9 @@ from shared.portals.aetna import (
     _aetna_export,
     _aetna_frequency,
     _aetna_history_dates,
+    _aetna_is_federal_export,
     _aetna_is_medicare_export,
+    _aetna_is_ppo_export,
     _aetna_network_view,
     _aetna_remarks,
     _aetna_row,
@@ -174,20 +176,27 @@ def _aetna_breakdown_for_sheet(bd: dict, portal_norm: dict) -> dict:
         return bd
     bd = dict(bd)
 
-    # Plan year: ClaimConnect's Plan Begin is when coverage started (Emma:
-    # 09/29/2026), not when the benefit year resets. The Maximums and
-    # Deductibles tables say "Calendar Year" when it resets in January.
-    messages = " ".join(str(r.get("message") or "")
-                        for table in ("maximums", "deductibles")
-                        for r in _aetna_rows(portal_norm, table)).lower()
-    if "calendar year" in messages:
+    # Starting Month of Plan Year: January when the codes' Frequency &
+    # Limitations (or the Maximums / Deductibles messages) say "Calendar";
+    # otherwise the Plan Begin month, as is (05/30/2021 -> May).
+    stated = " ".join(
+        [str(r.get("frequency") or "") for r in _aetna_rows(portal_norm, "service_level_benefits")]
+        + [str(r.get("message") or "") for table in ("maximums", "deductibles")
+           for r in _aetna_rows(portal_norm, table)]).lower()
+    if "calendar" in stated:
         bd["plan_year_start"] = "January"
-    elif "contract year" in messages:
-        # Contract Year: the year starts in Plan Begin's month, as is
-        # (05/30/2021 -> May).
+    else:
         month = _aetna_contract_year_start((_aetna_export(portal_norm) or {}).get("dates", {}).get("plan_begin"))
         if month:
             bd["plan_year_start"] = month
+
+    # Federal plans with no Maximums section: the Yearly Max is 99999
+    # (no annual maximum).
+    raw_export = _aetna_export(portal_norm) or {}
+    if (_aetna_is_federal_export(raw_export)
+            and not any("ortho" not in str(r.get("type") or "").lower()
+                        for r in _aetna_rows(portal_norm, "maximums"))):
+        bd["yearly_max"] = "99999"
 
     for key, code in _DED_CLASS_CODE.items():
         answer = _aetna_deductible_applies(portal_norm, code)
@@ -225,6 +234,16 @@ def _aetna_breakdown_for_sheet(bd: dict, portal_norm: dict) -> dict:
     # "MISSING TOOTH CLAUSE APPLIES", otherwise No. (The New Plan PDF prints
     # "-" when it is not stated; the sheet always answers Yes or No.)
     bd["missing_tooth"] = "Yes" if "missing tooth clause applies" in _aetna_remarks(portal_norm) else "No"
+
+    # Subscriber DOB: when the portal's subscriber is the patient (same name)
+    # but no subscriber DOB was captured, it is the patient's own DOB. Happens
+    # when a Self patient is crawled without starting from the results page.
+    norm = lambda v: re.sub(r"[^a-z]", "", str(v or "").lower())
+    if (not str(bd.get("subscriber_dob") or "").strip().strip("-")
+            and bd.get("patient_dob")
+            and norm(bd.get("subscriber_name"))
+            and norm(bd.get("subscriber_name")) == norm(bd.get("patient_name"))):
+        bd["subscriber_dob"] = bd["patient_dob"]
 
     # Is there a Waiting Period? Yes when any code carries one (a waiting
     # period column such as "12 months"; extension 10/2026+).
@@ -352,6 +371,13 @@ def _aetna_code_override(field: dict, value, bd: dict, portal_raw: dict,
 _BLANK_AMOUNTS = {"", "-", "\u2014", "\u2013", "n/a", "na", "none"}
 
 
+def _aetna_group_without_leading_zero(value) -> str:
+    """065745502800016 -> 65745502800016 (all leading zeros dropped)."""
+    text = str(value).strip()
+    stripped = text.lstrip("0")
+    return stripped or text
+
+
 def _aetna_field_override(field: dict, value, portal_raw: dict, sab_raw=None):
     """
     Final say on a field's portal-side value:
@@ -374,14 +400,20 @@ def _aetna_field_override(field: dict, value, portal_raw: dict, sab_raw=None):
             return "In"
         return value
     if field.get("key") == "group_number":
+        raw = _aetna_export(portal_raw) or {}
         # Medicare plans: the sheet's Group Number is the portal's Plan#
         # (000003-GA000081), not its Group# (000003-GA).
-        raw = _aetna_export(portal_raw) or {}
         if _aetna_is_medicare(raw):
             plan_no = str((raw.get("payer") or {}).get("plan#")
                           or (raw.get("coverage_details") or {}).get("plan_number") or "").strip()
             if plan_no and plan_no.upper() != "N/A":
                 return plan_no
+            return value
+        # PPO plans (client update): the Group Number is captured without its
+        # leading 0 (065745502800016 -> 65745502800016). A sheet that kept the
+        # 0 is a mismatch (the row compares exactly, see spec.py).
+        if _aetna_is_ppo_export(raw) and value:
+            return _aetna_group_without_leading_zero(value)
         return value
     # Ortho Coverage / D8090: some plans leave the percentage off the ortho
     # rows and give it in the Co-Insurance table instead ("Major,Ortho 50% /
