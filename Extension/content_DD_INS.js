@@ -44,20 +44,30 @@
 
         const keep = (url, text) => {
             const key = keyFor(url);
-            if (!key || !text) return;
+            if (!key) return;
+            let body;
             try {
-                captured[key] = { at: Date.now(), body: JSON.parse(text) };
+                body = text ? JSON.parse(text) : null;
             } catch (e) {
-                // Not JSON: nothing the scraper could use.
+                return; // Not JSON: nothing the scraper could use.
             }
+            // An empty answer (204 No Content) is still an answer: the portal has
+            // nothing on file. A patient with no claims gets no treatment history.
+            captured[key] = body == null
+                ? { at: Date.now(), body: null, empty: true }
+                : { at: Date.now(), body };
         };
 
         const nativeFetch = window.fetch;
         if (typeof nativeFetch === "function") {
             window.fetch = function (input, init) {
-                const pending = nativeFetch.apply(this, arguments);
                 const url = typeof input === "string" ? input : (input && input.url);
-                if (keyFor(url)) {
+                const key = keyFor(url);
+                // A new answer is on its way: drop the last one, so a previous
+                // patient's copy never stands in for this one while it loads.
+                if (key) delete captured[key];
+                const pending = nativeFetch.apply(this, arguments);
+                if (key) {
                     pending.then(response => {
                         if (response.ok) response.clone().text().then(text => keep(url, text)).catch(() => {});
                     }).catch(() => {});
@@ -73,7 +83,9 @@
             return nativeOpen.apply(this, arguments);
         };
         XMLHttpRequest.prototype.send = function () {
-            if (keyFor(this.__ddInsUrl)) {
+            const key = keyFor(this.__ddInsUrl);
+            if (key) {
+                delete captured[key]; // as for fetch: never keep the last patient's copy
                 this.addEventListener("load", () => {
                     if (this.status < 200 || this.status >= 300) return;
                     try {
@@ -830,7 +842,8 @@
     //   other-procedures   codes the plan does not pay for, with the comment the
     //                      card shows ("not a benefit of most Delta Dental plans")
     //   treatment-history  claims per code; the card's service dates are the
-    //                      approved ones (a denied claim is not shown)
+    //                      approved ones (a denied claim is not shown). A patient
+    //                      with no claims gets 204 No Content: no service dates
     //
     // A code in neither list is one the search answers with "This procedure code
     // could not be recognized."
@@ -885,7 +898,11 @@
         while (true) {
             const captured = await readCapturedResponses();
             const pkg = captured["benefits-package"]?.body;
-            const history = captured["treatment-history"]?.body;
+            // An empty answer means no claims on file: no code has a service
+            // date, as the search cards show. It must not block the benefits.
+            const history = captured["treatment-history"]?.empty
+                ? { procedures: [] }
+                : captured["treatment-history"]?.body;
             const other = captured["other-procedures"]?.body;
             const memberName = pkg?.member?.memberName;
             const enrollee = pkg?.member?.enrolleeId;
