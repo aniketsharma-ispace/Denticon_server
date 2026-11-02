@@ -34,7 +34,7 @@
 <body>
 
     <h1>Privacy Policy</h1>
-    <p class="last-updated">Last updated: October 26, 2026</p>
+    <p class="last-updated">Last updated: November 2, 2026</p>
 
     <p>This Privacy Policy describes how <strong>Insurance Auditor Pro</strong> ("the Extension") handles information. The Extension is distributed for Google Chrome and Mozilla Firefox. By using the Extension, you agree to the practices described in this policy.</p>
 
@@ -102,6 +102,10 @@
             <td><code>webRequest</code></td>
             <td>Used read-only, and only on the Cigna dental benefits API host, to observe the authorization header on the request the user's own browser already sends while signed in. This lets the Extension request that same patient's benefits from Cigna's API on the user's behalf. The Extension does not block, modify, or redirect any request, and does not observe requests on any other site.</td>
         </tr>
+        <tr>
+            <td><code>downloads</code></td>
+            <td>Saves the completed audit as a JSON file to the user's own device under a specific filename, and checks that the file finished saving so the Extension can report success. It is used only for files the Extension itself generates, at the user's request, and is not used to read or modify the user's existing downloads.</td>
+        </tr>
     </table>
     <p>Host permissions are limited to the portals listed in Section 6 and are required for the Extension's content scripts to read insurance data from those portals.</p>
 
@@ -112,7 +116,7 @@
         <li><strong>MetLife Dental Provider</strong> — dentalprovider.metlife.com</li>
         <li><strong>Cigna for Health Care Professionals</strong> — cignaforhcp.cigna.com, p-chcp.digitaledge.cigna.com</li>
         <li><strong>Guardian</strong> — guardiananytime.com</li>
-        <li><strong>Delta Dental</strong> — deltadentalins.com, deltadentalva.com, my.deltadentalar.com, deltadentalco.com, deltadentalri.com, my.deltadentalcoversme.com, deltadentalnj.com, deltadentalwa.com, app.deltadentalil.com, www4.deltadentalwi.com</li>
+        <li><strong>Delta Dental</strong> — deltadentalins.com, deltadentalva.com, my.deltadentalar.com, deltadentalco.com, deltadentalri.com, my.deltadentalcoversme.com, deltadentalnj.com, deltadentalwa.com, app.deltadentalil.com, www4.deltadentalwi.com, providers.deltadentalmo.com</li>
         <li><strong>Dental Office Toolkit</strong> — dentalofficetoolkit.com</li>
         <li><strong>DentalXchange / ClaimConnect</strong> — claimconnect.dentalxchange.com, dentalxchange.com</li>
         <li><strong>United Concordia</strong> — unitedconcordia.com</li>
