@@ -68,8 +68,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!main?.main) return 'The page-level extractor did not load. Firefox needs version 128+ for this. Reload the tab and retry.';
         return 'Extractor scripts are loaded but did not answer. Reload this tab and retry.';
     }
-    let guardianAutoDownloadArmed = false;
-    let guardianDownloadStarted = false;
 
     const result = await chrome.storage.local.get([
         'audit_context',
@@ -188,7 +186,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         btnCrawl.disabled = false;
         if (done) {
             btnCrawl.textContent = 'Download Again';
-            if (guardianAutoDownloadArmed) autoDownloadGuardian();
         } else if (failed) {
             btnCrawl.textContent = 'Retry Crawl';
         } else {
@@ -307,31 +304,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             setTimeout(() => window.close(), 450);
         }
         return downloadId;
-    }
-
-    async function autoDownloadGuardian() {
-        if (guardianDownloadStarted) return;
-        guardianDownloadStarted = true;
-        try {
-            const latest = await chrome.storage.local.get('audit_context');
-            const guardianData = latest.audit_context?.guardian_data;
-            if (!guardianData) {
-                status.textContent = 'Guardian crawl finished, but no data was stored.';
-                guardianDownloadStarted = false;
-                return;
-            }
-
-            const patient = (guardianData.patient_name || 'patient')
-                .trim()
-                .replace(/[^a-z0-9]+/gi, '_')
-                .replace(/^_|_$/g, '')
-                .toLowerCase() || 'patient';
-            await downloadObject(guardianData, `${patient}_Guardian.json`, false, true);
-        } catch (err) {
-            guardianDownloadStarted = false;
-            status.textContent = `Guardian download failed: ${err?.message || String(err)}`;
-            console.error('Guardian automatic download failed:', err);
-        }
     }
 
     // IMPORTANT: install Toolkit/Guardian listeners BEFORE requesting status or
@@ -525,11 +497,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        if (isGuardian) {
-            autoDownloadGuardian();
-            return;
-        }
-
         if (Object.keys(context).length === 0) {
             alert('No data captured yet.');
             return;
@@ -617,44 +584,46 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         if (isGuardian) {
-            guardianAutoDownloadArmed = true;
-            guardianDownloadStarted = false;
-
-            // Once a patient has completed a crawl, do not hit Guardian's CDT
-            // endpoint again for the same patient. The button becomes a plain
-            // download action. A new patient/VOB capture resets the state.
+            // The content script owns the Guardian download, exactly like every
+            // other portal: it saves <patient>_guardian_benefits.json, the name
+            // the Sabrina audit asks offices to upload. The popup must not save
+            // a second copy under a different name.
+            //
+            // Once a patient has completed a crawl, START_CRAWL does not hit
+            // Guardian's CDT endpoint again - the content script just re-saves
+            // the JSON. With a code search still missing it offers those
+            // searches again. A new patient/VOB capture resets the state.
             chrome.tabs.sendMessage(tab.id, { command: 'GET_GUARDIAN_STATUS' }, (current) => {
                 if (chrome.runtime.lastError) {
                     status.textContent = 'Guardian extractor not loaded. Refresh the Dental Eligibility tab, then retry.';
-                    guardianAutoDownloadArmed = false;
                     return;
                 }
 
-                if (current?.sweepState === 'done') {
-                    autoDownloadGuardian();
-                    return;
+                if (current?.sweepState !== 'done') {
+                    btnCrawl.disabled = true;
+                    btnCrawl.textContent = 'Crawling...';
+                    status.textContent = 'Guardian: building 59 procedure-code records from captured Plan Options...';
                 }
-
-                btnCrawl.disabled = true;
-                btnCrawl.textContent = 'Crawling...';
-                status.textContent = 'Guardian: building 59 procedure-code records from captured Plan Options...';
 
                 chrome.tabs.sendMessage(tab.id, { command: 'START_CRAWL' }, (response) => {
                     if (chrome.runtime.lastError) {
                         status.textContent = 'Guardian extractor not loaded. Refresh the tab and retry.';
                         btnCrawl.disabled = false;
                         btnCrawl.textContent = 'Retry Crawl';
-                        guardianAutoDownloadArmed = false;
                         return;
                     }
                     if (response?.ready) {
-                        autoDownloadGuardian();
+                        status.textContent = 'Guardian JSON saved to your Downloads folder.';
                         return;
                     }
                     if (response) status.textContent = response.status || status.textContent;
-                    if (response && !response.started) {
+                    if (response?.started) {
+                        // A finished patient with a code search still missing
+                        // re-runs those searches, so show the running state.
+                        btnCrawl.disabled = true;
+                        btnCrawl.textContent = 'Crawling...';
+                    } else if (response) {
                         btnCrawl.disabled = false;
-                        guardianAutoDownloadArmed = false;
                     }
                 });
             });
