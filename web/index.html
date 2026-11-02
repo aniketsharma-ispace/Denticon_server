@@ -1261,7 +1261,8 @@ function renderSabrina(result) {
           + `${(toolkitDiag.failed_codes || []).length ? `; failed: ${escHtml(toolkitDiag.failed_codes.join(', '))}` : ''}`
           + `${(toolkitDiag.codes_not_in_portal || []).length ? `; not in portal code list: ${escHtml(toolkitDiag.codes_not_in_portal.join(', '))}` : ''}`
           + `${toolkitDiag.identity_valid === false ? `; identity/network validation failed: ${escHtml((toolkitDiag.identity_issues || []).join(', '))}` : ''}`
-          + `${toolkitDiag.benefit_network && toolkitDiag.benefit_network !== 'PPO Dentist' ? `; benefits compared under <b>${escHtml(toolkitDiag.benefit_network)}</b> (sheet: In Network = Out)` : ''}`
+          + `${toolkitDiag.benefit_network && toolkitDiag.benefit_network !== 'PPO Dentist' ? `; benefits compared under <b>${escHtml(toolkitDiag.benefit_network)}</b> (${escHtml(toolkitDiag.benefit_network_reason || 'sheet: In Network = Out')})` : ''}`
+          + `${toolkitDiag.benefit_network_note ? `; ${escHtml(toolkitDiag.benefit_network_note)}` : ''}`
           + `${toolkitDiag.accumulators_unavailable ? '; this export has only the PPO maximums and deductibles — re-export with extension 1.45+ to compare them' : ''}</div>`
         : '';
 

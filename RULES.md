@@ -1,6 +1,6 @@
 # Toolkit comparator rules (Star and Smile Partners)
 
-Rules marked **[NEW]** were added in this version (10/28). Rules marked **[10/26]** and **[10/23]** were added in earlier versions. Rules marked **[CLARIFIED]** keep their meaning but state how the code applies them.
+Rules marked **[11/02]** were added for the 11/02 Smile review. Rules marked **[NEW]** were added in version 10/28. Rules marked **[10/26]** and **[10/23]** were added in earlier versions. Rules marked **[CLARIFIED]** keep their meaning but state how the code applies them.
 
 The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolkit JSON) and `sabrina/carriers/delta_toolkit/` (the audit; Toolkit-only rules are in its `rules.py`), under `star_dental/` and `smile_partners/`.
 
@@ -39,7 +39,6 @@ The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolki
   - Yes is also given for an explicit downgrade sentence: one that combines porcelain/ceramic/veneer, posterior/molar/bicuspid and full cast/optioned/alternate/downgrad, and isn’t a “covered” sentence.
   - Order of checks: not covered → Yes, then a downgrade sentence → Yes, then covered → No. Otherwise it stays blank.
   - Sentences are read from Exclusions and Limitations and from every code lookup’s limitations.
-- **Member ID:** read from memberAlternateId, and a lone “N” counts as absent.
 - **Age limits:** these come from orthoAgeLimitConfig filtered by the selected network.
   - Subscriber uses subscriberMaxAge.
   - Dependent uses minorMaxAge, then dependentMaxAge.
@@ -98,9 +97,22 @@ The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolki
   - **[CLARIFIED]** The display field is read as `payorId` or `payor_id`.
 - **Deductible and max:** there is no 3× family deductible rule. The general max is picked by category only, so a “General” deductible row listed first can be read as the annual max (Star fixed this).
 - **Critical keys:** this list adds pct_prev, pct_basic and pct_major.
+- **Not-required fields [11/02]:** Fee Schedule, Insurance Phone and Eligibility Term Date stay on the UI although the reviewer marked them not required. The JSON side uses the Toolkit value when the export states one (a feeSchedule key or “Fee Schedule:” note; the claims phoneNumber), so a real difference is still a mismatch. Otherwise the Sabrina value is captured on the JSON side too and the row matches, with a note saying so. The Toolkit export has no termination date, so Term Date always takes the Sabrina value; blank on both sides keeps the 10/26 rule.
+- **UI order [11/02]:** sections, fields and CDT rows follow the Sabrina PDF top to bottom: Patient/Subscriber (Relationship after Member ID, Eligibility last), Insurance, Maximums & Deductibles, Plan Provisions, Orthodontics, Clauses (Missing Tooth, Preventative in Max, Major Services Paid on Prep or Seat, Posterior Composites, Posterior Crowns, Perio After SRP), then the Benefit Details codes in Sabrina's order. D4381 Arestin is printed on the sheet but is not compared: the comparator audits the workbook's “Smile Partner Dental” code list.
+- **Premier sheets [11/02]:** a sheet whose Fee Schedule names Premier (“MI - DD Prem Reg6”, “MI Delta Premier Region 6”) is compared with the plan's **Premier Dentist** benefits instead of the PPO ones. A bare “Pr” (“MI - DD LITE Pr Reg6”) is not Premier: those sheets carry the PPO figures. The audit's Toolkit legend names the network and the fee schedule that chose it.
+  - A code's % (and its Not Covered status and waiting period) comes from its `out_of_network` entry naming Premier Dentist. A network the plan offers that no lookup lists separately is paid from the PPO bucket, so the PPO figure applies. A code with no entry while other codes have one is not comparable. An Optional code falls back to the Premier category rows.
+  - Maximums and deductibles are the PPO table unless the export lists Premier rows of its own.
+  - An export with no `out_of_network` data at all (made before 10/23) cannot state Premier figures: it keeps the PPO comparison and the legend says to re-export.
+- **History [11/02]:**
+  - The Toolkit's routine **Exam** row (looked up as D0120) is the history of D0120, D0140 and D0150; its **Bitewings** row (looked up as D0272) is D0274's. A code with its own row keeps it. This reverses the earlier code-specific bitewing reading.
+  - A routine row whose **Eligible** column reads Yes gives **NH**, whatever dates it or the code's own lookup list, and the panorex never takes a date from an eligible FMX row.
+  - Every service date is kept, newest first and joined with “, ”, on the portal side. The sheet's wrapped History cell (“08/31/2026;” / “04/20/2026”) is read whole, so both sides show every date; history compares as sets of dates.
+- **Posterior crowns [11/02]:** “Posterior porcelain or resin crowns are covered benefits/services” anywhere in the export (Exclusions and Limitations, or any code lookup's limitations) answers “Are Posterior Crowns Downgraded?” with **No**. Without it, an explicit downgrade sentence on D2740 still gives Yes; otherwise the answer stays blank. A sheet answer of “Not Available In Web” against a stated Yes/No is a mismatch: the website does state it.
+- **Frequency wording [11/02]:** a count tied to the lifetime in any wording is a lifetime limit (“Limited to one per tooth per lifetime” → 1XLifetime, not only “once”); “once in any five consecutive calendar years” → 1X5Years.
 
 ## Shared Toolkit rules
 
+- **Member ID:** read from memberAlternateId (the Toolkit's “Member Alternate ID”). A lone “N”, “N/A” or blank counts as absent. **[11/02]** Smile now reads it too; before, the Smile portal side was always blank.
 - **In Network [10/23]:**
   - It is **In** if the Fee Schedule in the Toolkit JSON contains “Delta Dental” or “Premier”.
   - It is **Out** if the Fee Schedule contains “UCR”. UCR is checked first, so “Delta Dental UCR” is Out.
@@ -149,3 +161,22 @@ The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolki
   - Payment timing is blanked when ortho isn’t covered.
   - Max type is “Lifetime” if isLifetime.
   - The age cap comes from the sentence “orthodontic age limit … covered for age N”. Otherwise it takes the highest positive cap for the “ppo dentist” network, then ortho_age_limit_under.
+
+# Delta Dental of Missouri comparator rules (Smile Partners only) [10/30]
+
+The rules live in `smile_partners/portals/delta_mo.py` (reading the export of providers.deltadentalmo.com, made by the extension’s `content_DD_MO.js`) and `smile_partners/sabrina/carriers/delta_mo/` (the audit, begun as a copy of `delta_dental/`; this portal’s own rules are in its `rules.py`). Star Dental has no Delta Dental of Missouri folder, so it refuses these exports.
+
+- **Recognized by** `carrier: "DELTA_MO"` (or a source naming Delta Dental of Missouri) and a `coverage_levels` list. The plan’s own insurer is the carrier name (a “Delta Dental South Carolina” plan is served by this portal too); the carrier row compares the Delta Dental brand.
+- **Network:** each coverage row states PPO, Premier and out-of-network percentages. An Out sheet reads the out-of-network ones, an in-network sheet whose fee schedule names Premier (not Premier Lite) reads Premier, anything else PPO. The export holds the PPO accumulators only, so an Out sheet’s maximums and deductibles are not on portal. **[11/02]** That includes the deductible paid to date and the orthodontic deductible, which used to read an invented 0.00. (The portal itself shows the Premier and Out of Network columns; `content_DD_MO.js` publishes only the PPO one.)
+- **Not covered:** a requested code with `listed: false` is missing from the plan’s coverage table, which lists every procedure the plan pays for. It reads Not Covered, frequency NC, and its age is 0 where the sheet states one. A code absent from `coverage_levels` altogether (exports made before the code was requested) is not stated.
+- **Frequency:** “N per Calendar/Benefit/Plan Year” is NX1Year, “N every K Months …” NXKMonths, “N every K Years” NXKYears, “N per Lifetime” NXLifetime, “N per Day” NX1Day. A listed code with no frequency is No Frequency. Any other wording is passed through and reads not comparable.
+- **Age limit:** “0 to 18” is 0-18 (ceiling 18), “14+” is 14-99 (a floor, never “no limit”), none is 99. Orthodontic codes take the plan’s ortho age: “No age limit.” is 99, “Dependents through age 18.” is 18.
+- **Date of birth:** the portal masks the year (“08/17/XXXX”). The year is the one that gives the stated age on the day the portal was read. The portal states no subscriber date of birth for a dependent; it is not on portal (the shared extraction would otherwise copy the patient’s).
+- **History [11/02]:** each code’s history is the dates billed under that code. Nothing is shared by default: the coverage table states each code’s frequency on its own (“1 every 36 Months from the last date of service of the same treatment”), so a D0120 exam is not D0150 history and a full-mouth series is not panoramic history. Two codes share history only where a limitation in the export says they share a limit (“also applies to D0330”, “shared with D1208”, “combined with D0150”); a limitation that merely names another code is not enough. No export so far states one. (This replaced the fixed D0120/D0150/D0180, D0210/D0330 and D1206/D1208 groups.) A sheet listing more dates than the portal still agrees where the dates overlap, and a sheet NH is held to the frequency window, as on the Delta Dental path.
+- **Maximums and deductibles:** read from the named accumulators (`amount`, `used`/`met`, `remaining`); exports made before `amount` take used + remaining, and the older row-list layout is read too. A table stating the annual maximum but no deductible means $0 deductibles. A family deductible the export does not state stays not stated (no 3× rule). An orthodontic deductible marked SHARED is not a separate one, so it is 0. **[11/02]** A plan whose member record reads Ortho coverage: No has an orthodontic maximum, used amount, deductible and deductible met of 0, in any network.
+- **Deductible applies:** D0120 (preventive) and D0220 (diagnostic) state it per code: Yes is Yes, No or NA is No. A plan with no deductible is No for both.
+- **Preventative Included in Yearly Max [11/02]:** the export’s own figures decide first. This benefit year, a paid Preventative-group service with nothing used from the annual maximum is No (Umar Aamer: MAXAdvantage “No”, five preventive services, $0 of $2,000 used); money used when only Preventative-group services were paid is Yes (Christine White: $378 of $500). Otherwise it follows the MAXAdvantage option: No when the plan has it (exams, cleanings, x-rays and fluoride do not count toward the maximum), Yes when it does not.
+- **Missing tooth clause:** the member record’s Existing Tooth Clause Yes/No. **Waiting period:** the member record’s Yes/No.
+- **Major paid on prep or seat:** Seat Date where D2740 is covered, as for Delta Dental. **Perio maintenance after SRP:** a post-operative period in D4910’s limitation, otherwise “Not available in website”.
+- **Downgrades:** posterior composites are downgraded when the plan pays the amalgam (D2160) and not the composite (D2391), and not downgraded when it pays the composite. **[11/02]** A plan paying neither (Christine White’s preventive-only plan) leaves the question unanswered; it used to read Yes. Posterior crowns are not downgraded where D2740 is covered. (Delta Dental’s own path, `portals/delta_dental.py`, still has the old “unless both are covered” rule.)
+- **Not on this portal:** payer ID, claims address, insurance phone and the D4341 quadrant cap. Those rows read not on portal.

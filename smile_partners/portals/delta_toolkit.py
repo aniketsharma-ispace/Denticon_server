@@ -298,8 +298,21 @@ def _frequency_from_text(text: str) -> str | None:
         return None
 
     low = text.lower()
-    if "lifetime" in low and re.search(r"\bonce\b", low):
-        return "1XLifetime"
+    # "Limited to one per tooth per lifetime", "payable twice per lifetime":
+    # a count tied to the lifetime, worded with any number, not only "once".
+    # A digit counts only with "time(s)", so "$1,500 per lifetime" (a dollar
+    # maximum) is never read as a frequency.
+    lifetime = re.search(
+        r"\b(?:(once|one|twice|two|three|four|five)|(\d+)\s+times?)\s+(?:times?\s+)?"
+        r"(?:per\s+(?:tooth|area|quadrant|arch|site)\s+)?"
+        r"(?:per|in\s+a|in\s+the|during\s+(?:a|the))\s+lifetime\b",
+        low,
+    )
+    if lifetime:
+        word = lifetime.group(1) or lifetime.group(2)
+        count = int(word) if word.isdigit() else _WORD_COUNTS.get(word)
+        if count:
+            return f"{count}XLifetime"
 
     # Prefer frequency words over bare numbers so an age statement such as
     # "age 15 and under" can never be mistaken for a five-year count.
@@ -327,8 +340,10 @@ def _frequency_from_text(text: str) -> str | None:
     tail = low[count_match.end():]
     number = r"(one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
 
+    # "in any five consecutive calendar years" (Timothy Zorn) is the same span
+    # as "in any five consecutive years".
     month = re.search(
-        rf"(?:in|within)\s+(?:any\s+)?(?:a\s+|an\s+)?(?:period\s+of\s+)?{number}\s*(?:-| )?(?:consecutive\s+)?months?\b",
+        rf"(?:in|within)\s+(?:any\s+)?(?:a\s+|an\s+)?(?:period\s+of\s+)?{number}\s*(?:-| )?(?:consecutive\s+)?(?:calendar\s+)?months?\b",
         tail,
     )
     if not month:
@@ -343,7 +358,7 @@ def _frequency_from_text(text: str) -> str | None:
             return f"{count}X{span}Months"
 
     year = re.search(
-        rf"(?:in|within)\s+(?:any\s+)?(?:a\s+|an\s+)?(?:period\s+of\s+)?{number}\s*(?:-| )?(?:consecutive\s+)?years?\b",
+        rf"(?:in|within)\s+(?:any\s+)?(?:a\s+|an\s+)?(?:period\s+of\s+)?{number}\s*(?:-| )?(?:consecutive\s+)?(?:calendar\s+)?years?\b",
         tail,
     )
     if not year:
@@ -366,6 +381,12 @@ def _frequency_from_text(text: str) -> str | None:
 
     if re.search(r"per\s+(?:date of service|day)\b", tail):
         return f"{count}X1Day"
+
+    # Looser lifetime wording ("payable once per tooth for the lifetime of the
+    # patient"), used only when the sentence states no period of its own, so a
+    # "$1,500 per lifetime" maximum cannot override "once in a seven-year period".
+    if "lifetime" in low and re.search(r"\bonce\b", low):
+        return "1XLifetime"
 
     return None
 
@@ -671,6 +692,22 @@ def _payor_id_from_site(raw: Any) -> str:
     return ""
 
 
+# What the Toolkit writes in memberAlternateId when it has no member ID: a lone
+# "N" in older exports, "N/A" from the extension's fallback path.
+_MEMBER_ID_PLACEHOLDERS = {"", "N", "NA", "N/A", "NONE", "NULL", "-", "—"}
+
+
+def _member_id_from_raw(raw: dict[str, Any]) -> str:
+    """
+    The member ID the Toolkit shows as "Member Alternate ID", or "" when absent.
+
+    The export keeps it at member_details.memberAlternateId, outside the
+    selected-member record, so it has to be read from there explicitly.
+    """
+    value = _text((raw.get("member_details") or {}).get("memberAlternateId"))
+    return "" if value.upper() in _MEMBER_ID_PLACEHOLDERS else value
+
+
 _FEE_SCHEDULE_KEY_RE = re.compile(r"^fee[\s_-]*schedule$", re.IGNORECASE)
 _FEE_SCHEDULE_NOTE_RE = re.compile(r"^\s*fee\s+schedule\s*:\s*(.+?)\s*$", re.IGNORECASE)
 
@@ -782,32 +819,101 @@ def _latest_service_date(value: Any) -> str | None:
     return max(dates, key=key)
 
 
+def _service_dates_text(value: Any) -> str | None:
+    """
+    Every service date a Toolkit history field lists, newest first, joined
+    with ", " — the way the Delta Dental adapter reports history. The sheet
+    records each date the website shows ("08/31/2026; 04/20/2026"), so keeping
+    only the latest would leave the other dates unchecked.
+    """
+    dates: list[str] = []
+    if isinstance(value, str):
+        dates = re.findall(r"\d{1,2}/\d{1,2}/\d{2,4}", value)
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                item = item.get("date") or item.get("serviceDate") or item.get("service_date")
+            if item:
+                dates.extend(re.findall(r"\d{1,2}/\d{1,2}/\d{2,4}", str(item)))
+    if not dates:
+        return None
+
+    def key(raw: str) -> tuple[int, int, int]:
+        parts = [int(x) for x in raw.split("/")]
+        year = parts[2] + (2000 if parts[2] < 100 else 0)
+        return year, parts[0], parts[1]
+
+    unique = list(dict.fromkeys(dates))
+    return ", ".join(sorted(unique, key=key, reverse=True))
+
+
+# Routine Procedures rows that the sheet reads for more than their own code
+# (11/02 review). The Toolkit lists a single "Exam" row, looked up as D0120,
+# for every oral exam, so its dates are the history of D0140 and D0150 too;
+# its "Bitewings" row is looked up as D0272 and is the sheet's D0274.
+_ROUTINE_ROW_ALSO_COVERS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
+    (re.compile(r"(?:oral\s+)?exams?", re.IGNORECASE), ("D0120", "D0140", "D0150")),
+    (re.compile(r"bitewings?(?:\s+x-?rays?)?", re.IGNORECASE), ("D0272", "D0274")),
+)
+
+
+def _routine_rows_by_code(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Each CDT code's Routine Procedures row: its own row first, then a shared one."""
+    rows = [
+        row for row in ((raw.get("routine_procedures") or {}).get("rows") or [])
+        if isinstance(row, dict)
+    ]
+    by_code: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        code = _text(row.get("procedureCode")).upper()
+        if code:
+            by_code[code] = row          # a repeated code: the last row wins, as before
+    for row in rows:
+        description = _text(row.get("description"))
+        for pattern, codes in _ROUTINE_ROW_ALSO_COVERS:
+            if pattern.fullmatch(description):
+                for code in codes:
+                    by_code.setdefault(code, row)
+    return by_code
+
+
+def _routine_eligible_now(routine: dict[str, Any] | None) -> bool:
+    """Whether a Routine Procedures row's Eligible column reads "Yes"."""
+    value = (routine or {}).get("eligibleNow")
+    return value is True or _text(value).casefold() in ("yes", "y", "true")
+
+
 def _history_for_code(code: str, result: dict[str, Any], routine_by_code: dict[str, dict[str, Any]]) -> str | None:
     """Service history for exactly this CDT code, or None when the source says nothing.
 
     History is read per code here; the one exception, a panorex sharing the
     full-mouth date, is applied afterwards by `_share_radiograph_history`.  A
-    routine-procedure row for this exact code with no service dates is an
-    explicit "no history" (NH); a code with no row at all is simply not stated
-    by the portal.
+    routine-procedure row for this code with no service dates is an explicit
+    "no history" (NH); a code with no row at all is simply not stated by the
+    portal.
     """
+    routine = routine_by_code.get(code.upper())
+    # 11/02 review: when the website's Eligible column reads "Yes" for the
+    # routine row, the patient can have the service now, so no history date is
+    # captured for it — the sheet writes NH whatever dates the row lists.
+    if _routine_eligible_now(routine):
+        return "NH"
     direct = (
-        _latest_service_date(result.get("serviceDates"))
-        or _latest_service_date(result.get("utilization_history"))
+        _service_dates_text(result.get("serviceDates"))
+        or _service_dates_text(result.get("utilization_history"))
     )
     if direct:
         return direct
-    routine = routine_by_code.get(code.upper())
     if routine is None:
         return None
-    routine_date = _latest_service_date(routine.get("serviceDates"))
-    if routine_date:
-        return routine_date
+    routine_dates = _service_dates_text(routine.get("serviceDates"))
+    if routine_dates:
+        return routine_dates
     detail = _text(routine.get("statusDetail"))
     if re.search(r"service dates? of", detail, re.IGNORECASE):
-        detail_date = _latest_service_date(detail)
-        if detail_date:
-            return detail_date
+        detail_dates = _service_dates_text(detail)
+        if detail_dates:
+            return detail_dates
     return "NH"
 
 
@@ -853,14 +959,16 @@ def _share_radiograph_history(procedures: list[dict[str, Any]]) -> None:
     )
     if not shared_sentence:
         return
+
+    def has_dates(value: Any) -> bool:
+        # One date or several ("08/31/2026, 04/20/2026").
+        return bool(re.search(r"\d{1,2}/\d{1,2}/\d{4}", str(value or "")))
+
     fmx_date, pano_date = fmx.get("late_date_of_service"), pano.get("late_date_of_service")
-    if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", str(fmx_date or "")) and not re.fullmatch(
-        r"\d{1,2}/\d{1,2}/\d{4}", str(pano_date or "")
-    ):
+    # A code whose routine row reads Eligible "Yes" stays NH (11/02 review).
+    if has_dates(fmx_date) and not has_dates(pano_date) and not pano.get("toolkit_eligible_now"):
         pano["late_date_of_service"] = fmx_date
-    elif re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", str(pano_date or "")) and not re.fullmatch(
-        r"\d{1,2}/\d{1,2}/\d{4}", str(fmx_date or "")
-    ):
+    elif has_dates(pano_date) and not has_dates(fmx_date) and not fmx.get("toolkit_eligible_now"):
         fmx["late_date_of_service"] = pano_date
 
 
@@ -1044,8 +1152,96 @@ def _plan_ortho_age_cap(config: dict[str, Any]) -> str:
     return str(max(caps)) if caps else ""
 
 
-def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
-    """Translate the Toolkit extraction into the canonical Portal contract."""
+# ── Another network's benefits (11/02 review: Premier) ──────────────────────
+# The Toolkit returns one benefit bucket per group of networks that pay alike.
+# The export keeps the PPO Dentist bucket as each lookup's own figures and every
+# other bucket under that lookup's `out_of_network`, each naming its networks.
+# Star Dental's copy of this adapter reads the same buckets.
+
+def _network_entry(result: dict[str, Any], network: str) -> dict[str, Any] | None:
+    """The `out_of_network` entry of one code lookup that names `network`."""
+    for entry in result.get("out_of_network") or []:
+        if isinstance(entry, dict) and network in (entry.get("networks") or []):
+            return entry
+    return None
+
+
+def _network_level(
+    result: dict[str, Any],
+    network: str | None,
+    separate_networks: set[str],
+    offered_networks: set[str],
+) -> str:
+    """
+    A code's coverage under `network` (None is PPO Dentist).
+
+    A network with an entry of its own reads that entry. A network the plan
+    offers but no lookup in the export lists separately pays as PPO does. Any
+    other case is not stated, so the row is left with nothing to compare.
+    """
+    if not network:
+        return _coverage_level(result)
+    entry = _network_entry(result, network)
+    if entry is not None:
+        return _coverage_level(entry)
+    if network not in separate_networks and network in offered_networks:
+        return _coverage_level(result)
+    return ""
+
+
+def _network_category_rows(
+    raw: dict[str, Any],
+    ppo_rows: list[dict[str, Any]],
+    network: str | None,
+    separate_networks: set[str],
+) -> list[dict[str, Any]]:
+    """Category coverage rows under `network`, the last resort for an Optional code."""
+    if not network or network not in separate_networks:
+        return ppo_rows
+    return [
+        row for row in ((raw.get("out_of_network") or {}).get("coverage_rows") or [])
+        if isinstance(row, dict) and network in (row.get("networks") or [])
+    ]
+
+
+def _network_accumulator_rows(raw: dict[str, Any], network: str) -> list[dict[str, Any]] | None:
+    """The maximum and deductible rows the export lists for `network` alone, if any."""
+    return [
+        row for row in (((raw.get("out_of_network") or {}).get("maximums_and_deductibles")) or [])
+        if isinstance(row, dict) and network in (row.get("networks") or [])
+    ] or None
+
+
+def _network_figures_exported(raw: dict[str, Any], results: list[dict[str, Any]]) -> bool:
+    """
+    Whether the export says anything about networks other than PPO Dentist.
+
+    Exports made before the extension captured them (the early-October ones,
+    with no `out_of_network` key on any lookup) carry the PPO figures alone;
+    for those, the absence of a Premier entry says nothing.
+    """
+    return isinstance(raw.get("out_of_network"), dict) or any(
+        "out_of_network" in result for result in results
+    )
+
+
+# "Posterior porcelain or resin crowns are covered benefits." — 11/02 review:
+# this statement answers "Are Posterior Crowns Downgraded?" with No.
+_POSTERIOR_CROWNS_COVERED_RE = re.compile(
+    r"\bposterior\s+(?:porcelain\s+or\s+resin|porcelain|resin)\s+crowns?\s+are\s+"
+    r"covered\s+(?:services?|benefits?)\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = None) -> dict[str, Any]:
+    """
+    Translate the Toolkit extraction into the canonical Portal contract.
+
+    `network` names the Delta network whose benefits the sheet records; None
+    (or "PPO Dentist") reads the export's own PPO Dentist figures, as before.
+    """
+    network = None if _text(network).casefold() in ("", "ppo dentist") else _text(network)
     selected = ((raw.get("member_details") or {}).get("selectedMember") or {})
     client = ((raw.get("more_information") or {}).get("client_benefit_information") or {})
     display = client.get("display_fields") or {}
@@ -1054,6 +1250,29 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
     ortho_info = raw.get("ortho_information") or {}
     search = (raw.get("coverages") or {}).get("procedure_code_search") or {}
     results = [r for r in (search.get("results") or []) if isinstance(r, dict)]
+
+    # The sheet's network (Premier, for a Premier fee schedule). An export from
+    # before the extension captured other networks cannot state that network's
+    # figures, so it keeps the PPO ones and says so instead of going blank.
+    requested_network = network
+    network_note = ""
+    if network and not _network_figures_exported(raw, results):
+        network = None
+        network_note = (f"the sheet records {requested_network} benefits, but this export has no "
+                        f"{requested_network} figures, so PPO Dentist figures were compared; "
+                        f"re-export with the current extension to compare {requested_network}")
+    separate_networks = {
+        name
+        for result in results
+        for entry in (result.get("out_of_network") or []) if isinstance(entry, dict)
+        for name in (entry.get("networks") or [])
+    }
+    offered_networks = {_text(name) for name in ((raw.get("networks") or {}).get("available_in_output") or [])}
+    if network:
+        # Premier shares the PPO maximums and deductibles unless the export
+        # lists rows of its own for it.
+        maximums = _network_accumulator_rows(raw, network) or maximums
+
     failed = set(_code_list(search.get("failed_codes")))
     not_in_portal = set(_code_list(search.get("codes_not_in_portal")))
     requested_code_list = _code_list(search.get("codes_requested"))
@@ -1091,6 +1310,7 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
     )
     claim_address = ((raw.get("more_information") or {}).get("claim_and_inquiry_mailing_addresses") or {}).get("claimMailingAddress") or {}
     fee_schedule = _fee_schedule_from_raw(raw)
+    member_id = _member_id_from_raw(raw)
     members = [m for m in ((raw.get("member_details") or {}).get("members") or []) if isinstance(m, dict)]
     if _text(selected.get("relationship")).lower() == "subscriber":
         subscriber = selected
@@ -1140,11 +1360,7 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
     limitation_records_present = bool(
         (raw.get("exclusions_and_limitations") or {}).get("records")
     )
-    routine_by_code = {
-        str(row.get("procedureCode") or "").upper(): row
-        for row in ((raw.get("routine_procedures") or {}).get("rows") or [])
-        if isinstance(row, dict) and row.get("procedureCode")
-    }
+    routine_by_code = _routine_rows_by_code(raw)
 
     procedures: list[dict[str, Any]] = []
     for code, result in result_by_code.items():
@@ -1162,7 +1378,9 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
 
         frequency, frequency_source, frequency_scope = _derive_frequency(code, limitations)
         age_limit, age_source = _derive_age(code, limitations)
-        waiting = result.get("waitingPeriod") or {}
+        level = _network_level(result, network, separate_networks, offered_networks)
+        network_entry = _network_entry(result, network) if network else None
+        waiting = (network_entry or result).get("waitingPeriod") or {}
         direct_history = _history_for_code(code, result, routine_by_code)
         status = _text(result.get("status")).upper() or "OK"
         path = result.get("procedurePath") or []
@@ -1170,14 +1388,16 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
         # Plan-level prose can still name it (e.g. "Prophylaxes ... payable
         # three times per calendar year ... A child prophylaxis or full mouth
         # debridement is not a covered benefit"), so a frequency derived from
-        # that sentence must never be attached to a Not Covered code.
-        if _coverage_level(result).lower() == "not covered" or status == "NOT COVERED":
+        # that sentence must never be attached to a Not Covered code. The
+        # export's status is the PPO bucket's; it speaks for the sheet's
+        # network only when that network has no entry of its own.
+        if level.lower() == "not covered" or (status == "NOT COVERED" and network_entry is None):
             frequency, frequency_source, frequency_scope = "Not Covered", None, None
 
         procedures.append({
             "procedure_code": code,
             "description": _procedure_description(path, code),
-            "benefit_level": _coverage_level(result),
+            "benefit_level": level,
             "frequency_limit": frequency,
             "frequency_source": frequency_source or "",
             "frequency_scope": frequency_scope or "",
@@ -1192,10 +1412,11 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
             "toolkit_http_status": result.get("httpStatus"),
             "toolkit_error": result.get("error"),
             "toolkit_waiting_period": waiting,
-            "toolkit_waiting_period_met_date": result.get("waitingPeriodMetDate"),
+            "toolkit_waiting_period_met_date": (network_entry or result).get("waitingPeriodMetDate"),
             "toolkit_service_dates": [],
             "toolkit_source_limitations": limitations,
             "toolkit_history_status": _text(result.get("history_status")),
+            "toolkit_eligible_now": _routine_eligible_now(routine_by_code.get(code)),
             "toolkit_age_limits": list(result.get("age_limits") or []),
             "toolkit_related_limitations": list(result.get("related_limitations") or []),
             "toolkit_raw": result,
@@ -1204,7 +1425,8 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
     coverage_row_list = [
         r for r in ((raw.get("coverages") or {}).get("coverage_rows") or []) if isinstance(r, dict)
     ]
-    _resolve_optional_coverage(procedures, coverage_row_list)
+    _resolve_optional_coverage(
+        procedures, _network_category_rows(raw, coverage_row_list, network, separate_networks))
 
     _share_frequency(procedures)
     _share_radiograph_history(procedures)
@@ -1311,7 +1533,21 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
         ),
         "",
     )
-    if crown_downgrade:
+    # 11/02 review: "Posterior porcelain or resin crowns are covered benefits"
+    # anywhere in the export (Exclusions and Limitations, or a code lookup's
+    # limitations) answers "Are Posterior Crowns Downgraded?" with No. Without
+    # that statement — or an explicit downgrade sentence on D2740 — the answer
+    # stays blank.
+    crowns_covered = any(
+        _POSTERIOR_CROWNS_COVERED_RE.search(sentence)
+        for sentence in [*all_limits, *(s for proc in procedures for s in proc["limitations"])]
+    )
+    if crowns_covered:
+        provisions.append({
+            "rule": "Alternate Benefit Crowns",
+            "value": "full cast restoration for porcelain or veneer materials on molar teeth: No",
+        })
+    elif crown_downgrade:
         provisions.append({
             "rule": "Alternate Benefit Crowns",
             "value": "full cast restoration for porcelain or veneer materials on molar teeth: Yes",
@@ -1321,7 +1557,13 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
     if cob_method:
         provisions.append({"rule": "Coordination of Benefits", "value": cob_method})
 
-    active_wait, active_categories = _waiting_is_active(results)
+    # A waiting period, like the percentage, is read under the sheet's network.
+    waiting_rows = results if not network else [
+        {**result, "waitingPeriod": entry.get("waitingPeriod"), "waitingPeriodMetDate": entry.get("waitingPeriodMetDate")}
+        if (entry := _network_entry(result, network)) is not None else result
+        for result in results
+    ]
+    active_wait, active_categories = _waiting_is_active(waiting_rows)
     if active_wait:
         provisions.append({
             "rule": "Waiting Period",
@@ -1368,6 +1610,11 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
         "_toolkit": True,
         "_toolkit_meta": {
             "selected_network": _text(raw.get("selected_network")),
+            # The network whose figures the per-code rows carry, and the one
+            # the sheet asked for when the export could not supply it.
+            "benefit_network": network or "PPO Dentist",
+            "requested_benefit_network": requested_network or "PPO Dentist",
+            "benefit_network_note": network_note,
             "requested_codes": int(
                 crawl.get("requested_codes")
                 or len(requested_code_list)
@@ -1389,7 +1636,7 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
             "group_number": group_number,
             "sub_group_number": sub_group,
             "combined_group_number": combined_group,
-            "member_id_available": False,
+            "member_id_available": bool(member_id),
             "family_deductible_available": ded_family.get("amount") is not None,
             "family_deductible_paid_available": ded_family.get("used") is not None,
             "ortho_deductible_available": ortho_ded_stated,
@@ -1429,7 +1676,8 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any]) -> dict[str, Any]:
             "plan_details": {
                 "start_date": _text(selected.get("effectiveDate")),
                 "end_date": "",
-                "subscriber_id": "",
+                # breakdown._extract reads Member ID from here.
+                "subscriber_id": member_id,
                 "employer_group": group_name,
                 "group_number": combined_group,
                 "network": _text(raw.get("selected_network")),

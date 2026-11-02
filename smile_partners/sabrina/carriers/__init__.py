@@ -1,7 +1,7 @@
 """
 One folder per insurance portal.
 
-    aetna/  cigna/  delta_dental/  delta_toolkit/  metlife/
+    aetna/  cigna/  delta_dental/  delta_mo/  delta_toolkit/  metlife/
 
 Each folder holds the whole audit for its carrier:
 
@@ -32,6 +32,7 @@ CARRIERS = {
     "aetna":        "Aetna",
     "cigna":        "Cigna",
     "delta_dental": "Delta Dental",
+    "delta_mo":     "Delta Dental of Missouri",
     "delta_toolkit": "Delta Dental Office Toolkit",
     "metlife":      "MetLife",
 }
@@ -40,9 +41,10 @@ CARRIERS = {
 # What a translated export records as its carrier, for a caller holding the
 # translation rather than the upload.
 _SOURCE_INSURER = {
-    "aetna":        "aetna",
-    "cigna":        "cigna",
-    "delta dental": "delta_dental",
+    "aetna":           "aetna",
+    "cigna":           "cigna",
+    "delta dental":    "delta_dental",
+    "delta dental mo": "delta_mo",
 }
 
 
@@ -73,8 +75,9 @@ def detect_carrier(portal_raw) -> str | None:
 
     Aetna, Cigna and Delta Dental are recognized by the same checks
     `breakdown._extract` uses, so the folder chosen here and the breakdown it
-    reads always agree. The Delta Dental Office Toolkit is a portal of its own,
-    recognized by `portals/delta_toolkit.py`. MetLife's export needs no
+    reads always agree. The Delta Dental Office Toolkit and the Delta Dental of
+    Missouri portal are portals of their own, recognized by
+    `portals/delta_toolkit.py` and `portals/delta_mo.py`. MetLife's export needs no
     translation and is known by its own blocks. A Delta Dental plan PDF read by
     /api/parse-pdf is Delta Dental's too.
     """
@@ -93,6 +96,7 @@ def detect_carrier(portal_raw) -> str | None:
     from ...portals.aetna import _is_aetna_portal
     from ...portals.cigna import _is_cigna_portal
     from ...portals.delta_dental import _is_dd_portal
+    from ...portals.delta_mo import _is_dd_mo_portal
     from ...portals.delta_toolkit import _is_dd_toolkit_portal
 
     candidates = [portal_raw] + [portal_raw[key] for key in _WRAPPERS
@@ -106,6 +110,8 @@ def detect_carrier(portal_raw) -> str | None:
             return "delta_toolkit"
         if _is_dd_portal(candidate):
             return "delta_dental"
+        if _is_dd_mo_portal(candidate):
+            return "delta_mo"
 
     if _is_metlife(portal_raw):
         return "metlife"

@@ -14,6 +14,7 @@ from .common import _UNLIMITED_MAX
 from .vocabulary import _blank, _coalesce_keys, _norm_network, _num_cob, _num_money
 from .rules import (
     _toolkit_eligibility,
+    _toolkit_fee_schedule,
     _toolkit_insurance_phone,
     _toolkit_major_payment_timing,
     _toolkit_meta_value,
@@ -28,7 +29,7 @@ from .rules import (
 #  PORTAL SIDE
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _portal_normalized(portal_raw: dict) -> dict:
+def _portal_normalized(portal_raw: dict, network: str | None = None) -> dict:
     """
     The portal export in the shape the derived readers expect.
 
@@ -37,7 +38,8 @@ def _portal_normalized(portal_raw: dict) -> dict:
     financials / covered_services / provisions under `metlife_data`. The readers
     below look for exactly that, so they run against the translation rather than
     the raw export; without this every derived field reads "not on portal" no
-    matter what the portal actually said.
+    matter what the portal actually said. `network` is the Delta network the
+    sheet records (None for PPO Dentist).
     """
     from ....portals.delta_toolkit import _is_dd_toolkit_portal, _normalize_delta_toolkit_portal
 
@@ -53,7 +55,7 @@ def _portal_normalized(portal_raw: dict) -> dict:
         if not isinstance(candidate, dict):
             continue
         try:
-            normalized = (_normalize_delta_toolkit_portal(candidate)
+            normalized = (_normalize_delta_toolkit_portal(candidate, network)
                           if _is_dd_toolkit_portal(candidate) else None)
             if normalized is not None:
                 # A few answers live in carrier-specific corners of the export
@@ -66,20 +68,20 @@ def _portal_normalized(portal_raw: dict) -> dict:
     return portal_raw or {}
 
 
-def _portal_breakdown(portal_raw: dict) -> dict:
+def _portal_breakdown(portal_raw: dict, network: str | None = None) -> dict:
     """
     Normalize the insurance portal export (or parsed carrier PDF) into the
     client's standard breakdown dict via `breakdown._extract`.
 
     Denticon is intentionally empty — this flow has no Denticon data — and the
     LLM interpreter is skipped because every audited field is a hard portal
-    fact.
+    fact. `network` is the Delta network the sheet records (None for PPO).
     """
     from ....breakdown import _extract as _extract_breakdown
     from ....portals.delta_toolkit import _is_dd_toolkit_portal, _normalize_delta_toolkit_portal
 
     if _is_dd_toolkit_portal(portal_raw):
-        payload = _normalize_delta_toolkit_portal(portal_raw)
+        payload = _normalize_delta_toolkit_portal(portal_raw, network)
     else:
         payload = dict(portal_raw or {})
     payload["_skip_llm"] = True
@@ -445,6 +447,7 @@ _DERIVED = {
     "_toolkit_relationship": _toolkit_relationship,
     "_toolkit_major_payment_timing": _toolkit_major_payment_timing,
     "_toolkit_insurance_phone": _toolkit_insurance_phone,
+    "_toolkit_fee_schedule": _toolkit_fee_schedule,
     "_toolkit_srp_quads_per_day": _toolkit_srp_quads_per_day,
     "_toolkit_perio_after_srp": _toolkit_perio_after_srp,
 }
