@@ -127,6 +127,11 @@ def _freq_match(text: str):
     return (_FREQ_RE_TOOLKIT if _TOOLKIT_PARSE.get() else _FREQ_RE).match(text)
 
 
+# Cell text Sabrina wraps mid-phrase that is neither a label nor a frequency,
+# e.g. "Not Available In" / "Web" under "Are Posterior Crowns Downgraded?".
+_WRAPPED_PHRASES = {"not available in web"}
+
+
 def _split_lines(text: str) -> list[str]:
     """PDF text → trimmed, non-empty lines (order preserved)."""
     out = []
@@ -167,7 +172,8 @@ def _reflow_wrapped(lines: list[str]) -> list[str]:
                     if i + take > len(out):
                         continue
                     cand = " ".join(out[i:i + take])
-                    if _norm_label(cand) in _STOP_LABELS or _freq_match(cand.strip()):
+                    if (_norm_label(cand) in _STOP_LABELS or _norm_label(cand) in _WRAPPED_PHRASES
+                            or _freq_match(cand.strip())):
                         joined = (cand, take)
                         break
             if joined:
@@ -313,6 +319,11 @@ def _classify_row_cells(cells: list[str]) -> dict[str, str | None]:
             continue
         if hist is None and (_num_date(s) is not None or s.lower() in _HISTORY_NONE):
             hist = s
+        elif hist is not None and re.search(r"[;,]$", hist) and _num_date(s) is not None:
+            # A History cell listing several dates wraps one date per line,
+            # each but the last ending in Sabrina's ";" — "08/31/2026;" /
+            # "04/20/2026". Keep every date, not only the first.
+            hist = f"{hist} {s}"
         elif age is None and (
             re.fullmatch(r"\d{1,3}", s)
             or (_TOOLKIT_PARSE.get() and s.upper() == "NC")

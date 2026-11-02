@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 
 from .spec import _CRITICAL_KEYS
-from .vocabulary import _blank_for, _blank_means_no_limit, _num_date, _num_history
+from .vocabulary import _blank_for, _blank_means_no_limit, _num_date, _num_history, _num_yesno
 from .parser import _MIN_MARKERS, parse_sabrina_pdf, parse_sabrina_text
 from .spec import _SPEC
 from .compare import _compare
@@ -25,6 +25,7 @@ from .rules import (
     _pdf_major_payment_timing,
     _pdf_ortho_coverage,
     _pdf_relationship,
+    _toolkit_benefit_network,
     _toolkit_eligibility,
     _toolkit_identity_gate,
     _toolkit_not_covered_age_agrees,
@@ -60,6 +61,12 @@ def _is_freq_not_available(value) -> bool:
     return bool(re.fullmatch(r"\s*(?:frequency\s+)?not\s+available\s*", str(value or ""), re.IGNORECASE))
 
 
+def _says_not_on_website(value) -> bool:
+    """A sheet answer of "Not Available In Web" (or a wrapped "Not Available In")."""
+    return bool(re.fullmatch(r"\s*not\s+available\s+in(?:\s+(?:the\s+)?(?:web|website|portal))?\s*",
+                             str(value or ""), re.IGNORECASE))
+
+
 def _toolkit_row_code(field: dict, procs: dict) -> str | None:
     """The CDT code a Toolkit row was read from: its own code, or for a row
     with a fallback, the first of its codes the portal returned."""
@@ -83,9 +90,13 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     what each system says.
     """
     sab_fields = sabrina_parsed.get("fields", {})
-    bd = _portal_breakdown(portal_raw)
+    # The sheet's Fee Schedule decides which network's benefits it is compared
+    # with: a Premier sheet records the Premier Dentist figures, not the PPO
+    # ones (11/02 review).
+    network, network_reason = _toolkit_benefit_network(sab_fields)
+    bd = _portal_breakdown(portal_raw, network)
     # Derived readers work off the translated export, not the raw one.
-    portal_norm = _portal_normalized(portal_raw)
+    portal_norm = _portal_normalized(portal_raw, network)
 
     if portal_norm.get("_toolkit") and sabrina_parsed.get("text"):
         if not sabrina_parsed.get("toolkit_parse"):
@@ -149,6 +160,23 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
         sab_blank = _blank_for(field["kind"], sab_raw)
         por_blank = _blank_for(field["kind"], por_raw)
 
+        # 11/02 review, Smile DD Toolkit comparator only: Fee Schedule,
+        # Insurance Phone and Eligibility Term Date were marked as not
+        # required, but they stay on the UI. A value the Toolkit JSON states
+        # is used as it is, so a real difference still shows as a mismatch.
+        # When the JSON states nothing, the Sabrina value is captured on the
+        # JSON side as well, so the row does not read as a missing portal
+        # value. Only rows flagged `toolkit_sabrina_fallback` in spec.py, and
+        # only for a Toolkit export.
+        por_from_sabrina = False
+        if (
+            portal_norm.get("_toolkit")
+            and field.get("toolkit_sabrina_fallback")
+            and por_blank
+            and not sab_blank
+        ):
+            por_raw, por_blank, por_from_sabrina = sab_raw, False, True
+
         # The portal shows a dash (or nothing) in History where a procedure was
         # never performed — the same statement the sheet writes as "NH". When
         # the sheet says NH and the portal cell is empty, read the portal as NH
@@ -200,6 +228,16 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                 and str(por_raw).strip().casefold() == "not covered"
             ):
                 equal, cmp_note = _toolkit_not_covered_age_agrees(sab_raw)
+            elif (
+                portal_norm.get("_toolkit")
+                and field["kind"] == "yesno"
+                and _says_not_on_website(sab_raw)
+                and _num_yesno(por_raw) is not None
+            ):
+                # The sheet says the website does not state this, yet the
+                # Toolkit does (e.g. "Posterior porcelain or resin crowns are
+                # covered benefits" → No): the sheet's answer is wrong.
+                equal, cmp_note = False, "the sheet says this is not available on the website, but the Toolkit states it"
             else:
                 equal, cmp_note = _compare(field["kind"], sab_raw, por_raw, ctx)
             note = cmp_note
@@ -208,6 +246,10 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                 note = note or "values are not in a comparable form"
             else:
                 status = STATUS_MATCH if equal else STATUS_MISMATCH
+
+        if por_from_sabrina:
+            # Kept short: the UI's note column is narrow.
+            note = "not required; JSON side copied from Sabrina"
 
         # Toolkit data has a hard retrieval failure signal.  A failed CDT lookup
         # is data-unavailable, never a benefit mismatch.
@@ -332,6 +374,10 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                 "codes_not_in_portal": sorted(toolkit_not_in_portal),
                 "identity_valid": toolkit_identity_ok,
                 "identity_issues": toolkit_identity_issues,
+                # The network the per-code benefits were compared under.
+                "benefit_network": toolkit_meta.get("benefit_network") or "PPO Dentist",
+                "benefit_network_reason": network_reason if network else "",
+                "benefit_network_note": toolkit_meta.get("benefit_network_note") or "",
             } if portal_norm.get("_toolkit") else None,
         },
     }

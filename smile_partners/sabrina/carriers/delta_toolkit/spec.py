@@ -49,7 +49,15 @@ from __future__ import annotations
 #            ("Date of Birth", "Paid to Date($)") — take the first occurrence
 #            AFTER this anchor label
 #   aliases  other spellings seen in the wild for the same label
+#   toolkit_sabrina_fallback
+#            the portal column falls back to the Sabrina value when the
+#            Toolkit JSON states nothing (see the Insurance block below)
 #
+# ORDER — the UI shows sections, fields and CDT rows exactly in this list's
+# order, so the list follows the Sabrina PDF top to bottom (11/02 review):
+# Patient/Subscriber → Insurance → Maximums & Deductibles → Plan Provisions →
+# Orthodontics → Clauses → Benefit Details codes. Keep new rows in the place
+# Sabrina prints them.
 _SPEC: list[dict] = [
 
     # ── Patient / Subscriber ─────────────────────────────────────────────────
@@ -58,23 +66,20 @@ _SPEC: list[dict] = [
      "after": "Patient Name"},
     {"key": "member_id",       "label": "Member ID#",      "kind": "id",   "section": "Patient / Subscriber", "portal": "member_id",
      "aliases": ["Member ID", "Member Id #", "Subscriber ID", "Member/Subscriber ID"]},
-    {"key": "subscriber_name", "label": "Subscriber Name", "kind": "name", "section": "Patient / Subscriber", "portal": "subscriber_name"},
-    {"key": "subscriber_dob",  "label": "Date of Birth",   "kind": "date", "section": "Patient / Subscriber", "portal": "subscriber_dob",
-     "after": "Subscriber Name"},
-    # These are Toolkit-only comparison rows. They are validated from the
-    # Sabrina eligibility block and Toolkit selectedMember data; they are kept
-    # out of the legacy parser's core field count so existing DD INS fixtures
-    # remain unchanged.
-    {"key": "eligibility", "label": "Eligibility", "kind": "yesno",
-     "section": "Patient / Subscriber", "portal": "_toolkit_eligibility",
-     "portal_only": True, "toolkit_only": True},
+    # Eligibility and Relationship are Toolkit-only comparison rows. They are
+    # validated from the Sabrina eligibility block and Toolkit selectedMember
+    # data; they are kept out of the legacy parser's core field count so
+    # existing DD INS fixtures remain unchanged. Relationship sits where
+    # Sabrina prints "Relation to Subscriber"; Eligibility is read from the
+    # Delta page attached after the sheet, so it closes the section.
     {"key": "relationship", "label": "Relationship", "kind": "text",
      "section": "Patient / Subscriber", "portal": "_toolkit_relationship",
      "portal_only": True, "toolkit_only": True},
-
-    {"key": "major_payment_timing",
-     "label": "Are Major Services Paid on Prep or Seat date?", "kind": "text",
-     "section": "Plan Provisions", "portal": "_toolkit_major_payment_timing",
+    {"key": "subscriber_name", "label": "Subscriber Name", "kind": "name", "section": "Patient / Subscriber", "portal": "subscriber_name"},
+    {"key": "subscriber_dob",  "label": "Date of Birth",   "kind": "date", "section": "Patient / Subscriber", "portal": "subscriber_dob",
+     "after": "Subscriber Name"},
+    {"key": "eligibility", "label": "Eligibility", "kind": "yesno",
+     "section": "Patient / Subscriber", "portal": "_toolkit_eligibility",
      "portal_only": True, "toolkit_only": True},
 
     # ── Insurance ────────────────────────────────────────────────────────────
@@ -87,10 +92,20 @@ _SPEC: list[dict] = [
      "aliases": ["Employer Group", "Employer Name"]},
     {"key": "group_number", "label": "Group Number",      "kind": "id",      "section": "Insurance", "portal": "group_number",
      "aliases": ["Group #", "Group No", "Group Num"]},
-    {"key": "fee_schedule", "label": "Fee Schedule",      "kind": "text",    "section": "Insurance", "portal": None},
+    # Fee Schedule, Insurance Phone and Eligibility Term Date — 11/02 review,
+    # Smile DD Toolkit comparator only. The reviewer marked these three as
+    # not required. They are deliberately KEPT on the UI. The portal (JSON)
+    # column uses the Toolkit JSON value when the export states one. When it
+    # does not, the value is captured from the Sabrina sheet on the JSON side
+    # too, so the row is not reported as an evidence gap. audit.py applies
+    # the fallback, gated on a Toolkit export. No other carrier or client
+    # does this.
+    {"key": "fee_schedule", "label": "Fee Schedule",      "kind": "text",    "section": "Insurance", "portal": "_toolkit_fee_schedule",
+     "toolkit_sabrina_fallback": True},
     {"key": "ins_address",  "label": "Insurance Address",  "kind": "address", "section": "Insurance", "portal": "ins_address",
      "aliases": ["Carrier Address", "Claims Address"]},
-    {"key": "ins_phone",    "label": "Insurance Phone",    "kind": "id",      "section": "Insurance", "portal": "_toolkit_insurance_phone"},
+    {"key": "ins_phone",    "label": "Insurance Phone",    "kind": "id",      "section": "Insurance", "portal": "_toolkit_insurance_phone",
+     "toolkit_sabrina_fallback": True},
     {"key": "payor_id",     "label": "Payor ID",           "kind": "id",      "section": "Insurance", "portal": "payor_id",
      "aliases": ["Payer ID", "Payor Id", "Payer Id"]},
 
@@ -104,8 +119,10 @@ _SPEC: list[dict] = [
 
     {"key": "eff_date",        "label": "Patient Eff Date",            "kind": "date",  "section": "Insurance", "portal": "eff_date",
      "aliases": ["Patient Effective Date", "Eff Date", "Effective Date"]},
+    # The Toolkit export carries no termination date, so the JSON side of this
+    # row is always the Sabrina fallback described above Fee Schedule.
     {"key": "term_date",       "label": "Eligibility Term Date",       "kind": "date",  "section": "Insurance", "portal": None,
-     "aliases": ["Patient Term Date"]},
+     "aliases": ["Patient Term Date"], "toolkit_sabrina_fallback": True},
     {"key": "plan_year_start", "label": "Starting Month of Plan Year",  "kind": "month", "section": "Insurance", "portal": "plan_year_start",
      "aliases": ["Plan Year Start", "Benefit Year Start"]},
 
@@ -148,11 +165,12 @@ _SPEC: list[dict] = [
      "aliases": ["Missing Tooth Clause", "Does Missing Tooth Clause Apply"]},
     {"key": "prev_in_max",    "label": "Preventative Included in Yearly Max?", "kind": "yesno", "section": "Clauses", "portal": "_prev_in_max",
      "aliases": ["Preventive Included in Yearly Max", "Preventative Included in Yearly Max"]},
-    {"key": "perio_maint_after_srp",
-     "label": "When Is First Perio Maintenance Allowed After SRP ?", "kind": "text",
-     "section": "Clauses", "portal": "_toolkit_perio_after_srp",
-     "aliases": ["When Is First Perio Maintenance Allowed After SRP?",
-                 "When Is First Perio Maintenance Allowed After SRP"]},
+    # Sabrina prints this question in Benefit Details, right after Preventative
+    # Included in Yearly Max.
+    {"key": "major_payment_timing",
+     "label": "Are Major Services Paid on Prep or Seat date?", "kind": "text",
+     "section": "Clauses", "portal": "_toolkit_major_payment_timing",
+     "portal_only": True, "toolkit_only": True},
 
     # OBS 4/5 — the two alternate-benefit questions. The portal states both in a
     # single "Alternate Benefits" provision and `new_plan` already splits them
@@ -167,6 +185,11 @@ _SPEC: list[dict] = [
      "section": "Clauses", "portal": "porcelain_posterior_downgrade",
      "aliases": ["Are Posterior Crowns Downgraded",
                  "Are Porcelain Crowns Downgraded"]},
+    {"key": "perio_maint_after_srp",
+     "label": "When Is First Perio Maintenance Allowed After SRP ?", "kind": "text",
+     "section": "Clauses", "portal": "_toolkit_perio_after_srp",
+     "aliases": ["When Is First Perio Maintenance Allowed After SRP?",
+                 "When Is First Perio Maintenance Allowed After SRP"]},
 
     # ── Coverage by CDT code ─────────────────────────────────────────────────
     # Exactly the CDT rows on the "Smile Partner  Dental" sheet of "Updated
@@ -174,55 +197,56 @@ _SPEC: list[dict] = [
     # code. Only the space maintainer row has a fallback: the sheet asks for
     # D1516 but Sabrina prints the row as D1510, so D1510 is read first and
     # D1516 stands in when the portal does not state D1510.
-    {"key": "d0120", "label": "D0120 Periodic Exam",   "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0120")},
-    {"key": "d1110", "label": "D1110 Adult Prophy",     "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1110")},
+    #
+    # Listed in the order of Sabrina's Benefit Details table, which is the
+    # order the UI shows them in.
     {"key": "d0220", "label": "D0220 Pas",             "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0220")},
+    {"key": "d0120", "label": "D0120 Periodic Exam",   "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0120")},
+    {"key": "d0140", "label": "D0140 Limited Exam",    "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0140")},
     {"key": "d0150", "label": "D0150 Diagnostic Exam", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0150"),
      "aliases": ["D0150 Diagnostic Exam Comp"]},
-    {"key": "d0140", "label": "D0140 Limited Exam",    "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0140")},
     {"key": "d0210", "label": "D0210 FMX",             "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0210")},
     {"key": "d0330", "label": "D0330 Pano",            "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0330")},
     {"key": "d0274", "label": "D0274 Bitewings",       "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D0274")},
-    {"key": "d1351", "label": "D1351 Sealants",         "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1351")},
+    {"key": "d1110", "label": "D1110 Adult Prophy",     "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1110")},
     {"key": "d1206", "label": "D1206 Fluoride Varnish", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1206")},
     {"key": "d1208", "label": "D1208 Fluoride",         "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1208")},
+    {"key": "d1351", "label": "D1351 Sealants",         "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1351")},
     {"key": "d1510", "label": "D1510 Space Maintainer", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D1510", "D1516"),
      "toolkit_fallback": True},
 
     {"key": "d2160", "label": "D2160 Amalgam Fillings",   "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D2160")},
     {"key": "d2391", "label": "D2391 Composite Fillings", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D2391")},
-    {"key": "d4355", "label": "D4355 Full Mouth Debridement", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D4355")},
-    {"key": "d4346", "label": "D4346 Gingival Inflammation",  "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D4346")},
-    {"key": "d4341", "label": "D4341 Scaling Root Planing",   "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D4341")},
-    {"key": "d4910", "label": "D4910 Perio Maintenance",      "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D4910")},
     {"key": "d2740", "label": "D2740 Crowns",             "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D2740")},
     {"key": "d2950", "label": "D2950 Core Buildups",      "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D2950")},
+    {"key": "d2980", "label": "D2980 Crown Repair",       "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D2980")},
+    {"key": "d3310", "label": "D3310 Endodontics", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D3310")},
+    {"key": "d4260", "label": "D4260 Osseous Surgery",        "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D4260")},
+    {"key": "d4341", "label": "D4341 Scaling Root Planing",   "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D4341")},
+    {"key": "d4346", "label": "D4346 Gingival Inflammation",  "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D4346")},
+    {"key": "d4355", "label": "D4355 Full Mouth Debridement", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D4355")},
+    {"key": "d4910", "label": "D4910 Perio Maintenance",      "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D4910")},
 
     {"key": "d5110", "label": "D5110 Dentures",           "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D5110")},
     {"key": "d5212", "label": "D5212 Partial Dentures",   "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D5212")},
+    {"key": "d5899", "label": "D5899 Prosth Removable",   "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D5899")},
     {"key": "d6010", "label": "D6010 Implants", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6010")},
-    {"key": "d6057", "label": "D6057", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6057")},
-    {"key": "d6058", "label": "D6058", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6058")},
-
+    {"key": "d6750", "label": "D6750 Bridges",  "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6750")},
+    {"key": "d7140", "label": "D7140 Simple Ext",    "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D7140")},
+    {"key": "d7210", "label": "D7210 Surgical Ext",  "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D7210")},
     {"key": "d9110", "label": "D9110 Palliative Exam", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D9110")},
     {"key": "d9230", "label": "D9230 Nitrous",         "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D9230")},
     {"key": "d9243", "label": "D9243 Anesthesia",      "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D9243")},
-    {"key": "d9310", "label": "D9310", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D9310")},
     {"key": "d9944", "label": "D9944 Occlusal Guard",  "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D9944")},
 
-    {"key": "d3310", "label": "D3310 Endodontics", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D3310")},
-    {"key": "d4260", "label": "D4260 Osseous Surgery",        "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D4260")},
-    {"key": "d7140", "label": "D7140 Simple Ext",    "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D7140")},
-    {"key": "d7210", "label": "D7210 Surgical Ext",  "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D7210")},
     # Sabrina prints the D8080 row as "Ortho Coverage".
     {"key": "ortho_coverage", "label": "Ortho Coverage", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D8080"),
      "aliases": ["Orthodontic Coverage", "Ortho %"]},
     {"key": "d8090", "label": "D8090", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D8090")},
-
     {"key": "d5995", "label": "D5995", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D5995")},
-    {"key": "d6750", "label": "D6750 Bridges",  "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6750")},
-    {"key": "d5899", "label": "D5899 Prosth Removable",   "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D5899")},
-    {"key": "d2980", "label": "D2980 Crown Repair",       "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D2980")},
+    {"key": "d6057", "label": "D6057", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6057")},
+    {"key": "d6058", "label": "D6058", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D6058")},
+    {"key": "d9310", "label": "D9310", "kind": "pct", "section": "Coverage by CDT Code", "portal": ("code", "D9310")},
 ]
 
 

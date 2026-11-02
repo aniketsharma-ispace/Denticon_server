@@ -39,6 +39,12 @@ def _toolkit_major_payment_timing(bd: dict, portal_raw: dict, sab_raw=None) -> s
     return _toolkit_meta_value(portal_raw, "major_payment_timing")
 
 
+def _toolkit_fee_schedule(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """Fee Schedule as the Toolkit JSON states it (a feeSchedule key or a
+    "Fee Schedule: …" note); None when the export has none."""
+    return _toolkit_meta_value(portal_raw, "fee_schedule")
+
+
 def _toolkit_relationship(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """Map Toolkit relationship wording to the Sabrina sheet wording."""
     if not isinstance(portal_raw, dict) or not portal_raw.get("_toolkit"):
@@ -104,6 +110,28 @@ def _pdf_ortho_coverage(text: str) -> str | None:
     return m.group(1) if m else None
 
 
+
+
+_PREMIER_NETWORK = "Premier Dentist"
+
+
+# "MI - DD Prem Reg6", "MI Delta Premier Region 6". A bare "Pr" is not Premier:
+# "MI - DD LITE Pr Reg6" sheets carry the PPO figures.
+_PREMIER_FEE_SCHEDULE_RE = re.compile(r"\bprem(?:ier)?\b", re.IGNORECASE)
+
+
+def _toolkit_benefit_network(fields: dict) -> tuple[str | None, str]:
+    """
+    The Delta network whose benefits the sheet records, and why (11/02 review).
+
+    A sheet whose Fee Schedule names Premier is filled in for a Premier office,
+    from the Toolkit's Premier Dentist figures (Timothy Zorn: 90/80/60 against
+    PPO 100/90/70). Any other sheet is compared with PPO Dentist as before.
+    """
+    fee_schedule = str(fields.get("fee_schedule") or "").strip()
+    if fee_schedule and _PREMIER_FEE_SCHEDULE_RE.search(fee_schedule):
+        return _PREMIER_NETWORK, f"sheet Fee Schedule: {fee_schedule}"
+    return None, ""
 
 
 def _toolkit_identity_gate(sabrina_parsed: dict, portal_norm: dict) -> tuple[bool, list[str]]:
