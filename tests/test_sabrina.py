@@ -3096,8 +3096,10 @@ check("and refused for jobs that need a Denticon export",
 check("the server runs its own package",
       _main.client_module(_main.CLIENTS["star_dental"], "sabrina").__name__,
       "star_dental.sabrina")
-check("it audits the same portals as Smile Partners, but Delta Dental of Missouri",
-      _ns.CARRIERS, {k: v for k, v in _CARRIERS.items() if k != "delta_mo"})
+# Delta Dental of Missouri and Guardian (2026-11-02) were added for Smile
+# Partners only.
+check("it audits the same portals as Smile Partners, but DD Missouri and Guardian",
+      _ns.CARRIERS, {k: v for k, v in _CARRIERS.items() if k not in ("delta_mo", "guardian")})
 check("a carrier's rules come from its own folder, not Smile Partners'",
       (_ns.carrier_rules(_tk)[1].__name__, _sp.carrier_rules(_tk)[1].__name__),
       ("star_dental.sabrina.carriers.delta_toolkit",
@@ -3379,6 +3381,245 @@ check("aetna not covered: a covered code's history is unchanged",
 _, _jr_blank = _jerry({"d1206": "0"})
 check("aetna not covered: a blank sheet age is left with nothing to compare",
       (_jr_blank["d1206__age"]["portal"], _jr_blank["d1206__age"]["status"]), (None, "not_stated"))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  1t. GUARDIAN — Smile Partners, routed to a folder of its own
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Added 2026-11-02 from Titus Jackson's sheet and Guardian eligibility page
+# (Material/Smile Partners/Gaurdian). The export below has the shape
+# content_guardian.js downloads — checked by running the scraper's own
+# transform and per-code derivation over the page's data — trimmed to the rows
+# these checks need, so this section always runs.
+
+print("── 1t. GUARDIAN ──")
+
+from smile_partners.portals import guardian as _gp
+from smile_partners.sabrina.carriers import carrier_rules as _carrier_rules
+
+
+def _gd_row(service, category, in_pct, out_pct, messages, last_visit=None):
+    row = {"service": service, "category": category, "message": messages,
+           "last_visit_date": last_visit, "ehb_plan_indicator": None,
+           "coinsurance": ([{"network": "Out-Network", "amount": out_pct},
+                            {"network": "In-Network", "amount": in_pct}] if in_pct else [])}
+    return row
+
+
+def _gd_rec(code, covered, service, frequency, coinsurance=(), age=None, eligible=None,
+            last_visit=None, messages=(), status="Derived from Guardian Plan Options"):
+    return {"code": code, "covered": covered, "dental_service": service, "frequency": frequency,
+            "age_limit": age, "age_eligible": eligible, "last_visit_date": last_visit,
+            "coinsurance": [{"network": n, "amount": a} for n, a in coinsurance],
+            "message": list(messages), "lookup_status": status}
+
+
+_GD_CROWN_MSGS = [
+    "Single crowns (D2710, D2712, D2720-D2722, D2740, D2750-D2753).",
+    "Replacement of an inlay, onlay, crown or veneer is covered when it is at least 5 years old and is no longer useable.",
+    "Replacement of a post and core (D2952, D2953, D2954, D2957) is covered when it is at least 8 years old and is no longer useable.",
+]
+_GD_PREV = (("Out-Network", "90%"), ("In-Network", "100%"))
+_GD_BASIC = (("Out-Network", "70%"), ("In-Network", "80%"))
+
+
+def _gd_export(relation="Son"):
+    return {
+        "source": "Guardian", "scraped_at": "2026-11-02T14:27:00.000Z",
+        "patient_name": "Titus Jackson", "relation_to_member": relation,
+        "plan_information": {
+            "benefit_period": "January 01 - December 31", "date_of_birth": "01/17/2017",
+            "dependent_age_limit": "26", "orthodontics_age_limit": None,
+            "group_name": "CITY OF DECATUR", "group_number": "00532450",
+            "plan_type": "DENTALGUARD PREFERRED", "missing_tooth_exclusion_applies": True,
+            "out_of_network_note": "Out of Network benefits are considered at the fee schedule."},
+        "effective_dates_of_coverage": [
+            {"service_category": c, "effective_date": "01/17/17",
+             "in_network_deductible_waived": "Yes" if c == "Preventive" else "No",
+             "out_network_deductible_waived": "No"}
+            for c in ("Preventive", "Basic", "Major")],
+        "deductibles": [
+            {"coverage": "Individual Dental", "network": "Out-Network", "deductible": "$50.00",
+             "met_to_date": "$50.00", "remaining_deductible": "$0.00"},
+            {"coverage": "Individual Dental", "network": "In-Network", "deductible": "$50.00",
+             "met_to_date": "$50.00", "remaining_deductible": "$0.00"},
+            {"coverage": "Family Dental", "network": "In-Network", "deductible": "3 per family",
+             "met_to_date": "2", "remaining_deductible": "1"}],
+        "plan_allowance": [
+            {"coverage": "Dental", "network": "In-Network", "yearly_plan_limit": "$1,500.00",
+             "year_met_to_date": "$53.10", "remaining_individual_maximum": "$1446.90"}],
+        "plan_options": [
+            _gd_row("Cleanings/Prophylaxis", "Preventive", "100%", "90%",
+                    ["Prophylaxis (cleaning) (D1110, D1120) is covered twice in any 12 consecutive month period.",
+                     "Adult prophylaxis (D1110) is covered age 12 and over."], "04/28/2026"),
+            _gd_row("X-Rays", "Preventive", "100%", "90%", [],
+                    "Bitewings: 04/28/2026; FullMouth/panoramic: 10/22/2025"),
+            _gd_row("Fillings", "Basic", "80%", "70%",
+                    ["Posterior resin-based composite restorations (white fillings) (D2391-D2394) receive "
+                     "the alternate benefit of an amalgam restoration (silver filling) (D2140-D2161)."]),
+            _gd_row("Crown/Inlay/Onlay", "Major", "50%", "40%", _GD_CROWN_MSGS),
+            _gd_row("Orthodontics", None, None, None, ["Not Covered."]),
+        ],
+        "procedure_codes": [
+            _gd_rec("D0120", True, "Exams/Oral Evaluations", "twice in any 12 consecutive month period",
+                    _GD_PREV, last_visit="04/28/2026"),
+            _gd_rec("D0210", True, "X-Rays", "once in any 36 consecutive month period", _GD_PREV,
+                    last_visit="10/22/2025"),
+            _gd_rec("D0220", True, "X-Rays", "Frequency not available", _GD_PREV),
+            # Guardian covers D1110 from age 12; the extension marks it not
+            # covered for a 9-year-old and drops its coinsurance.
+            _gd_rec("D1110", False, "Cleanings/Prophylaxis", "twice in any 12 consecutive month period",
+                    age="age 12 and over", eligible=False, last_visit="04/28/2026"),
+            _gd_rec("D1206", True, "Fluoride", "twice in any 12 consecutive month period", _GD_PREV,
+                    age="up to age 19", eligible=True, last_visit="04/28/2026"),
+            # D1510, D2980, D4260, D7140, D7210 and D9944 count only when the
+            # extension looked them up in Guardian's CDT code search.
+            dict(_gd_rec("D1510", True, "Other Preventive", "once per lifetime", _GD_PREV,
+                         age="under the age of 16", eligible=True, status="Guardian CDT code search"),
+                 cdt_search={"method": "table", "rows_found": 1,
+                             "row": _gd_row("Other Preventive", "Preventive", "100%", "90%", [])}),
+            dict(_gd_rec("D7140", True, "Oral Surgery", "Frequency not available", _GD_BASIC,
+                         status="Guardian CDT code search"),
+                 cdt_search={"method": "api", "rows_found": 1,
+                             "row": _gd_row("Oral Surgery", "Basic", "80%", "70%", [])}),
+            # Read off the main page — not a search answer.
+            _gd_rec("D9944", True, "Other Basic", "once per lifetime", _GD_BASIC),
+            _gd_rec("D7240", True, "Oral Surgery", "Frequency not available", _GD_BASIC),
+            _gd_rec("D2160", True, "Fillings", "once per tooth surface in any 12 months", _GD_BASIC,
+                    age="up to age 19"),
+            _gd_rec("D2740", True, "Crown/Inlay/Onlay", "Frequency not available",
+                    (("Out-Network", "40%"), ("In-Network", "50%")), messages=_GD_CROWN_MSGS),
+            _gd_rec("D4341", True, "Periodontics", "once per quadrant in any 24 consecutive month period",
+                    _GD_BASIC, last_visit="Date Not Found"),
+            _gd_rec("D4381", False, "Other Basic", "Frequency not available"),
+            _gd_rec("D8080", False, "Orthodontics", "Frequency not available"),
+            _gd_rec("D2980", None, None, "Frequency not available",
+                    status="No matching Guardian Plan Options row"),
+        ],
+    }
+
+
+_gd = _gd_export()
+check("guardian: the export is routed to its own folder", _detect(_gd), "guardian")
+check("guardian: and so is its translation", _detect(_gp._normalize_guardian_portal(_gd)), "guardian")
+check("guardian: is named among the supported portals", _CARRIERS.get("guardian"), "Guardian")
+check("guardian: an export without Plan Options is not taken for Guardian's",
+      _gp._is_guardian_portal({"source": "Guardian"}), False)
+try:
+    _carrier_rules({"summary": {"insurer": "guardian", "group_number": "00532450"}})
+    _gd_pdf_refusal = ""
+except ValueError as _e:
+    _gd_pdf_refusal = str(_e)
+check_true("guardian: the eligibility PDF is refused with a pointer to the extension's JSON",
+           "guardian_benefits.json" in _gd_pdf_refusal, _gd_pdf_refusal)
+
+check("guardian: prose frequencies read in the sheet's form",
+      tuple(_gp._guardian_frequency(t) for t in (
+          "twice in any 12 consecutive month period", "once per tooth surface in any 12 months",
+          "once, per denture, in any 24-month period", "once per tooth per lifetime",
+          "Frequency not available")),
+      ("2X12Months", "1X12Months", "1X24Months", "1XLifetime", ""))
+check("guardian: age clauses read as ranges",
+      tuple(_gp._guardian_age_limit(t) for t in ("up to age 19", "under the age of 16", "age 12 and over")),
+      ("0-19", "0-16", "12-99"))
+check("guardian: a crown takes the row's replacement age, not the post-and-core one",
+      (_gp._guardian_replacement_frequency(_GD_CROWN_MSGS, "D2740"),
+       _gp._guardian_replacement_frequency(_GD_CROWN_MSGS, "D2954")),
+      ("1X5Years", "1X8Years"))
+check("guardian: the benefit period's first month, however the dates are written",
+      tuple(_gp._guardian_plan_year_start(t) for t in
+            ("January 01 - December 31", "07/01/2026 - 06/30/2027", "2026-10-01 - 2027-09-30")),
+      ("January", "July", "October"))
+
+_gd_norm = _gp._normalize_guardian_portal(_gd)
+_gd_fin = _gd_norm["metlife_data"]["financials"]
+check("guardian: '3 per family' with 2 met is 3x and 2x the individual deductible",
+      (_gd_fin["deductible_fam"]["total"], _gd_fin["deductible_fam"]["used"]), ("150.00", "100.00"))
+_gd_procs = {p["procedure_code"]: p for p in _gd_norm["benefit_coverage"]["procedures"]}
+check("guardian: in-network coinsurance is read by name, not position",
+      _gd_procs["D0120"]["benefit_level"], "100%")
+check("guardian: a code excluded only by the patient's age keeps its row's percentage",
+      (_gd_procs["D1110"]["benefit_level"], _gd_procs["D1110"]["frequency_limit"]), ("100%", "2X12Months"))
+check("guardian: 'Frequency not available' is unstated, not 'no limit'",
+      _gd_procs["D0220"]["frequency_limit"], "")
+check("guardian: a not-covered code is 0% and NOT COVERED",
+      (_gd_procs["D4381"]["benefit_level"], _gd_procs["D4381"]["frequency_limit"]), ("0%", "NOT COVERED"))
+check("guardian: Date Not Found is the sheet's NH", _gd_procs["D4341"]["late_date_of_service"], "NH")
+check("guardian: a code no row names states nothing",
+      (_gd_procs["D2980"]["benefit_level"], _gd_procs["D2980"]["frequency_limit"]), ("", ""))
+
+
+def _gd_audit(fields, export=None):
+    audit = _sp.compare_sabrina_to_portal({"fields": fields, "benefit_rows": {}, "labels_not_found": []},
+                                          export or _gd)
+    return audit, {r["key"]: r for s in audit["sections"] for r in s["rows"]}
+
+
+_gd_res, _gd_rows = _gd_audit({
+    "patient_name": "TITUS JACKSON", "patient_dob": "01/17/2017", "subscriber_name": "KEVIN JACKSON",
+    "group_number": "00532450", "payor_id": "64246", "in_network": "In", "oon_benefits": "Yes",
+    "eff_date": "01/17/2017", "plan_year_start": "January", "yearly_max": "1500",
+    "yearly_max_paid": "53.10", "family_ded": "150", "family_ded_paid": "100", "ded_prev": "No",
+    "ded_diag": "No", "waiting_period": "No", "cob": "Standard", "major_paid_on": "Prep Date",
+    "missing_tooth": "Yes", "posterior_composite_downgrade": "Yes",
+    "pct_prev": "100%", "pct_major": "50%", "d1110": "100%", "d4381": "0",
+    "d0210__hist": "NH", "d0120__hist": "04/28/2026", "d2740__freq": "1X5Years",
+    "d2160__freq": "1X36Months", "d1206__age": "19", "d1510__age": "16", "d4341__hist": "NH",
+    "ortho_max": "0", "ortho_ded": "0", "ortho_coverage": "0", "ortho_coverage__age": "0",
+    "prev_in_max": "Yes", "perio_maint_after_srp": "Next day", "d2980": "80%",
+    "d1510": "100%", "d1510__freq": "1XLifetime", "d7140": "80%", "d7210": "80%", "d9944": "80%",
+})
+check("guardian: the audit is run by the Guardian folder", _gd_res["carrier"], "guardian")
+check("guardian: every plan-level row the page states agrees",
+      {k: _gd_rows[k]["status"] for k in (
+          "patient_name", "group_number", "payor_id", "in_network", "oon_benefits", "eff_date",
+          "plan_year_start", "yearly_max", "yearly_max_paid", "family_ded", "family_ded_paid",
+          "ded_prev", "ded_diag", "waiting_period", "cob", "major_paid_on", "missing_tooth",
+          "posterior_composite_downgrade", "ortho_max", "ortho_ded") if _gd_rows[k]["status"] != "match"},
+      {})
+check("guardian: code rows agree — %, age-only exclusion, not covered, crown replacement, NH",
+      {k: _gd_rows[k]["status"] for k in (
+          "pct_prev", "pct_major", "d1110", "d4381", "d0120__hist", "d2740__freq", "d1206__age",
+          "d1510__age", "d4341__hist", "ortho_coverage", "ortho_coverage__age") if _gd_rows[k]["status"] != "match"},
+      {})
+check("guardian: an NH the page contradicts is a mismatch",
+      (_gd_rows["d0210__hist"]["portal"], _gd_rows["d0210__hist"]["status"]), ("10/22/2025", "mismatch"))
+check("guardian: the child filling frequency the page states is compared as stated",
+      (_gd_rows["d2160__freq"]["portal"], _gd_rows["d2160__freq"]["status"]), ("1X12Months", "mismatch"))
+check("guardian: a dependent's subscriber is not the patient's own name",
+      (_gd_rows["subscriber_name"]["portal"], _gd_rows["subscriber_name"]["status"]), (None, "not_in_portal"))
+check("guardian: what the page never states reads not on portal",
+      tuple(_gd_rows[k]["status"] for k in ("prev_in_max", "perio_maint_after_srp", "d2980")),
+      ("not_in_portal",) * 3)
+check("guardian: a code-search answer is compared",
+      tuple(_gd_rows[k]["status"] for k in ("d1510", "d1510__freq", "d1510__age", "d7140")),
+      ("match",) * 4)
+check("guardian: a search-only code read off the main page is not used, and no sibling stands in",
+      (_gd_rows["d9944"]["status"], _gd_rows["d7210"]["status"]), ("not_in_portal", "not_in_portal"))
+check("guardian: the audit names the codes still to be searched",
+      _gd_res["diagnostics"]["cdt_search_missing"], ["D2980", "D4260", "D7210", "D9944"])
+_, _gd_out = _gd_audit({"in_network": "Out", "pct_prev": "90%", "d0120": "90%"})
+check("guardian: an out-of-network sheet is compared with the Out-Network percentages",
+      (_gd_out["pct_prev"]["portal"], _gd_out["d0120"]["status"], _gd_out["in_network"]["portal"]),
+      ("90%", "match", "Out"))
+_, _gd_self = _gd_audit({"subscriber_name": "TITUS JACKSON"}, _gd_export("Self"))
+check("guardian: a patient who is the subscriber names the subscriber",
+      _gd_self["subscriber_name"]["status"], "match")
+
+_GD_SHEET = os.path.join(BASE, "Material", "Smile Partners", "Gaurdian", "TITUS JACKSON.pdf")
+if os.path.exists(_GD_SHEET):
+    from smile_partners.sabrina.carriers.guardian import parse_sabrina_pdf as _gd_parse
+    with open(_GD_SHEET, "rb") as _fh:
+        _gd_sheet = _gd_parse(_fh.read())
+    check("guardian: Titus Jackson's sheet is read with every label found",
+          (_gd_sheet["labels_not_found"], _gd_sheet["fields"]["ins_name"], _gd_sheet["fields"]["d0210__hist"]),
+          ([], "Guardian", "NH"))
+    _gd_real = _sp.compare_sabrina_to_portal(_gd_sheet, _gd)
+    check("guardian: and audited against the export without error",
+          (_gd_real["carrier"], _gd_real["summary"]["critical_mismatches"]), ("guardian", 0))
+else:
+    skip("Titus Jackson Guardian sheet", "Material/Smile Partners/Gaurdian not present")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -1,7 +1,7 @@
 """
 One folder per insurance portal.
 
-    aetna/  cigna/  delta_dental/  delta_mo/  delta_toolkit/  metlife/
+    aetna/  cigna/  delta_dental/  delta_mo/  delta_toolkit/  guardian/  metlife/
 
 Each folder holds the whole audit for its carrier:
 
@@ -34,6 +34,7 @@ CARRIERS = {
     "delta_dental": "Delta Dental",
     "delta_mo":     "Delta Dental of Missouri",
     "delta_toolkit": "Delta Dental Office Toolkit",
+    "guardian":     "Guardian",
     "metlife":      "MetLife",
 }
 
@@ -45,6 +46,7 @@ _SOURCE_INSURER = {
     "cigna":           "cigna",
     "delta dental":    "delta_dental",
     "delta dental mo": "delta_mo",
+    "guardian":        "guardian",
 }
 
 
@@ -77,9 +79,10 @@ def detect_carrier(portal_raw) -> str | None:
     `breakdown._extract` uses, so the folder chosen here and the breakdown it
     reads always agree. The Delta Dental Office Toolkit and the Delta Dental of
     Missouri portal are portals of their own, recognized by
-    `portals/delta_toolkit.py` and `portals/delta_mo.py`. MetLife's export needs no
-    translation and is known by its own blocks. A Delta Dental plan PDF read by
-    /api/parse-pdf is Delta Dental's too.
+    `portals/delta_toolkit.py` and `portals/delta_mo.py`. Guardian's export is
+    recognized by `portals/guardian.py`, only after every other check has passed
+    it by. MetLife's export needs no translation and is known by its own blocks.
+    A Delta Dental plan PDF read by /api/parse-pdf is Delta Dental's too.
     """
     if not isinstance(portal_raw, dict):
         return None
@@ -98,6 +101,7 @@ def detect_carrier(portal_raw) -> str | None:
     from ...portals.delta_dental import _is_dd_portal
     from ...portals.delta_mo import _is_dd_mo_portal
     from ...portals.delta_toolkit import _is_dd_toolkit_portal
+    from ...portals.guardian import _is_guardian_portal
 
     candidates = [portal_raw] + [portal_raw[key] for key in _WRAPPERS
                                  if isinstance(portal_raw.get(key), dict)]
@@ -112,6 +116,8 @@ def detect_carrier(portal_raw) -> str | None:
             return "delta_dental"
         if _is_dd_mo_portal(candidate):
             return "delta_mo"
+        if _is_guardian_portal(candidate):
+            return "guardian"
 
     if _is_metlife(portal_raw):
         return "metlife"
@@ -130,6 +136,14 @@ def carrier_rules(portal_raw):
     key = detect_carrier(portal_raw)
     if key is None:
         seen = _pdf_insurer(portal_raw) if isinstance(portal_raw, dict) else ""
+        if seen.lower() == "guardian":
+            # The Guardian printout read by /api/parse-pdf carries a handful of
+            # plan-level figures, not the per-code benefits the audit compares.
+            raise ValueError(
+                "Guardian is audited from the extension's JSON export, not the "
+                "eligibility PDF. Open the patient's Dental Eligibility page on "
+                "guardiananytime.com, click Crawl in the extension, and upload "
+                "the downloaded <patient>_guardian_benefits.json.")
         raise ValueError(
             "The Sabrina audit has no rules for this portal export"
             + (f" (it reads as {seen})" if seen else "")

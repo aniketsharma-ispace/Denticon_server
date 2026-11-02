@@ -29,7 +29,7 @@ smile_partners/          the Sabrina client
   breakdown.py           its own copy
   sabrina/               the breakdown sheet this client works from
     carriers/              one folder per insurance portal, each a whole audit
-      aetna/  cigna/  delta_dental/  metlife/
+      aetna/  cigna/  delta_dental/  delta_toolkit/  guardian/  metlife/
         spec.py              what the sheet contains, field by field
         parser.py            reading the sheet out of the PDF
         vocabulary.py        making a stated value comparable
@@ -66,9 +66,14 @@ follow.
 portal export decides which folder runs — an Aetna export is audited by
 `aetna/` and no other folder is even imported — so a fix belongs in the folder
 of the carrier it was reported for. An export from a portal with no folder
-(Guardian, DentaQuest) is refused with a 422 rather than audited by the
-nearest carrier's rules. `sheet/` only acknowledges the upload; a parsing fix
-for an audit goes in the carrier's own `parser.py`.
+(DentaQuest, for one) is refused with a 422 rather than audited by the
+nearest carrier's rules. Guardian has a folder for Smile Partners only
+(2026-11-02); it reads the JSON `Extension/content_guardian.js` downloads, and
+the Guardian eligibility PDF is refused with a pointer to that JSON. D1510,
+D2980, D4260, D7140, D7210 and D9944 are taken only from Guardian's CDT code
+search, never from the main page. `sheet/`
+only acknowledges the upload; a parsing fix for an audit goes in the carrier's
+own `parser.py`.
 
 Everything else supports those two:
 

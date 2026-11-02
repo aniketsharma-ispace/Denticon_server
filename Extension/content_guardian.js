@@ -10,8 +10,15 @@
  * PROCEDURE-CODE DERIVATION: no direct CDT API sweep is performed. Guardian's
  * Plan Options data is already captured from the page's own VOB response and
  * contains the service/category/coinsurance/limitation material needed to
- * derive the requested 59 CDT records locally. This avoids triggering the
- * Guardian security layer that blocks automated CDT POSTs with HTTP 403.
+ * derive the requested CDT records (ALL_CODES) locally. This avoids triggering
+ * the Guardian security layer that blocks automated CDT POSTs with HTTP 403.
+ *
+ * CDT CODE SEARCH: the main page cannot answer for CDT_SEARCH_CODES (D1510,
+ * D2980, D4260, D7140, D7210, D9944), so each is typed into the page's own
+ * "Search coverage by CDT code" box and its answer captured — from the API
+ * response the page receives, or from the result table. Guardian has ignored
+ * scripted Search clicks, so when one gets no answer an on-page prompt asks
+ * the user to click Search for each of those codes.
  *
  * ARCHITECTURE (dual-world, same as content_dd_toolkit.js):
  *   MAIN world     -> monkey-patches fetch()/XHR only to capture the VOB
@@ -23,11 +30,13 @@
  * manifest.json needs TWO content_scripts entries loading this file:
  *   { "matches": ["*://www.guardiananytime.com/*"], "js": ["content_guardian.js"], "run_at": "document_start", "world": "MAIN" },
  *   { "matches": ["*://www.guardiananytime.com/*"], "js": ["content_guardian.js"], "run_at": "document_start", "world": "ISOLATED" }
+ * Without the MAIN one nothing is ever captured.
  *
  * USAGE: open the patient's "Dental Eligibility" page, wait for it to load
- * (VOB captured automatically), then click "Crawl & Download". The 59
- * procedure records are derived locally from the captured Plan Options data,
- * and the popup downloads the finished JSON automatically.
+ * (VOB captured automatically), then click Crawl. The procedure records are
+ * derived locally from the captured Plan Options data and the ISOLATED world
+ * downloads the finished JSON (<patient>_guardian_benefits.json) — the file
+ * the Smile Partners Sabrina audit reads.
  */
 
 (() => {
@@ -36,6 +45,7 @@
     const PAGE_SOURCE = "guardian-page";
     const STORAGE_KEY = "guardian_data";
     const VOB_PATH = "/gaprovider/api/dental-vob/ppo";
+    const API_PATH = "/gaprovider/api/";
 
 
     // Same list content_DD_INS.js searches for Delta Dental, batched the same way.
@@ -45,8 +55,17 @@
     const BATCH_4 = ["D5740", "D6010", "D6056", "D6065", "D6194", "D6245", "D7140", "D7240", "D7210", "D6750"];
     const BATCH_5 = ["D7259", "D8010", "D8080", "D8090", "D9110", "D9222", "D9230", "D9243", "D9310", "D4346"];
     const BATCH_6 = ["D9944", "D0364", "D0431", "D2391", "D2962", "D4249", "D5860", "D9430", "D9239"];
-    const CODE_BATCHES = [BATCH_1, BATCH_2, BATCH_3, BATCH_4, BATCH_5, BATCH_6];
+    // Codes the Smile Partners Sabrina sheet prints that the list above lacks
+    // (the same additions content_DD_INS.js and content_cigna.js carry).
+    const BATCH_7 = ["D1208", "D1516", "D2160", "D2980", "D5212", "D5899", "D5995", "D6057", "D6058"];
+    const CODE_BATCHES = [BATCH_1, BATCH_2, BATCH_3, BATCH_4, BATCH_5, BATCH_6, BATCH_7];
     const ALL_CODES = CODE_BATCHES.flat();
+
+    // Codes the main page cannot answer for: each is looked up in the page's
+    // own "Search coverage by CDT code" box (team rule, 2026-11-02). Every
+    // other code is derived from the Plan Options rows.
+    const CDT_SEARCH_CODES = Object.freeze(["D1510", "D2980", "D4260", "D7140", "D7210", "D9944"]);
+    const CDT_SEARCH_LOOKUP = "Guardian CDT code search";
 
     // Guardian Plan Options are service-level rows, not one row per CDT code.
     // This mapping tells the derivation layer which Plan Options row governs each
@@ -68,7 +87,11 @@
         D9222: "Anesthesia", D9230: "Anesthesia", D9243: "Anesthesia", D9310: "Consultations",
         D4346: "Periodontics", D9944: "Other Basic", D0364: "X-Rays", D0431: "Other Basic",
         D2391: "Fillings", D2962: "Crown/Inlay/Onlay", D4249: "Periodontics", D5860: "Bridge/Denture",
-        D9430: "Exams/Oral Evaluations", D9239: "Anesthesia"
+        D9430: "Exams/Oral Evaluations", D9239: "Anesthesia",
+        // D2980, D5899 and D5995 have no row Guardian names for them, so they
+        // are left unmapped rather than guessed into one.
+        D1208: "Fluoride", D1516: "Other Preventive", D2160: "Fillings",
+        D5212: "Bridge/Denture", D6057: "Implants", D6058: "Implants"
     });
 
     const hasExtensionRuntime = Boolean(
@@ -86,7 +109,7 @@
     // =====================================================================
 
     const DEFAULT_FREQUENCY = "Frequency not available";
-    const PROCEDURE_DERIVATION_VERSION = "1.35.11";
+    const PROCEDURE_DERIVATION_VERSION = "1.37.0";
 
     const REQUIRE_EXPLICIT_CODE_MENTION = new Set();
 
@@ -1047,6 +1070,153 @@
         return age >= 0 ? age : null;
     }
 
+    // One CDT record from the captured VOB. A code no Plan Options row governs
+    // is a finished record saying so, not a failure: the sweep would otherwise
+    // never reach "done" for a plan that simply does not mention the code.
+    function deriveLocalProcedureRecord(result, code) {
+        const rows = Array.isArray(result?.plan_options) ? result.plan_options : [];
+        const row = resolveGoverningRow(rows, code);
+        const fallbackService = PROCEDURE_SERVICE_MAP[code] || null;
+
+        if (!row) {
+            return {
+                code,
+                covered: null,
+                coverage_status: "Not Determined",
+                coverage_basis: null,
+                dental_service_category: null,
+                dental_service: fallbackService,
+                frequency: DEFAULT_FREQUENCY,
+                age_limit: null,
+                age_eligible: null,
+                not_covered_reason: null,
+                conditional_exclusions: null,
+                deductible_waived: null,
+                deductible_waived_evidence: null,
+                coinsurance: [],
+                last_visit_date: null,
+                ehb_plan_indicator: null,
+                message: [],
+                lookup_status: "No matching Guardian Plan Options row",
+                note: "No Guardian Plan Options row explicitly names this CDT code, and no static service fallback exists."
+            };
+        }
+
+        return buildProcedureRecordFromPlanOption(
+            code,
+            row,
+            getPatientAge(result),
+            rows,
+            result?.plan_information?.orthodontics_age_limit
+        );
+    }
+
+    function exportFilename(data) {
+        const name = String(data?.patient_name || "")
+            .trim()
+            .replace(/[^A-Za-z0-9]+/g, "_")
+            .replace(/^_+|_+$/g, "")
+            .toLowerCase();
+        return `${name || "guardian_patient"}_guardian_benefits.json`;
+    }
+
+    // =====================================================================
+    // CDT CODE SEARCH RESULTS -> procedure records
+    // =====================================================================
+    //
+    // The search answers with the same columns as Plan Options (Service /
+    // Network / Category / Coinsurance / Message / Last visit), for the one
+    // code searched. Whether it arrives as the API response or only as the
+    // rendered result table, it is turned into a Plan Options-shaped row and
+    // run through the same record builder as the main page.
+
+    function cdtRowFromApi(obj) {
+        const category = obj.dental_service_category
+            ?? (Array.isArray(obj.category) ? obj.category[0]?.category_type : obj.category)
+            ?? null;
+        return {
+            service: obj.dental_service ?? obj.service ?? null,
+            category,
+            coinsurance: (Array.isArray(obj.coinsurance) ? obj.coinsurance : []).map((c) => ({
+                network: c?.network_name ?? c?.network ?? null,
+                amount: c?.coinsurance_amount ?? c?.amount ?? null
+            })),
+            message: Array.isArray(obj.message) ? obj.message : (obj.message ? [String(obj.message)] : []),
+            last_visit_date: obj.last_visit_date ?? null,
+            ehb_plan_indicator: obj.ehb_plan_indicator ?? null
+        };
+    }
+
+    // Every service row anywhere in an API response.
+    function findCdtRows(data) {
+        const out = [];
+        const visit = (node, depth) => {
+            if (!node || depth > 5 || typeof node !== "object") return;
+            if (Array.isArray(node)) {
+                node.forEach((item) => visit(item, depth + 1));
+                return;
+            }
+            if ("dental_service" in node || ("coinsurance" in node && "message" in node)) {
+                out.push(cdtRowFromApi(node));
+                return;
+            }
+            Object.values(node).forEach((value) => visit(value, depth + 1));
+        };
+        visit(data, 0);
+        return out;
+    }
+
+    // Rows of the rendered result table, one entry per <tr>, as cell texts.
+    // A service spans its network lines, so a row without a service continues
+    // the one above it; each network line pairs with the percentage beside it.
+    function cdtRowsFromTableCells(cellRows) {
+        const rows = [];
+        let current = null;
+        for (const cells of cellRows || []) {
+            if (cells.service || !current) {
+                current = { service: cells.service || null, category: null, coinsurance: [], message: [], last_visit_date: null };
+                rows.push(current);
+            }
+            const amounts = (cells.coinsurance || []).join(" ").match(/\d+(?:\.\d+)?\s*%/g) || [];
+            const networks = (cells.network || []).filter((n) => /network|preferred|ppo/i.test(n));
+            for (let i = 0; i < Math.max(networks.length, amounts.length); i++) {
+                current.coinsurance.push({ network: networks[i] ?? null, amount: amounts[i] ?? null });
+            }
+            current.category = current.category || (cells.category || [])[0] || null;
+            current.message.push(...(cells.message || []));
+            if (cells.last_visit) current.last_visit_date = cells.last_visit;
+        }
+        return rows.filter((row) => row.service || row.coinsurance.length || row.message.length);
+    }
+
+    // Which of the wanted codes a search request was for, from its URL/body.
+    function cdtCodeFromRequest(url, body, wanted) {
+        const text = `${url || ""} ${body || ""}`.toUpperCase();
+        return (wanted || []).find((code) =>
+            new RegExp(`(?<![0-9])D?${code.slice(1)}(?![0-9])`).test(text)) || null;
+    }
+
+    // The record for a searched code. A search that showed no row is still a
+    // finished search: the record says so and states nothing.
+    function buildCdtSearchRecord(code, rows, result, capture = {}) {
+        const found = (Array.isArray(rows) ? rows : []).filter(Boolean);
+        const meta = { method: capture.method || null, url: capture.url || null, rows_found: found.length };
+        if (!found.length) {
+            return {
+                ...buildMissingProcedureRecord(code),
+                lookup_status: CDT_SEARCH_LOOKUP,
+                cdt_search: { ...meta, row: null, text: capture.text || null }
+            };
+        }
+        const planRows = Array.isArray(result?.plan_options) ? result.plan_options : [];
+        const row = resolveGoverningRow(found, code) || found[0];
+        const record = buildProcedureRecordFromPlanOption(
+            code, row, getPatientAge(result), [...found, ...planRows],
+            result?.plan_information?.orthodontics_age_limit
+        );
+        return { ...record, lookup_status: CDT_SEARCH_LOOKUP, cdt_search: { ...meta, row } };
+    }
+
     // =====================================================================
     // ISOLATED WORLD: storage + popup messaging + local procedure derivation
     // =====================================================================
@@ -1063,6 +1233,14 @@
         let restorePromise = Promise.resolve();
         let persistQueue = Promise.resolve();
 
+        // CDT code search: what each search answered with (code -> capture),
+        // the search running now, and whether Guardian acts on a scripted
+        // Search click ("auto") or needs the user's own ("manual").
+        const cdtCaptures = new Map();
+        let activeSearch = null;
+        let cdtClickMode = null;
+        let cdtSkipRequested = false;
+
         function patientKeyFromResult(result) {
             return [
                 result?.plan_information?.group_number,
@@ -1077,14 +1255,31 @@
             const msg = event.data;
             if (!msg || msg.source !== PAGE_SOURCE) return;
 
+            if (msg.type === "API_RESPONSE") {
+                handleApiResponse(msg);
+                return;
+            }
+
             if (msg.type === "RESULT") {
                 const nextResult = msg.data || null;
                 const nextPatientKey = patientKeyFromResult(nextResult);
+
+                // A benefits answer for the same patient with only a row or
+                // two is a code search answered through the benefits call,
+                // not the page reloading: keep it as that search's result
+                // rather than let it replace the full Plan Options.
+                const nextRows = nextResult?.plan_options || [];
+                if (latestResult && nextPatientKey === patientKey &&
+                    (activeSearch || (nextRows.length <= 5 && (latestResult.plan_options || []).length > 5))) {
+                    recordCdtCapture({ method: "api", url: "dental-vob", rows: nextRows });
+                    return;
+                }
 
                 if (patientKey && nextPatientKey !== patientKey) {
                     // New patient in the same Guardian tab: never leak the
                     // previous patient's procedure-code results into this one.
                     procedureCodes.clear();
+                    cdtCaptures.clear();
                     sweepProgress = { completed: 0, total: ALL_CODES.length };
                     sweepState = "idle";
                     failureReason = null;
@@ -1097,25 +1292,340 @@
             }
         });
 
+        // A search code is done once it has been searched; every other code
+        // once it is derived.
+        function isRecordDone(code) {
+            const record = procedureCodes.get(code);
+            return CDT_SEARCH_CODES.includes(code)
+                ? record?.lookup_status === CDT_SEARCH_LOOKUP
+                : isCompletedProcedureRecord(record);
+        }
+
+        function cdtMissing() {
+            return CDT_SEARCH_CODES.filter((code) => !isRecordDone(code));
+        }
+
+        function buildExport() {
+            const materializedProcedureCodes = ALL_CODES.map((code) =>
+                procedureCodes.get(code) || buildMissingProcedureRecord(code, "Pending lookup")
+            );
+
+            return {
+                ...(latestResult || {}),
+                procedure_derivation_version: PROCEDURE_DERIVATION_VERSION,
+                procedure_codes_requested: ALL_CODES.length,
+                procedure_codes_present: materializedProcedureCodes.length,
+                procedure_codes_complete: ALL_CODES.every(isRecordDone),
+                procedure_codes: materializedProcedureCodes,
+                cdt_search: {
+                    required: CDT_SEARCH_CODES.slice(),
+                    searched: CDT_SEARCH_CODES.filter(isRecordDone),
+                    missing: cdtMissing(),
+                    click_mode: cdtClickMode
+                }
+            };
+        }
+
+        // ── CDT code search: captures ─────────────────────────────────────
+
+        function codeInSearchBox() {
+            const digits = String(findCdtInput()?.value || "").replace(/\D/g, "");
+            const code = digits.length === 4 ? `D${digits}` : null;
+            return CDT_SEARCH_CODES.includes(code) ? code : null;
+        }
+
+        function recordCdtCapture(capture, code = null) {
+            const target = code || activeSearch?.code || codeInSearchBox();
+            if (!target || !CDT_SEARCH_CODES.includes(target)) return;
+            cdtCaptures.set(target, { ...capture, at: Date.now() });
+            // Searched by hand outside a crawl: keep it, so Crawl does not
+            // ask for that code again.
+            if (!activeSearch && latestResult && sweepState !== "running") {
+                procedureCodes.set(target, buildCdtSearchRecord(target, capture.rows, latestResult, capture));
+                persist();
+            }
+        }
+
+        function handleApiResponse(msg) {
+            const rows = findCdtRows(msg.data);
+            // One code's answer is a row or two; a full Plan Options list is
+            // some other call, never a search.
+            if (!rows.length || rows.length > 5) return;
+            recordCdtCapture(
+                { method: "api", url: msg.url || null, rows },
+                cdtCodeFromRequest(msg.url, msg.body, CDT_SEARCH_CODES)
+            );
+        }
+
+        // ── CDT code search: the page's search box ────────────────────────
+        //
+        // Learned on the live page in July 2026 (commit 4f461b3): the box is
+        // #cdtInput ("Enter 4-digit CDT code", digits only) with
+        // #cdt-search-button. Its framework only takes typed keys, not a
+        // value assignment. Guardian also ignored scripted clicks on Search
+        // then, so one is tried and, if nothing comes back, the user is asked
+        // to click Search for each remaining code.
+
+        const CDT_AUTO_WAIT_MS = 6000;
+        const CDT_MANUAL_WAIT_MS = 180000;
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+        function findTextElement(regex) {
+            if (!document.body) return null;
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+            let node;
+            while ((node = walker.nextNode())) {
+                if (regex.test(node.textContent.trim())) return node.parentElement;
+            }
+            return null;
+        }
+
+        function findCdtInput() {
+            return document.getElementById("cdtInput") ||
+                document.querySelector("input[placeholder*='CDT' i], input[aria-label*='CDT' i], input[name*='cdt' i], input[id*='cdt' i]");
+        }
+
+        function findCdtSearchButton() {
+            return document.getElementById("cdt-search-button") ||
+                Array.from(document.querySelectorAll("button"))
+                    .find((b) => normalizeEvidenceText(b.textContent) === "Search" && !b.disabled) ||
+                null;
+        }
+
+        async function ensureCdtInput() {
+            let input = findCdtInput();
+            if (input) return input;
+            const expandAll = document.querySelector("button.expand-collapse-all-link") ||
+                Array.from(document.querySelectorAll("a,button,span"))
+                    .find((el) => normalizeEvidenceText(el.textContent).toLowerCase() === "expand all");
+            if (expandAll) {
+                expandAll.click();
+                await sleep(800);
+                input = findCdtInput();
+                if (input) return input;
+            }
+            const header = findTextElement(/search coverage by cdt code/i);
+            if (header) {
+                (header.closest("button,a,[role='button']") || header).click();
+                await sleep(600);
+            }
+            return findCdtInput();
+        }
+
+        function keyEvent(type, key) {
+            const keyCode = key === "Backspace" ? 8 : key.charCodeAt(0);
+            const code = key === "Backspace" ? "Backspace" : `Digit${key}`;
+            return new KeyboardEvent(type, { key, code, keyCode, which: keyCode, bubbles: true });
+        }
+
+        async function typeCdtDigits(input, digits) {
+            input.focus();
+            for (let i = String(input.value || "").length; i > 0; i--) {
+                input.dispatchEvent(keyEvent("keydown", "Backspace"));
+                document.execCommand("delete", false);
+                input.dispatchEvent(keyEvent("keyup", "Backspace"));
+            }
+            for (const ch of digits) {
+                input.dispatchEvent(keyEvent("keydown", ch));
+                input.dispatchEvent(keyEvent("keypress", ch));
+                document.execCommand("insertText", false, ch);
+                input.dispatchEvent(keyEvent("keyup", ch));
+            }
+            if (input.value !== digits) {
+                // execCommand unavailable: set it the way a framework notices.
+                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+                if (setter) setter.call(input, digits); else input.value = digits;
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+                input.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+            await sleep(300);
+        }
+
+        function isLoadingVisible() {
+            const el = findTextElement(/please wait while your request is being processed/i);
+            if (!el) return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        }
+
+        // The result shares Plan Options' column headers; it is the matching
+        // table with the fewest rows (Plan Options has ~20).
+        function findCdtResultTable() {
+            let best = null;
+            let bestCount = Infinity;
+            for (const table of document.querySelectorAll("table")) {
+                const headers = Array.from(table.querySelectorAll("th"))
+                    .map((th) => normalizeEvidenceText(th.innerText).toLowerCase());
+                if (!["service", "coinsurance"].every((h) => headers.some((x) => x.includes(h)))) continue;
+                const count = table.querySelectorAll("tbody tr").length || table.querySelectorAll("tr").length;
+                if (count > 0 && count <= 5 && count < bestCount) {
+                    best = table;
+                    bestCount = count;
+                }
+            }
+            return best;
+        }
+
+        function cdtTableText() {
+            const table = findCdtResultTable();
+            return table ? normalizeEvidenceText(table.innerText) : "";
+        }
+
+        function cdtTableCells(table) {
+            const headers = Array.from(table.querySelectorAll("th"))
+                .map((th) => normalizeEvidenceText(th.innerText).toLowerCase());
+            let trs = Array.from(table.querySelectorAll("tbody tr"));
+            if (!trs.length) trs = Array.from(table.querySelectorAll("tr")).filter((tr) => tr.querySelectorAll("td").length);
+            const lines = (td) => (td ? String(td.innerText || "").split(/\n+/).map(normalizeEvidenceText).filter(Boolean) : []);
+            return trs.map((tr) => {
+                const tds = Array.from(tr.querySelectorAll("td"));
+                const cell = (name) => {
+                    const i = headers.findIndex((h) => h.startsWith(name));
+                    return i >= 0 ? tds[i] : null;
+                };
+                const messageCell = cell("message");
+                const items = messageCell
+                    ? Array.from(messageCell.querySelectorAll("li")).map((li) => normalizeEvidenceText(li.innerText)).filter(Boolean)
+                    : [];
+                return {
+                    service: lines(cell("service")).join(" "),
+                    network: lines(cell("network")),
+                    category: lines(cell("category")),
+                    coinsurance: lines(cell("coinsurance")),
+                    message: items.length ? items : lines(messageCell),
+                    last_visit: lines(cell("last visit")).join(" ")
+                };
+            });
+        }
+
+        // The search's answer: the API capture if one came, else the result
+        // table once the search has visibly run — its text changed, Guardian's
+        // "please wait" overlay came and went, or the user clicked Search a
+        // moment ago. Two codes can show identical rows (D7140 and D7210 are
+        // both Oral Surgery), so a changed text alone would miss the second.
+        async function waitForCdtResult(code, search, beforeText, timeoutMs) {
+            const deadline = Date.now() + timeoutMs;
+            let sawLoading = false;
+            while (Date.now() < deadline && !cdtSkipRequested) {
+                const captured = cdtCaptures.get(code);
+                if (captured && captured.at >= search.startedAt) return captured;
+                if (isLoadingVisible()) {
+                    sawLoading = true;
+                    await sleep(300);
+                    continue;
+                }
+                const table = findCdtResultTable();
+                const text = table ? normalizeEvidenceText(table.innerText) : "";
+                const ran = text !== beforeText || sawLoading ||
+                    (search.userClickedAt && Date.now() - search.userClickedAt >= 2500);
+                if (text && ran) {
+                    await sleep(500);   // let the API answer win when it comes too
+                    const late = cdtCaptures.get(code);
+                    if (late && late.at >= search.startedAt) return late;
+                    const capture = {
+                        method: "table",
+                        rows: cdtRowsFromTableCells(cdtTableCells(table)),
+                        text: text.slice(0, 4000),
+                        at: Date.now()
+                    };
+                    cdtCaptures.set(code, capture);
+                    return capture;
+                }
+                await sleep(300);
+            }
+            return null;
+        }
+
+        function cdtPanel() {
+            let panel = document.getElementById("guardian-cdt-panel");
+            if (panel) return panel;
+            panel = document.createElement("div");
+            panel.id = "guardian-cdt-panel";
+            panel.style.cssText = "position:fixed;top:16px;right:16px;z-index:2147483647;max-width:340px;" +
+                "padding:12px 14px;background:#fff;color:#1a1a1a;border:2px solid #276299;border-radius:6px;" +
+                "box-shadow:0 4px 16px rgba(0,0,0,.25);font:13px/1.45 sans-serif;";
+            const text = document.createElement("div");
+            text.className = "guardian-cdt-text";
+            const skip = document.createElement("button");
+            skip.type = "button";
+            skip.textContent = "Skip remaining & download";
+            skip.style.cssText = "margin-top:8px;padding:4px 10px;border:1px solid #276299;border-radius:4px;" +
+                "background:#fff;color:#276299;cursor:pointer;font:12px sans-serif;";
+            skip.addEventListener("click", () => { cdtSkipRequested = true; });
+            panel.append(text, skip);
+            (document.body || document.documentElement).appendChild(panel);
+            return panel;
+        }
+
+        function showCdtPanel(message) {
+            cdtPanel().querySelector(".guardian-cdt-text").textContent = message;
+        }
+
+        function hideCdtPanel() {
+            try {
+                document.getElementById("guardian-cdt-panel")?.remove();
+            } catch (_) { /* nothing shown */ }
+        }
+
+        async function searchCdtCode(code, position, total) {
+            const input = await ensureCdtInput();
+            if (!input) return { error: "Guardian's \"Search coverage by CDT code\" box was not found on this page" };
+            const label = `${code} (${position} of ${total})`;
+            const beforeText = cdtTableText();
+            const button = findCdtSearchButton();
+            const search = { code, startedAt: Date.now(), userClickedAt: null };
+            // Only a real click is trusted; the extension's own is not.
+            const onClick = (event) => { if (event.isTrusted) search.userClickedAt = Date.now(); };
+            button?.addEventListener("click", onClick, true);
+            activeSearch = search;
+            try {
+                showCdtPanel(`Guardian CDT search: ${label}…`);
+                await typeCdtDigits(input, code.slice(1));
+                if (cdtClickMode !== "manual" && button) {
+                    button.click();
+                    const capture = await waitForCdtResult(code, search, beforeText, CDT_AUTO_WAIT_MS);
+                    if (capture) {
+                        cdtClickMode = "auto";
+                        return { capture };
+                    }
+                    cdtClickMode = "manual";
+                }
+                showCdtPanel(`Guardian CDT search: ${label} is typed in — click Guardian's Search button. ` +
+                    "Guardian only accepts a real click there.");
+                if (button) button.style.outline = "3px solid #e8a33d";
+                const capture = await waitForCdtResult(code, search, beforeText, CDT_MANUAL_WAIT_MS);
+                return capture ? { capture } : { error: cdtSkipRequested ? "skipped" : "no answer to the search" };
+            } finally {
+                activeSearch = null;
+                button?.removeEventListener("click", onClick, true);
+                if (button) button.style.outline = "";
+            }
+        }
+
+        // The JSON the Sabrina audit uploads, saved the way the other portal
+        // scrapers save theirs.
+        function downloadExport() {
+            try {
+                const data = buildExport();
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = exportFilename(data);
+                (document.body || document.documentElement).appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+            } catch (err) {
+                console.debug("Guardian: download failed", err);
+            }
+        }
+
         async function persistNow() {
             try {
                 const stored = await chrome.storage.local.get(["audit_context", "guardian_patient_key"]);
                 const context = stored.audit_context || {};
-                const materializedProcedureCodes = ALL_CODES.map((code) =>
-                    procedureCodes.get(code) || buildMissingProcedureRecord(code, "Pending lookup")
-                );
-                const successfulCount = ALL_CODES.filter((code) =>
-                    isCompletedProcedureRecord(procedureCodes.get(code))
-                ).length;
-
-                context[STORAGE_KEY] = {
-                    ...(latestResult || {}),
-                    procedure_derivation_version: PROCEDURE_DERIVATION_VERSION,
-                    procedure_codes_requested: ALL_CODES.length,
-                    procedure_codes_present: materializedProcedureCodes.length,
-                    procedure_codes_complete: successfulCount === ALL_CODES.length,
-                    procedure_codes: materializedProcedureCodes
-                };
+                context[STORAGE_KEY] = buildExport();
                 await chrome.storage.local.set({
                     audit_context: context,
                     guardian_patient_key: patientKey || stored.guardian_patient_key || null
@@ -1165,9 +1675,7 @@
                     sweepProgress = { completed: 0, total: ALL_CODES.length };
                 }
 
-                const successfulCount = ALL_CODES.filter((code) =>
-                    isCompletedProcedureRecord(procedureCodes.get(code))
-                ).length;
+                const successfulCount = ALL_CODES.filter(isRecordDone).length;
 
                 sweepProgress = { completed: successfulCount, total: ALL_CODES.length };
 
@@ -1195,7 +1703,9 @@
                 return `[i] Guardian: capturing procedure codes... (${sweepProgress.completed}/${sweepProgress.total})`;
             }
             if (sweepState === "done") {
-                return "[+] Guardian data + 59 procedure-code records built locally. Ready to download.";
+                const missing = cdtMissing();
+                return `[+] Guardian data + ${ALL_CODES.length} procedure-code records. JSON downloaded.` +
+                    (missing.length ? ` Not searched (will read "not on portal"): ${missing.join(", ")}.` : "");
             }
             if (sweepState === "failed") {
                 return `[!] Guardian crawl paused. ${failureReason || "Retry the crawl."}`;
@@ -1204,7 +1714,7 @@
                 return `[i] Guardian: ${sweepProgress.completed}/${sweepProgress.total} procedure codes already stored. Click Retry Crawl to resume.`;
             }
             if (latestResult) {
-                return "[i] Guardian VOB captured. Click Crawl to build 59 procedure-code records.";
+                return `[i] Guardian VOB captured. Click Crawl to build ${ALL_CODES.length} procedure-code records.`;
             }
             return "[i] Guardian: waiting for the page's own benefits call. " +
                 "Reload the Dental Eligibility page if this doesn't update in a few seconds.";
@@ -1230,66 +1740,24 @@
         }
 
         function buildLocalProcedureRecord(code) {
-            const rows = Array.isArray(latestResult?.plan_options) ? latestResult.plan_options : [];
-            const row = resolveGoverningRow(rows, code);
-            const fallbackService = PROCEDURE_SERVICE_MAP[code] || null;
-
-            if (!row) {
-                return {
-                    code,
-                    covered: null,
-                    coverage_status: "Not Determined",
-                    coverage_basis: null,
-                    dental_service_category: null,
-                    dental_service: fallbackService,
-                    frequency: DEFAULT_FREQUENCY,
-                    age_limit: null,
-                    age_eligible: null,
-                    not_covered_reason: null,
-                    conditional_exclusions: null,
-                    deductible_waived: null,
-                    deductible_waived_evidence: null,
-                    coinsurance: [],
-                    last_visit_date: null,
-                    ehb_plan_indicator: null,
-                    message: [],
-                    lookup_status: "No matching Guardian Plan Options row",
-                    error: "No Guardian Plan Options row explicitly names this CDT code, and no static service fallback exists."
-                };
-            }
-
-            return buildProcedureRecordFromPlanOption(
-                code,
-                row,
-                getPatientAge(latestResult),
-                rows,
-                latestResult?.plan_information?.orthodontics_age_limit
-            );
+            return deriveLocalProcedureRecord(latestResult, code);
         }
 
         async function runProcedureCodeSweep(force = false) {
             if (!latestResult || sweepState === "running") return;
 
-            const pending = force
-                ? ALL_CODES.slice()
-                : ALL_CODES.filter((code) => {
-                    const record = procedureCodes.get(code);
-                    return !record || record.lookup_status !== "Derived from Guardian Plan Options" || record.error;
-                });
-
-            if (!pending.length) {
-                sweepState = "done";
-                failureReason = null;
-                sweepProgress = { completed: ALL_CODES.length, total: ALL_CODES.length };
-                await persist();
-                broadcastStatus();
-                return;
-            }
+            const pending = ALL_CODES.filter((code) => {
+                if (CDT_SEARCH_CODES.includes(code)) return false;
+                if (force) return true;
+                const record = procedureCodes.get(code);
+                return !record || record.lookup_status !== "Derived from Guardian Plan Options" || record.error;
+            });
+            const pendingSearches = force ? CDT_SEARCH_CODES.slice() : cdtMissing();
 
             sweepState = "running";
             failureReason = null;
             sweepProgress = {
-                completed: ALL_CODES.length - pending.length,
+                completed: ALL_CODES.filter(isRecordDone).length,
                 total: ALL_CODES.length
             };
             broadcastStatus();
@@ -1317,18 +1785,42 @@
                     });
                 }
 
-                sweepProgress.completed = ALL_CODES.filter((candidate) =>
-                    isCompletedProcedureRecord(procedureCodes.get(candidate))
-                ).length;
+                sweepProgress.completed = ALL_CODES.filter(isRecordDone).length;
                 await persist();
                 broadcastStatus();
             }
 
+            // The codes the main page cannot answer, one search each.
+            cdtSkipRequested = false;
+            for (let i = 0; i < pendingSearches.length; i++) {
+                const code = pendingSearches[i];
+                let outcome;
+                try {
+                    outcome = cdtSkipRequested
+                        ? { error: "skipped" }
+                        : await searchCdtCode(code, i + 1, pendingSearches.length);
+                } catch (err) {
+                    outcome = { error: `search failed (${String(err)})` };
+                }
+                if (outcome.capture) {
+                    procedureCodes.set(code, buildCdtSearchRecord(code, outcome.capture.rows, latestResult, outcome.capture));
+                } else {
+                    procedureCodes.set(code, {
+                        ...buildMissingProcedureRecord(code, `CDT code search not done: ${outcome.error}`),
+                        coverage_status: "Not Determined"
+                    });
+                    // Without the search box there is nothing more to try.
+                    if (/not found on this page/.test(outcome.error)) cdtSkipRequested = true;
+                }
+                sweepProgress.completed = ALL_CODES.filter(isRecordDone).length;
+                await persist();
+                broadcastStatus();
+            }
+            hideCdtPanel();
+
             await persistQueue;
-            const unresolved = ALL_CODES.filter((code) => {
-                const record = procedureCodes.get(code);
-                return !isCompletedProcedureRecord(record);
-            });
+            const unresolved = ALL_CODES.filter((code) =>
+                !CDT_SEARCH_CODES.includes(code) && !isCompletedProcedureRecord(procedureCodes.get(code)));
 
             if (unresolved.length) {
                 failureReason = `${unresolved.length} CDT record${unresolved.length === 1 ? "" : "s"} could not be materialized from Guardian Plan Options.`;
@@ -1338,9 +1830,10 @@
             }
 
             sweepState = "done";
-            sweepProgress = { completed: ALL_CODES.length, total: ALL_CODES.length };
+            sweepProgress = { completed: ALL_CODES.filter(isRecordDone).length, total: ALL_CODES.length };
             failureReason = null;
             await persist();
+            downloadExport();
             broadcastStatus();
         }
 
@@ -1352,7 +1845,11 @@
                         return;
                     }
 
-                    if (sweepState === "done" && !request.force) {
+                    if (sweepState === "done" && !request.force && !cdtMissing().length) {
+                        // Already built for this patient: Crawl again just
+                        // downloads the same JSON again. With a code search
+                        // still missing, Crawl offers those searches again.
+                        downloadExport();
                         sendResponse({ started: false, ready: true, status: sweepStatusText() });
                         return;
                     }
@@ -1421,12 +1918,39 @@
             }
         };
 
+        // Any other Guardian API answer that carries service rows — which is
+        // what a "Search coverage by CDT code" answer is — goes to the
+        // ISOLATED world with its request body, so the code can be told.
+        const isGuardianApi = (url) => {
+            try {
+                return new URL(url, location.href).pathname.includes(API_PATH);
+            } catch (_) {
+                return String(url).includes(API_PATH);
+            }
+        };
+        const handleApiJson = (url, body, json) => {
+            try {
+                if (!/cdt|procedure/i.test(String(url)) && !/"(?:dental_service|coinsurance)"/.test(JSON.stringify(json))) return;
+                window.postMessage({
+                    source: PAGE_SOURCE,
+                    type: "API_RESPONSE",
+                    url: String(url),
+                    body: typeof body === "string" ? body.slice(0, 2000) : "",
+                    data: json
+                }, window.location.origin);
+            } catch (_) {}
+        };
+
         if (nativeFetch) {
             globalThis.fetch = async function guardianFetch(input, init) {
                 const url = (typeof Request !== "undefined" && input instanceof Request) ? input.url : String(input);
                 const response = await nativeFetch(input, init);
                 if (isTarget(url, VOB_PATH)) {
                     try { response.clone().json().then(handleVobJson).catch(() => {}); } catch (_) {}
+                } else if (isGuardianApi(url)) {
+                    try {
+                        response.clone().json().then((json) => handleApiJson(url, init?.body, json)).catch(() => {});
+                    } catch (_) {}
                 }
                 return response;
             };
@@ -1447,12 +1971,16 @@
                     this.addEventListener("load", () => {
                         try { handleVobJson(JSON.parse(this.responseText)); } catch (_) {}
                     });
+                } else if (url && isGuardianApi(url)) {
+                    this.addEventListener("load", () => {
+                        try { handleApiJson(url, body, JSON.parse(this.responseText)); } catch (_) {}
+                    });
                 }
                 return originalSend.call(this, body);
             };
         }
 
-        console.info("Guardian VOB extractor installed (passive VOB capture; no CDT requests from extension). ");
+        console.info("Guardian VOB extractor installed (passive capture; the extension sends no requests of its own).");
     }
 
     // =====================================================================
@@ -1748,6 +2276,6 @@
     // Expose for Node-side unit testing only; harmless no-op in the browser
     // (module is undefined there, so this whole block never runs).
     if (typeof module !== "undefined" && module.exports) {
-        module.exports = { transformVobResponse, buildProcedureRecord, buildProcedureRecordFromPlanOption, extractFrequency, extractAgeLimit, extractConditionalExclusions, ALL_CODES, PROCEDURE_SERVICE_MAP, deriveCoverage, resolveGoverningRow, buildDeductibles, buildPlanAllowance, toMoney, isLiteralCodeMention, deriveMissingToothExclusion, evaluateAgeEligibility, inferCategoryFromRowName };
+        module.exports = { transformVobResponse, buildProcedureRecord, buildProcedureRecordFromPlanOption, extractFrequency, extractAgeLimit, extractConditionalExclusions, ALL_CODES, PROCEDURE_SERVICE_MAP, deriveCoverage, resolveGoverningRow, buildDeductibles, buildPlanAllowance, toMoney, isLiteralCodeMention, deriveMissingToothExclusion, evaluateAgeEligibility, inferCategoryFromRowName, deriveLocalProcedureRecord, exportFilename, PROCEDURE_DERIVATION_VERSION, CDT_SEARCH_CODES, CDT_SEARCH_LOOKUP, cdtRowFromApi, findCdtRows, cdtRowsFromTableCells, cdtCodeFromRequest, buildCdtSearchRecord };
     }
 })();
