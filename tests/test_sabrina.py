@@ -3096,8 +3096,8 @@ check("and refused for jobs that need a Denticon export",
 check("the server runs its own package",
       _main.client_module(_main.CLIENTS["star_dental"], "sabrina").__name__,
       "star_dental.sabrina")
-check("it audits the same portals as Smile Partners",
-      _ns.CARRIERS, _CARRIERS)
+check("it audits the same portals as Smile Partners, but Delta Dental of Missouri",
+      _ns.CARRIERS, {k: v for k, v in _CARRIERS.items() if k != "delta_mo"})
 check("a carrier's rules come from its own folder, not Smile Partners'",
       (_ns.carrier_rules(_tk)[1].__name__, _sp.carrier_rules(_tk)[1].__name__),
       ("star_dental.sabrina.carriers.delta_toolkit",

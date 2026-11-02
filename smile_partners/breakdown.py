@@ -23,6 +23,8 @@ from .portals.cigna import (_apply_cigna_output_rules, _cigna_frequency_is_unava
                             _is_cigna_portal, _normalize_cigna_portal)
 from .portals.delta_dental import (_apply_dd_output_rules, _is_dd_portal,
                                    _normalize_dd_portal)
+from .portals.delta_mo import (_apply_dd_mo_output_rules, _is_dd_mo_portal,
+                               _normalize_dd_mo_portal)
 from .portals.metlife import _extract_metlife_ortho_age_limit
 
 
@@ -713,6 +715,13 @@ def _extract(portal_raw, denticon_raw):
     if _is_dd_portal(portal_raw):
         normalized = _normalize_dd_portal(portal_raw)
         return _apply_dd_output_rules(
+            _extract(normalized, denticon_raw),
+            normalized,
+        )
+
+    if _is_dd_mo_portal(portal_raw):
+        normalized = _normalize_dd_mo_portal(portal_raw)
+        return _apply_dd_mo_output_rules(
             _extract(normalized, denticon_raw),
             normalized,
         )

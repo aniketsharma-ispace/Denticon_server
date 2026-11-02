@@ -1,13 +1,14 @@
 {
     "manifest_version": 3,
     "name": "Insurance Auditor Pro",
-    "version": "1.48",
+    "version": "1.49",
     "permissions": [
         "storage",
         "activeTab",
         "tabs",
         "scripting",
-        "webRequest"
+        "webRequest",
+        "downloads"
     ],
     "host_permissions": [
         "*://*.denticon.com/*",
@@ -31,7 +32,8 @@
         "https://app.deltadentalil.com/*",
         "https://www.dnoaconnect.com/*",
         "https://www4.deltadentalwi.com/*",
-        "https://www.dentalofficetoolkit.com/dot-ui/member-benefits/*"
+        "https://www.dentalofficetoolkit.com/dot-ui/member-benefits/*",
+        "https://providers.deltadentalmo.com/*"
     ],
     "action": {
         "default_popup": "popup.html"
@@ -210,6 +212,26 @@
             "js": [
                 "toolkit_requirements.generated.js",
                 "content_DD_Toolkit.js"
+            ],
+            "run_at": "document_start",
+            "world": "ISOLATED"
+        },
+        {
+            "matches": [
+                "https://providers.deltadentalmo.com/*"
+            ],
+            "js": [
+                "content_DD_MO.js"
+            ],
+            "run_at": "document_start",
+            "world": "MAIN"
+        },
+        {
+            "matches": [
+                "https://providers.deltadentalmo.com/*"
+            ],
+            "js": [
+                "content_DD_MO.js"
             ],
             "run_at": "document_start",
             "world": "ISOLATED"
