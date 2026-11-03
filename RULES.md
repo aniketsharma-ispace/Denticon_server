@@ -1,6 +1,6 @@
 # Toolkit comparator rules (Star and Smile Partners)
 
-Rules marked **[11/02]** were added for the 11/02 Smile review. Rules marked **[NEW]** were added in version 10/28. Rules marked **[10/26]** and **[10/23]** were added in earlier versions. Rules marked **[CLARIFIED]** keep their meaning but state how the code applies them.
+Rules marked **[11/03]** were added for the 11/03 Smile review (out-of-network benefits). Rules marked **[11/02]** were added for the 11/02 Smile review. Rules marked **[NEW]** were added in version 10/28. Rules marked **[10/26]** and **[10/23]** were added in earlier versions. Rules marked **[CLARIFIED]** keep their meaning but state how the code applies them.
 
 The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolkit JSON) and `sabrina/carriers/delta_toolkit/` (the audit; Toolkit-only rules are in its `rules.py`), under `star_dental/` and `smile_partners/`.
 
@@ -44,7 +44,6 @@ The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolki
   - Dependent uses minorMaxAge, then dependentMaxAge.
   - childMaxAgeLimit (26) is deliberately not used.
 - **Family deductible:** if exported as 0 while the individual deductible is set, it’s derived as 3 × individual.
-- **Max vs deductible:** both rows share category “General”, so max and ortho max now require type == maximum.
 - **Frequency phrases added over Smile:**
   - D9110 matches only “emergency examinations/exams”.
   - D4341 matches either word order.
@@ -95,14 +94,19 @@ The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolki
 - **Fixed “DD INS” code set:** 59 codes. Any not already on the sheet are added as portal-only, Toolkit-only rows.
 - **Payor ID:** the display field’s payorId wins, with plain ID comparison and no DDPO/DDPOH alias.
   - **[CLARIFIED]** The display field is read as `payorId` or `payor_id`.
-- **Deductible and max:** there is no 3× family deductible rule. The general max is picked by category only, so a “General” deductible row listed first can be read as the annual max (Star fixed this).
+- **Deductible and max:** there is no 3× family deductible rule.
 - **Critical keys:** this list adds pct_prev, pct_basic and pct_major.
 - **Not-required fields [11/02]:** Fee Schedule, Insurance Phone and Eligibility Term Date stay on the UI although the reviewer marked them not required. The JSON side uses the Toolkit value when the export states one (a feeSchedule key or “Fee Schedule:” note; the claims phoneNumber), so a real difference is still a mismatch. Otherwise the Sabrina value is captured on the JSON side too and the row matches, with a note saying so. The Toolkit export has no termination date, so Term Date always takes the Sabrina value; blank on both sides keeps the 10/26 rule.
 - **UI order [11/02]:** sections, fields and CDT rows follow the Sabrina PDF top to bottom: Patient/Subscriber (Relationship after Member ID, Eligibility last), Insurance, Maximums & Deductibles, Plan Provisions, Orthodontics, Clauses (Missing Tooth, Preventative in Max, Major Services Paid on Prep or Seat, Posterior Composites, Posterior Crowns, Perio After SRP), then the Benefit Details codes in Sabrina's order. D4381 Arestin is printed on the sheet but is not compared: the comparator audits the workbook's “Smile Partner Dental” code list.
-- **Premier sheets [11/02]:** a sheet whose Fee Schedule names Premier (“MI - DD Prem Reg6”, “MI Delta Premier Region 6”) is compared with the plan's **Premier Dentist** benefits instead of the PPO ones. A bare “Pr” (“MI - DD LITE Pr Reg6”) is not Premier: those sheets carry the PPO figures. The audit's Toolkit legend names the network and the fee schedule that chose it.
-  - A code's % (and its Not Covered status and waiting period) comes from its `out_of_network` entry naming Premier Dentist. A network the plan offers that no lookup lists separately is paid from the PPO bucket, so the PPO figure applies. A code with no entry while other codes have one is not comparable. An Optional code falls back to the Premier category rows.
-  - Maximums and deductibles are the PPO table unless the export lists Premier rows of its own.
-  - An export with no `out_of_network` data at all (made before 10/23) cannot state Premier figures: it keeps the PPO comparison and the legend says to re-export.
+- **Which network's benefits [11/03, extends the 11/02 Premier rule]:** the sheet decides, in this order:
+  1. A Fee Schedule naming Premier (“MI - DD Prem Reg6”, “MI Delta Premier Region 6”) → the plan's **Premier Dentist** benefits. A bare “Pr” (“MI - DD LITE Pr Reg6”) is not Premier: those sheets carry the PPO figures. A Premier fee schedule on a sheet whose In Network says **Out** still compares Premier, and the In Network row is a mismatch naming the conflict.
+  2. In Network **Out**, or a **UCR** fee schedule (“IL General UCR”, “James Island UCR”) → the plan's **Nonparticipating Dentist** (out-of-network) benefits. A UCR fee schedule on a sheet whose In Network says **In** is flagged the same way.
+  3. Anything else → PPO Dentist, as before.
+
+  The audit's Toolkit legend names the network used and what chose it.
+  - A code's % (and its Not Covered status and waiting period) comes from its `out_of_network` entry naming that network. A network the plan offers that no lookup lists separately is paid from the PPO bucket, so the PPO figure applies. A code with no entry while other codes have one is not comparable. An Optional code falls back to that network's category rows.
+  - Maximums and deductibles: Premier uses the PPO table unless the export lists Premier rows of its own. Out of network uses the export's `out_of_network.maximums_and_deductibles` rows for Nonparticipating Dentist, or the PPO table when it names that network (`maximums_and_deductibles.networks`) or `maximums_shared_with_ppo` is set. Otherwise (exports before extension 1.45) the 10 maximum/deductible amount rows are not comparable, with a note to re-export, as in Star.
+  - An export with no `out_of_network` data at all (made before 10/23) cannot state Premier or out-of-network figures: it keeps the PPO comparison and the legend says to re-export.
 - **History [11/02]:**
   - The Toolkit's routine **Exam** row (looked up as D0120) is the history of D0120, D0140 and D0150; its **Bitewings** row (looked up as D0272) is D0274's. A code with its own row keeps it. This reverses the earlier code-specific bitewing reading.
   - A routine row whose **Eligible** column reads Yes gives **NH**, whatever dates it or the code's own lookup list, and the panorex never takes a date from an eligible FMX row.
@@ -113,6 +117,7 @@ The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolki
 ## Shared Toolkit rules
 
 - **Member ID:** read from memberAlternateId (the Toolkit's “Member Alternate ID”). A lone “N”, “N/A” or blank counts as absent. **[11/02]** Smile now reads it too; before, the Smile portal side was always blank.
+- **Max vs deductible:** both rows share category “General”, so the max and ortho max require type == maximum. **[11/03]** Smile now does this too: Lisa Rawlinson's export lists the General deductible first, and it used to be read as a $50 annual maximum.
 - **In Network [10/23]:**
   - It is **In** if the Fee Schedule in the Toolkit JSON contains “Delta Dental” or “Premier”.
   - It is **Out** if the Fee Schedule contains “UCR”. UCR is checked first, so “Delta Dental UCR” is Out.
