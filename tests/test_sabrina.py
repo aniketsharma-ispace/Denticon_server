@@ -3622,6 +3622,86 @@ else:
     skip("Titus Jackson Guardian sheet", "Material/Smile Partners/Gaurdian not present")
 
 
+# Guardian's Dental Eligibility page saved as a PDF (2026-11-03): read by
+# portals/guardian_pdf.py into the extension's export shape, with the per-code
+# records derived by a port of content_guardian.js. The port was checked
+# against the extension's JavaScript on 62 codes x 3 plans with no difference;
+# these pin a few of its rules without the JavaScript.
+from smile_partners.portals import guardian_pdf as _gpdf
+
+_GDP_FILLINGS = _gd_row("Fillings", "Basic", "80%", "70%", [
+    "Amalgam (silver fillings) and resin-based composite restorations (white fillings) are covered once "
+    "per tooth surface in any 12 months for covered persons up to age 19 and once per tooth surface in "
+    "any 36 months for all other covered persons."])
+_GDP_ROWS = {"plan_options": [
+    _gd_row("Cleanings/Prophylaxis", "Preventive", "100%", "90%", [
+        "Prophylaxis (cleaning) (D1110, D1120) is covered twice in any 12 consecutive month period.",
+        "Adult prophylaxis (D1110) is covered age 12 and over."], "04/28/2026"),
+    _gd_row("X-Rays", "Preventive", "100%", "90%", [
+        "Complete series of radiographic images (D0210) or panoramic radiographic image (D0330) is covered "
+        "once in any 36 consecutive month period."],
+        "Bitewings: 04/28/2026; FullMouth/panoramic: 10/22/2025"),
+    _gd_row("Anesthesia", "Basic", "80%", "70%", []),
+    _GDP_FILLINGS,
+    _gd_row("Other Basic", None, None, None, [
+        "Occlusal guard (night guard) (D9944, D9945) is covered when done within 6 months after osseous surgery.",
+        "Covered once per lifetime."]),
+], "plan_information": {}}
+
+
+def _gdp(code, age=9):
+    record = _gpdf.derive_procedure_record(_GDP_ROWS, code, age)
+    return (record["covered"], record["frequency"], record["last_visit_date"],
+            sorted(c["amount"] for c in record["coinsurance"]))
+
+
+check("guardian pdf: filling frequency follows the patient's age band",
+      (_gdp("D2160", 9)[1], _gdp("D2160", 40)[1]),
+      ("once per tooth surface in any 12 months", "once per tooth surface in any 36 months"))
+check("guardian pdf: a code covered only from age 12 is not covered at 9, and loses its coinsurance",
+      (_gdp("D1110"), _gdp("D1120")[0]),
+      ((False, "twice in any 12 consecutive month period", "04/28/2026", []), True))
+check("guardian pdf: an 'Other Basic' code takes the Basic percentage and the row's lifetime limit",
+      _gdp("D9944"), (True, "once per lifetime", None, ["70%", "80%"]))
+check("guardian pdf: a shared Last Visit cell gives each code its own date",
+      (_gdp("D0210")[2], _gdp("D0274")[2]), ("10/22/2025", "04/28/2026"))
+
+import main as _main_gd
+check("guardian pdf: only a client with its own reader reads a PDF itself",
+      (_main_gd.client_portal_pdf(None, b"%PDF"), _main_gd.client_portal_pdf("dca", b"%PDF"),
+       _main_gd.client_portal_pdf("star_dental", b"%PDF")),
+      (None, None, None))
+import fitz as _fitz_gd
+_gd_other = _fitz_gd.open()
+_gd_other.new_page().insert_text((72, 72), "Delta Dental of Wisconsin  Eligibility and Accumulations")
+check("guardian pdf: and Smile Partners' reader leaves any other PDF to the shared parser",
+      _main_gd.client_portal_pdf("smile_partners", _gd_other.tobytes()), None)
+
+_GD_PORTAL_PDF = os.path.join(BASE, "Material", "Smile Partners", "Gaurdian",
+                              "Dental Eligibility - Provider _ Guardian.pdf")
+if os.path.exists(_GD_PORTAL_PDF) and os.path.exists(_GD_SHEET):
+    with open(_GD_PORTAL_PDF, "rb") as _fh:
+        _gdx = _gpdf.read_guardian_eligibility_pdf(_fh.read())
+    _gdx_procs = {r["code"]: r for r in _gdx["procedure_codes"]}
+    _gdx_fam = next(d for d in _gdx["deductibles"] if d["coverage"] == "Family Dental" and d["network"] == "In network")
+    check("guardian pdf: Titus Jackson's printout reads like the page",
+          (_gdx["patient_name"], _gdx["relation_to_member"], _gdx["plan_information"]["group_number"],
+           len(_gdx["plan_options"]), _gdx_fam["deductible"], _gdx_fam["met_to_date"],
+           _gdx_procs["D0210"]["last_visit_date"], _gdx_procs["D4341"]["last_visit_date"]),
+          ("Titus K Jackson", "Son", "00532450", 23, "3 per family", "2", "10/22/2025", "Date Not Found"))
+    check("guardian pdf: the code-search codes are left out — the printout has no code search",
+          sorted(_gpdf.CDT_SEARCH_CODES & set(_gdx_procs)), [])
+    _gdx_res = _sp.compare_sabrina_to_portal(_gd_sheet, _gdx)
+    check("guardian pdf: audited against the sheet, it finds the four disagreements the page states",
+          (_gdx_res["carrier"],
+           sorted(m["key"] for m in _gdx_res["mismatches"]),
+           _gdx_res["diagnostics"]["cdt_search_missing"]),
+          ("guardian", ["d0210__hist", "d0330__hist", "d2160__freq", "d2391__freq"],
+           ["D1510", "D2980", "D4260", "D7140", "D7210", "D9944"]))
+else:
+    skip("Titus Jackson Guardian printout", "Material/Smile Partners/Gaurdian not present")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  2. DETECTION
 # ══════════════════════════════════════════════════════════════════════════════

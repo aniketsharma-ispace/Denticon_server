@@ -137,13 +137,15 @@ def carrier_rules(portal_raw):
     if key is None:
         seen = _pdf_insurer(portal_raw) if isinstance(portal_raw, dict) else ""
         if seen.lower() == "guardian":
-            # The Guardian printout read by /api/parse-pdf carries a handful of
-            # plan-level figures, not the per-code benefits the audit compares.
+            # Read by the shared (DCA) parser: Smile Partners' own reader
+            # (portals/guardian_pdf.py) did not take it, so it is not a full
+            # Dental Eligibility printout, and the shared reading carries a
+            # handful of plan-level figures, not the per-code benefits.
             raise ValueError(
-                "Guardian is audited from the extension's JSON export, not the "
-                "eligibility PDF. Open the patient's Dental Eligibility page on "
-                "guardiananytime.com, click Crawl in the extension, and upload "
-                "the downloaded <patient>_guardian_benefits.json.")
+                "This Guardian PDF could not be read as the patient's Dental "
+                "Eligibility page. Save that page from guardiananytime.com as a "
+                "PDF (all of it, including Plan options) and upload it, or "
+                "upload the <patient>_guardian_benefits.json the extension downloads.")
         raise ValueError(
             "The Sabrina audit has no rules for this portal export"
             + (f" (it reads as {seen})" if seen else "")

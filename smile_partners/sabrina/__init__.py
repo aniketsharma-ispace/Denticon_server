@@ -40,6 +40,19 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     return result
 
 
+def read_portal_pdf(pdf_bytes: bytes) -> dict | None:
+    """
+    A carrier PDF this client reads itself, as that carrier's export — or None
+    to leave it to the shared PDF parser.
+
+    Guardian's Dental Eligibility page saved as a PDF is read into the same
+    shape the extension downloads (`portals/guardian_pdf.py`); the shared
+    parser's Guardian reading is DCA's, too thin for this audit.
+    """
+    from ..portals.guardian_pdf import read_guardian_eligibility_pdf
+    return read_guardian_eligibility_pdf(pdf_bytes)
+
+
 async def audit_sabrina_pdf(pdf_bytes: bytes, portal_raw: dict) -> dict:
     """
     Full path: Sabrina PDF bytes + portal export → comparison payload, run
@@ -66,5 +79,6 @@ __all__ = [
     "detect_carrier",
     "is_sabrina_pdf",
     "parse_sabrina_pdf",
+    "read_portal_pdf",
     "sabrina_marker_count",
 ]

@@ -177,6 +177,28 @@ def client_module(spec, dotted):
     return import_module(f"{spec['package']}.{dotted}")
 
 
+def client_portal_pdf(client, pdf_bytes):
+    """
+    A carrier PDF read by the client's own reader (`read_portal_pdf` in its
+    `sabrina` package), or None to leave it to the shared parser — no client
+    named, a client without a reader, or a PDF its reader does not take.
+    """
+    if not client:
+        return None
+    try:
+        _key, spec = resolve_client(client, "parse_pdf")
+        reader = getattr(client_module(spec, "sabrina"), "read_portal_pdf", None)
+    except (HTTPException, ImportError):
+        return None
+    if reader is None:
+        return None
+    try:
+        return reader(pdf_bytes)
+    except Exception as e:      # an unreadable PDF falls back to the shared parser
+        print(f"[parse-pdf] {spec['label']} reader failed, using the shared parser: {e}")
+        return None
+
+
 class ExclusionRequest(BaseModel):
     exclusions: list
 
@@ -260,11 +282,16 @@ async def generate_new_plan_pdf_api(req: PDFRequest):
     )
 
 @app.post("/api/parse-pdf")
-async def parse_pdf_endpoint(file: UploadFile = File(...)):
+async def parse_pdf_endpoint(file: UploadFile = File(...), client: Optional[str] = Form(None)):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Uploaded file must be a PDF")
     pdf_bytes = await file.read()
-    
+
+    # A client may read some carriers' PDFs itself (Smile Partners: Guardian).
+    own = await run_in_threadpool(client_portal_pdf, client, pdf_bytes)
+    if own:
+        return own
+
     try:
         result = await parse_insurance_pdf(pdf_bytes)
         return result
@@ -358,10 +385,13 @@ async def sabrina_compare_endpoint(
     elif portal_file is not None:
         if not (portal_file.filename or "").lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail="portal_file must be a PDF")
-        try:
-            portal_raw = await parse_insurance_pdf(await portal_file.read())
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e))
+        portal_pdf = await portal_file.read()
+        portal_raw = await run_in_threadpool(client_portal_pdf, _key, portal_pdf)
+        if not portal_raw:
+            try:
+                portal_raw = await parse_insurance_pdf(portal_pdf)
+            except ValueError as e:
+                raise HTTPException(status_code=422, detail=str(e))
 
     if not portal_raw:
         raise HTTPException(

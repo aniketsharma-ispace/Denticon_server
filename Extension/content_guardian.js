@@ -18,7 +18,8 @@
  * "Search coverage by CDT code" box and its answer captured — from the API
  * response the page receives, or from the result table. Guardian has ignored
  * scripted Search clicks, so when one gets no answer an on-page prompt asks
- * the user to click Search for each of those codes.
+ * the user to click Search for each of those codes. With no click for 3
+ * minutes it stops asking and downloads without the remaining searches.
  *
  * ARCHITECTURE (dual-world, same as content_dd_toolkit.js):
  *   MAIN world     -> monkey-patches fetch()/XHR only to capture the VOB
@@ -1239,7 +1240,7 @@
         const cdtCaptures = new Map();
         let activeSearch = null;
         let cdtClickMode = null;
-        let cdtSkipRequested = false;
+        let cdtSearchStopped = false;
 
         function patientKeyFromResult(result) {
             return [
@@ -1506,7 +1507,7 @@
         async function waitForCdtResult(code, search, beforeText, timeoutMs) {
             const deadline = Date.now() + timeoutMs;
             let sawLoading = false;
-            while (Date.now() < deadline && !cdtSkipRequested) {
+            while (Date.now() < deadline && !cdtSearchStopped) {
                 const captured = cdtCaptures.get(code);
                 if (captured && captured.at >= search.startedAt) return captured;
                 if (isLoadingVisible()) {
@@ -1546,13 +1547,7 @@
                 "box-shadow:0 4px 16px rgba(0,0,0,.25);font:13px/1.45 sans-serif;";
             const text = document.createElement("div");
             text.className = "guardian-cdt-text";
-            const skip = document.createElement("button");
-            skip.type = "button";
-            skip.textContent = "Skip remaining & download";
-            skip.style.cssText = "margin-top:8px;padding:4px 10px;border:1px solid #276299;border-radius:4px;" +
-                "background:#fff;color:#276299;cursor:pointer;font:12px sans-serif;";
-            skip.addEventListener("click", () => { cdtSkipRequested = true; });
-            panel.append(text, skip);
+            panel.append(text);
             (document.body || document.documentElement).appendChild(panel);
             return panel;
         }
@@ -1594,7 +1589,11 @@
                     "Guardian only accepts a real click there.");
                 if (button) button.style.outline = "3px solid #e8a33d";
                 const capture = await waitForCdtResult(code, search, beforeText, CDT_MANUAL_WAIT_MS);
-                return capture ? { capture } : { error: cdtSkipRequested ? "skipped" : "no answer to the search" };
+                if (capture) return { capture };
+                // Nobody clicked: stop asking for the rest, so the JSON still
+                // downloads (those codes read "not on portal"; Crawl asks again).
+                cdtSearchStopped = true;
+                return { error: "no click on Search within 3 minutes" };
             } finally {
                 activeSearch = null;
                 button?.removeEventListener("click", onClick, true);
@@ -1791,13 +1790,13 @@
             }
 
             // The codes the main page cannot answer, one search each.
-            cdtSkipRequested = false;
+            cdtSearchStopped = false;
             for (let i = 0; i < pendingSearches.length; i++) {
                 const code = pendingSearches[i];
                 let outcome;
                 try {
-                    outcome = cdtSkipRequested
-                        ? { error: "skipped" }
+                    outcome = cdtSearchStopped
+                        ? { error: "not searched (an earlier search got no click)" }
                         : await searchCdtCode(code, i + 1, pendingSearches.length);
                 } catch (err) {
                     outcome = { error: `search failed (${String(err)})` };
@@ -1810,7 +1809,7 @@
                         coverage_status: "Not Determined"
                     });
                     // Without the search box there is nothing more to try.
-                    if (/not found on this page/.test(outcome.error)) cdtSkipRequested = true;
+                    if (/not found on this page/.test(outcome.error)) cdtSearchStopped = true;
                 }
                 sweepProgress.completed = ALL_CODES.filter(isRecordDone).length;
                 await persist();

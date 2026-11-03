@@ -42,20 +42,25 @@
             return m ? (m[1] || m[2]) : null;
         };
 
-        const keep = (url, text) => {
+        const keep = (url, text, status = 200) => {
             const key = keyFor(url);
             if (!key) return;
-            let body;
+            const ok = status >= 200 && status < 300;
+            let body = null;
             try {
                 body = text ? JSON.parse(text) : null;
             } catch (e) {
-                return; // Not JSON: nothing the scraper could use.
+                if (ok) return; // Not JSON: nothing the scraper could use.
             }
             // An empty answer (204 No Content) is still an answer: the portal has
             // nothing on file. A patient with no claims gets no treatment history.
-            captured[key] = body == null
-                ? { at: Date.now(), body: null, empty: true }
-                : { at: Date.now(), body };
+            // A refusal is kept too, with its status, so the scraper can tell a
+            // patient with no claims (404 Not Found) from a response it missed.
+            captured[key] = !ok
+                ? { at: Date.now(), status, body, failed: true }
+                : body == null
+                    ? { at: Date.now(), status, body: null, empty: true }
+                    : { at: Date.now(), status, body };
         };
 
         const nativeFetch = window.fetch;
@@ -69,7 +74,7 @@
                 const pending = nativeFetch.apply(this, arguments);
                 if (key) {
                     pending.then(response => {
-                        if (response.ok) response.clone().text().then(text => keep(url, text)).catch(() => {});
+                        response.clone().text().then(text => keep(url, text, response.status)).catch(() => {});
                     }).catch(() => {});
                 }
                 return pending;
@@ -87,10 +92,9 @@
             if (key) {
                 delete captured[key]; // as for fetch: never keep the last patient's copy
                 this.addEventListener("load", () => {
-                    if (this.status < 200 || this.status >= 300) return;
                     try {
-                        if (this.responseType === "" || this.responseType === "text") keep(this.__ddInsUrl, this.responseText);
-                        else if (this.responseType === "json") keep(this.__ddInsUrl, JSON.stringify(this.response));
+                        if (this.responseType === "" || this.responseType === "text") keep(this.__ddInsUrl, this.responseText, this.status);
+                        else if (this.responseType === "json") keep(this.__ddInsUrl, JSON.stringify(this.response), this.status);
                     } catch (e) {
                         // Unreadable response: the scraper falls back to the page.
                     }
@@ -890,32 +894,60 @@
         return shorter.every(token => longer.has(token));
     }
 
+    // The treatment-history answer as the cards' service dates, or why it cannot
+    // be used. A patient with no claims gets 204 No Content or 404 Not Found —
+    // both mean no service dates, not a missing answer.
+    function historyFrom(answer, enrollee) {
+        if (!answer) return { usable: false, note: "treatment history not captured" };
+        if (answer.empty || answer.status === 404) return { usable: true, body: { procedures: [] } };
+        if (answer.failed) return { usable: false, note: `treatment history answered ${answer.status}` };
+        const body = answer.body || {};
+        const procedures = body.procedures == null ? [] : body.procedures;
+        if (!Array.isArray(procedures)) return { usable: false, note: "treatment history unreadable" };
+        const historyEnrollee = body?.criteria?.enrolleeId;
+        if (enrollee && historyEnrollee && enrollee !== historyEnrollee) {
+            return { usable: false, note: "treatment history is for another patient" };
+        }
+        return { usable: true, body: { ...body, procedures } };
+    }
+
     // What the page has captured for this patient, waiting a little for responses
-    // still in flight. Returns the reason instead when something is unusable.
+    // still in flight. Returns the reason instead when the benefits package is
+    // unusable — without it there is nothing to export.
+    //
+    // Treatment history only gives the cards their service dates, which the
+    // Treatment History tab is read for as well, so it never holds the benefits
+    // back: once the wait is over the codes are exported without those dates and
+    // `historyNote` says why (Daphne Zikas, whose history never came).
     async function capturedBenefits(patientName, maxWaitMs = 10000) {
         const start = Date.now();
-        let reason = "";
         while (true) {
+            const timeUp = Date.now() - start >= maxWaitMs;
             const captured = await readCapturedResponses();
             const pkg = captured["benefits-package"]?.body;
-            // An empty answer means no claims on file: no code has a service
-            // date, as the search cards show. It must not block the benefits.
-            const history = captured["treatment-history"]?.empty
-                ? { procedures: [] }
-                : captured["treatment-history"]?.body;
             const other = captured["other-procedures"]?.body;
             const memberName = pkg?.member?.memberName;
             const enrollee = pkg?.member?.enrolleeId;
-            const historyEnrollee = history?.criteria?.enrolleeId;
 
+            let reason = "";
             if (!Array.isArray(pkg?.treatment)) reason = "benefits package not captured";
             else if (!samePatient(memberName, patientName)) reason = "benefits package is for another patient";
-            else if (!Array.isArray(history?.procedures)) reason = "treatment history not captured";
-            else if (enrollee && historyEnrollee && enrollee !== historyEnrollee) reason = "treatment history is for another patient";
-            else if (!Array.isArray(other?.treatment) && Date.now() - start < maxWaitMs) reason = "other procedures not captured";
-            else return { pkg, history, other: Array.isArray(other?.treatment) ? other : null };
+            if (reason) {
+                if (timeUp) return { reason };
+                await sleep(500);
+                continue;
+            }
 
-            if (Date.now() - start >= maxWaitMs) return { reason };
+            const history = historyFrom(captured["treatment-history"], enrollee);
+            const otherReady = Array.isArray(other?.treatment);
+            if ((history.usable && otherReady) || timeUp) {
+                return {
+                    pkg,
+                    history: history.usable ? history.body : { procedures: [] },
+                    historyNote: history.usable ? "" : history.note,
+                    other: otherReady ? other : null,
+                };
+            }
             await sleep(500);
         }
     }
@@ -1054,13 +1086,17 @@
     // Every sheet code, answered from the captured data, in sheet order. What
     // the data cannot answer is reported in `error`, never guessed.
     async function scrapeBenefits(choice, patientName) {
-        const result = { answers: [], network: "", choice: "", missing: [], error: "" };
+        const result = { answers: [], network: "", choice: "", missing: [], error: "", historyNote: "" };
 
         const captured = await capturedBenefits(patientName);
         if (captured.reason) {
             result.error = `${captured.reason}. Reload the patient page and crawl again.`;
             console.warn(`Benefits not read: ${result.error}`);
             return result;
+        }
+        if (captured.historyNote) {
+            result.historyNote = `${captured.historyNote}; service dates come from the Treatment History tab`;
+            console.warn(`Benefits read without the page's service dates: ${captured.historyNote}`);
         }
 
         const fromData = benefitsFromCaptured(SHEET_CODES, captured, choice);
@@ -1213,6 +1249,9 @@
                 auditData.tabs.benefits_search_error = search.error;
                 alert(`Delta Dental benefits: ${search.error}`);
             }
+            // Benefits were exported, but the page's own claim dates were not
+            // usable; the Treatment History tab below still supplies them.
+            if (search.historyNote) auditData.tabs.benefits_search_history_note = search.historyNote;
             auditData.tabs.benefits_search_codes_requested = SHEET_CODES.join(", ");
             // Codes the portal does not recognise at all.
             auditData.tabs.benefits_search_codes_not_in_portal = search.missing.join(", ");

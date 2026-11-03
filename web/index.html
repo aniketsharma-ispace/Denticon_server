@@ -785,6 +785,8 @@ async function handlePdfUpload(file) {
 
     const formData = new FormData();
     formData.append('file', file);
+    /* A client may read some carriers' PDFs itself (Smile Partners: Guardian). */
+    formData.append('client', selectedClient);
 
     try {
         const response = await fetch(`${API_BASE}/api/parse-pdf`, { method: 'POST', body: formData });
