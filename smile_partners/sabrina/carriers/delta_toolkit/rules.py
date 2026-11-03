@@ -9,7 +9,7 @@ call these; the generic field readers stay there. RULES.md lists the rules.
 from __future__ import annotations
 
 import re
-from .vocabulary import _blank, _norm_id, _norm_name, _num_agelimit, _num_date
+from .vocabulary import _blank, _norm_id, _norm_name, _norm_network, _num_agelimit, _num_date
 
 
 def _toolkit_eligibility(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
@@ -113,6 +113,7 @@ def _pdf_ortho_coverage(text: str) -> str | None:
 
 
 _PREMIER_NETWORK = "Premier Dentist"
+_OUT_OF_NETWORK = "Nonparticipating Dentist"
 
 
 # "MI - DD Prem Reg6", "MI Delta Premier Region 6". A bare "Pr" is not Premier:
@@ -120,18 +121,37 @@ _PREMIER_NETWORK = "Premier Dentist"
 _PREMIER_FEE_SCHEDULE_RE = re.compile(r"\bprem(?:ier)?\b", re.IGNORECASE)
 
 
-def _toolkit_benefit_network(fields: dict) -> tuple[str | None, str]:
+def _toolkit_benefit_network(fields: dict) -> tuple[str | None, str, str]:
     """
-    The Delta network whose benefits the sheet records, and why (11/02 review).
+    The Delta network whose benefits the sheet records, why, and any
+    contradiction on the sheet itself (11/02 and 11/03 reviews).
 
-    A sheet whose Fee Schedule names Premier is filled in for a Premier office,
-    from the Toolkit's Premier Dentist figures (Timothy Zorn: 90/80/60 against
-    PPO 100/90/70). Any other sheet is compared with PPO Dentist as before.
+    1. A Fee Schedule naming Premier: the Toolkit's Premier Dentist figures
+       (Timothy Zorn: 90/80/60 against PPO 100/90/70), even when In Network
+       says Out. Such a sheet contradicts itself, so the conflict is returned.
+    2. In Network "Out", or a UCR fee schedule (the office's own fees, as an
+       out-of-network office bills): the Nonparticipating Dentist figures. A
+       UCR fee schedule on a sheet that says In is a conflict too.
+    3. Anything else: PPO Dentist, as before (None).
     """
+    # Local import: the adapter imports this package, so a module-level import
+    # would be circular.
+    from ....portals.delta_toolkit import _network_from_fee_schedule
+
     fee_schedule = str(fields.get("fee_schedule") or "").strip()
+    in_network = _norm_network(fields.get("in_network"))
     if fee_schedule and _PREMIER_FEE_SCHEDULE_RE.search(fee_schedule):
-        return _PREMIER_NETWORK, f"sheet Fee Schedule: {fee_schedule}"
-    return None, ""
+        conflict = ("the sheet says In Network: Out, but its Fee Schedule names Premier"
+                    if in_network == "OUT" else "")
+        return _PREMIER_NETWORK, f"sheet Fee Schedule: {fee_schedule}", conflict
+    ucr = _network_from_fee_schedule(fee_schedule) == "Out"
+    if in_network == "OUT" or ucr:
+        reasons = (["sheet In Network: Out"] if in_network == "OUT" else []) + (
+            [f"sheet Fee Schedule: {fee_schedule}"] if ucr else [])
+        conflict = ("the sheet says In Network: In, but its Fee Schedule is UCR"
+                    if ucr and in_network == "IN" else "")
+        return _OUT_OF_NETWORK, ", ".join(reasons), conflict
+    return None, "", ""
 
 
 def _toolkit_identity_gate(sabrina_parsed: dict, portal_norm: dict) -> tuple[bool, list[str]]:

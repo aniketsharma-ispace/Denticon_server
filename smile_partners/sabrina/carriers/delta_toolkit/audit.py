@@ -21,6 +21,7 @@ from .portal import (
     _portal_value,
 )
 from .rules import (
+    _OUT_OF_NETWORK,
     _pdf_eligibility,
     _pdf_major_payment_timing,
     _pdf_ortho_coverage,
@@ -40,6 +41,15 @@ STATUS_NOT_IN_PORTAL = "not_in_portal"
 STATUS_MISSING_IN_SABRINA = "missing_in_sabrina"
 STATUS_NOT_STATED = "not_stated"
 STATUS_NOT_COMPARABLE = "not_comparable"
+
+# Rows read from the Maximums and Deductibles table, whose figures can differ
+# from one network to another (Kenneth Krupp: PPO $1,500 against
+# Nonparticipating Dentist $1,000). Star Dental's comparator uses the same set.
+_NETWORK_AMOUNT_KEYS = {
+    "yearly_max", "yearly_max_paid", "indiv_ded", "indiv_ded_paid",
+    "family_ded", "family_ded_paid", "ortho_max", "ortho_max_paid",
+    "ortho_ded", "ortho_ded_paid",
+}
 
 
 def _age_from_dob(dob) -> int | None:
@@ -90,10 +100,11 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     what each system says.
     """
     sab_fields = sabrina_parsed.get("fields", {})
-    # The sheet's Fee Schedule decides which network's benefits it is compared
-    # with: a Premier sheet records the Premier Dentist figures, not the PPO
-    # ones (11/02 review).
-    network, network_reason = _toolkit_benefit_network(sab_fields)
+    # The sheet decides which network's benefits it is compared with (11/02 and
+    # 11/03 reviews): a Premier fee schedule → Premier Dentist; In Network "Out"
+    # or a UCR fee schedule → Nonparticipating Dentist; otherwise PPO Dentist.
+    # `network_conflict` names a sheet that contradicts itself.
+    network, network_reason, network_conflict = _toolkit_benefit_network(sab_fields)
     bd = _portal_breakdown(portal_raw, network)
     # Derived readers work off the translated export, not the raw one.
     portal_norm = _portal_normalized(portal_raw, network)
@@ -156,6 +167,11 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             if isinstance(benefit_row, dict) and benefit_row.get("percentage") is not None:
                 sab_raw = benefit_row.get("percentage")
         por_raw = _portal_value(field, bd, portal_norm, sab_raw)
+        if toolkit_meta.get("accumulators_unavailable") and key in _NETWORK_AMOUNT_KEYS:
+            # The export cannot say what the maximums and deductibles are under
+            # the sheet's network (it holds the PPO table alone), so the PPO
+            # amounts are not compared with an out-of-network sheet.
+            por_raw = None
 
         sab_blank = _blank_for(field["kind"], sab_raw)
         por_blank = _blank_for(field["kind"], por_raw)
@@ -271,6 +287,21 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                 # The safety gate applies to every plan/procedure comparison.
                 status = STATUS_NOT_COMPARABLE
                 note = "Identity/network validation failed: " + ", ".join(toolkit_identity_issues)
+            elif network_conflict and key == "in_network" and not sab_blank:
+                # 11/03 review: the sheet contradicts itself. Its benefits were
+                # compared under the network its Fee Schedule names, so its In
+                # Network answer is flagged against that network.
+                por_raw, por_blank = ("Out" if network == _OUT_OF_NETWORK else "In"), False
+                status = STATUS_MISMATCH
+                note = (f"{network_conflict}; benefits compared under "
+                        f"{toolkit_meta.get('benefit_network') or 'PPO Dentist'}")
+            elif (
+                por_blank and not sab_blank and key in _NETWORK_AMOUNT_KEYS
+                and toolkit_meta.get("accumulators_unavailable")
+            ):
+                status = STATUS_NOT_COMPARABLE
+                note = ("This export carries only the PPO maximums and deductibles; re-export with "
+                        f"extension 1.45+ to compare the {toolkit_meta.get('benefit_network')} figures.")
             elif por_blank and not sab_blank and field.get("portal") == "_toolkit_srp_quads_per_day":
                 # Few Toolkit plans state a same-day quadrant cap. Its absence is
                 # no evidence against the sheet, and must not turn a D4341 whose
@@ -376,8 +407,10 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                 "identity_issues": toolkit_identity_issues,
                 # The network the per-code benefits were compared under.
                 "benefit_network": toolkit_meta.get("benefit_network") or "PPO Dentist",
-                "benefit_network_reason": network_reason if network else "",
+                "benefit_network_reason": (network_reason + (f"; {network_conflict}" if network_conflict else "")
+                                           if network else ""),
                 "benefit_network_note": toolkit_meta.get("benefit_network_note") or "",
+                "accumulators_unavailable": bool(toolkit_meta.get("accumulators_unavailable")),
             } if portal_norm.get("_toolkit") else None,
         },
     }

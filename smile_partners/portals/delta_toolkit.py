@@ -1204,12 +1204,31 @@ def _network_category_rows(
     ]
 
 
+_PREMIER_DENTIST = "Premier Dentist"
+
+
 def _network_accumulator_rows(raw: dict[str, Any], network: str) -> list[dict[str, Any]] | None:
-    """The maximum and deductible rows the export lists for `network` alone, if any."""
-    return [
-        row for row in (((raw.get("out_of_network") or {}).get("maximums_and_deductibles")) or [])
+    """
+    The maximum and deductible rows that apply under `network`, or None when
+    the export cannot say (as in Star Dental's copy of this adapter).
+
+    From extension 1.45 the export carries the other buckets' rows under
+    `out_of_network.maximums_and_deductibles`, each naming its networks, and
+    names the networks that share the PPO table in
+    `maximums_and_deductibles.networks`. An earlier export holds the PPO table
+    alone, which says nothing about another network's maximums.
+    """
+    table = raw.get("maximums_and_deductibles") or {}
+    out_of_network = raw.get("out_of_network") or {}
+    own = [
+        row for row in (out_of_network.get("maximums_and_deductibles") or [])
         if isinstance(row, dict) and network in (row.get("networks") or [])
-    ] or None
+    ]
+    if own:
+        return own
+    if network in (table.get("networks") or []) or out_of_network.get("maximums_shared_with_ppo") is True:
+        return table.get("rows") or []
+    return None
 
 
 def _network_figures_exported(raw: dict[str, Any], results: list[dict[str, Any]]) -> bool:
@@ -1268,10 +1287,21 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = N
         for name in (entry.get("networks") or [])
     }
     offered_networks = {_text(name) for name in ((raw.get("networks") or {}).get("available_in_output") or [])}
+    accumulators_unavailable = False
     if network:
-        # Premier shares the PPO maximums and deductibles unless the export
-        # lists rows of its own for it.
-        maximums = _network_accumulator_rows(raw, network) or maximums
+        network_maximums = _network_accumulator_rows(raw, network)
+        if network_maximums is None and network == _PREMIER_DENTIST:
+            # Premier shares the PPO maximums and deductibles unless the export
+            # lists rows of its own for it (in every export that states it, it does).
+            network_maximums = maximums
+        if network_maximums is None:
+            # 11/03 review: the export cannot say what the out-of-network
+            # maximums and deductibles are (they can differ: Kenneth Krupp's
+            # $1,000 against PPO $1,500). The PPO table stays for the
+            # plan-level facts and the amounts are reported as unavailable.
+            accumulators_unavailable = True
+        else:
+            maximums = network_maximums
 
     failed = set(_code_list(search.get("failed_codes")))
     not_in_portal = set(_code_list(search.get("codes_not_in_portal")))
@@ -1317,8 +1347,19 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = N
     else:
         subscriber = next((m for m in members if _text(m.get("relationship")).lower() == "subscriber"), {})
 
-    general_max = next((r for r in maximums if str(r.get("category", "")).lower() == "general"), {})
-    ortho_max = next((r for r in maximums if str(r.get("category", "")).lower() == "orthodontic"), {})
+    # General Maximum and General Deductible both use category="General".
+    # Selecting by category alone reads the deductible as the annual maximum
+    # when the deductible row comes first (as in Star Dental's adapter).
+    general_max = next((
+        r for r in maximums
+        if str(r.get("type", "")).lower() == "maximum"
+        and str(r.get("category", "")).lower() == "general"
+    ), {})
+    ortho_max = next((
+        r for r in maximums
+        if str(r.get("type", "")).lower() == "maximum"
+        and str(r.get("category", "")).lower() == "orthodontic"
+    ), {})
     general_ded = next((r for r in maximums if str(r.get("type", "")).lower() == "deductible" and
                         str(r.get("category", "")).lower() == "general"), {})
 
@@ -1615,6 +1656,7 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = N
             "benefit_network": network or "PPO Dentist",
             "requested_benefit_network": requested_network or "PPO Dentist",
             "benefit_network_note": network_note,
+            "accumulators_unavailable": accumulators_unavailable,
             "requested_codes": int(
                 crawl.get("requested_codes")
                 or len(requested_code_list)
