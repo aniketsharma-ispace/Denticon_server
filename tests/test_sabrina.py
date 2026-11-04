@@ -1943,15 +1943,15 @@ def _ded_bd(deductibles):
 _bd_120147 = _ded_bd([_CAL_INDIVIDUAL, _LIFETIME_ORTHO_DED])
 check("delta ortho deductible: a lifetime deductible naming Orthodontics is the ortho one",
       (_bd_120147.get("ortho_ded"), _bd_120147.get("ortho_ded_paid")), ("50.00", "0.00"))
-# Mary Crocker (2026-10-23): only a LIFETIME deductible naming Orthodontics is
-# the sheet's Orthodontics Deductible. A calendar one covering Orthodontics and
-# Oral Surgery is not recorded there — and is still not the general deductible.
+# Madeline Kite (2026-11-04, replacing the lifetime-only rule of 2026-10-23):
+# a calendar deductible covering Orthodontics and Oral Surgery is the sheet's
+# Orthodontics Deductible too — and is still not the general deductible.
 _CAL_ORTHO_DED = {"type": "Calendar Individual Deductible Accumulation period for this program",
                   "treatment_types": ["Orthodontics", "Oral & Maxillofacial Surgery"],
                   "amount": "$50.00", "used": "$0.00", "remaining": "$50.00"}
 _bd_crocker = _ded_bd([_CAL_INDIVIDUAL, _CAL_ORTHO_DED])
-check("delta ortho deductible: a calendar deductible naming Orthodontics is not the ortho one",
-      _bd_crocker.get("ortho_ded"), "0.00")
+check("delta ortho deductible: a calendar deductible naming Orthodontics is the ortho one",
+      _bd_crocker.get("ortho_ded"), "50.00")
 check("delta ortho deductible: nor is it taken for the general deductible",
       _bd_crocker.get("indiv_ded"), "25.00")
 check("delta ortho deductible: a lifetime one beside it is still read",
@@ -2311,6 +2311,34 @@ _no_limit["tabs"]["benefits_search"] = [_dd_entry("D1110", "100%",
 _, _rows_no_limit = _pick_audit(_no_limit, {"in_network": "In", "d1110": "100%"})
 check("delta blank: a blank frequency against 'no frequency limitation' still agrees",
       _rows_no_limit["d1110__freq"]["status"], "match")
+
+# JR Harrison (2026-11-04): a plan covering neither basic nor major services
+# leaves the three questions about them blank on the sheet, and the portal side
+# gives no answer either.
+_NOT_A_BENEFIT = "This procedure is not a benefit of most Delta Dental plans."
+_D4910_NO_POST_OP = "Benefit is limited to two within a calendar year"
+
+
+def _c_questions(basic_level, major_level):
+    export = _picked("ppo", "", "Delta Dental PPO Dentist")
+    export["tabs"]["benefits_search"] = [
+        _dd_entry("D2160", basic_level, _NOT_A_BENEFIT if basic_level == "N/A" else "once per surface"),
+        _dd_entry("D2391", basic_level, _NOT_A_BENEFIT if basic_level == "N/A" else "once per surface"),
+        _dd_entry("D2740", major_level, _NOT_A_BENEFIT if major_level == "N/A" else "once per tooth"),
+        _dd_entry("D4910", "80%", _D4910_NO_POST_OP)]
+    _, rows = _pick_audit(export, {"in_network": "In"})
+    return tuple((rows[k]["portal"], rows[k]["status"]) for k in
+                 ("posterior_composite_downgrade", "porcelain_posterior_downgrade", "perio_maint_after_srp"))
+
+
+check("delta C questions: basic and major not covered -> all three blank, nothing to compare",
+      _c_questions("N/A", "N/A"),
+      ((None, "not_stated"), (None, "not_stated"), (None, "not_stated")))
+check("delta C questions: a plan covering basic and major still answers them",
+      tuple(p for p, _ in _c_questions("80%", "50%")),
+      ("No", "No", "Not available in website"))
+check("delta C questions: only one of the two not covered still answers them",
+      _c_questions("80%", "N/A")[2][0], "Not available in website")
 
 
 def _hist_vs_sheet(limitation, dates, sheet):

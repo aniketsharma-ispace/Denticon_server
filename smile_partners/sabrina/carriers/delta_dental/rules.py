@@ -160,6 +160,22 @@ def _dd_history_in_window(value, portal_raw: dict, codes: tuple, sab_raw=None):
     return True, (", ".join(kept) if kept else "—")
 
 
+def _dd_basic_and_major_not_covered(bd: dict) -> bool:
+    """
+    Whether the plan pays for neither basic nor major services — the sheet's
+    "D2160 Basic" and "D2740 Major" both Not Covered (or 0%).
+
+    The sheet leaves the questions about those services blank then (agreed
+    with the team, 2026-11-04): Are Posterior Composites Downgraded To
+    Amalgam?, Are Posterior Crowns Downgraded? and When Is First Perio
+    Maintenance Allowed After SRP? — JR Harrison's preventive-only plan.
+    """
+    def not_covered(value):
+        text = str(value or "").strip().lower()
+        return "not covered" in text or bool(re.fullmatch(r"0+(?:\.0+)?\s*%", text))
+    return not_covered((bd or {}).get("pct_basic")) and not_covered((bd or {}).get("pct_major"))
+
+
 def _dd_major_paid_on(portal_raw: dict) -> str | None:
     """
     "Are Major Services Paid on Prep or Seat date?"

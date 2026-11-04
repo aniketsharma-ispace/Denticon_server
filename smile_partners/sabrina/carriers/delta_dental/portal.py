@@ -16,8 +16,9 @@ import re
 from .common import _UNLIMITED_MAX
 from .vocabulary import (_blank, _coalesce_keys, _norm_network, _num_cob, _num_money,
                          _num_yesno)
-from .rules import (_dd_code_override, _dd_export, _dd_major_paid_on,
-                    _dd_network_export, _dd_perio_after_srp, _dd_selected_network)
+from .rules import (_dd_basic_and_major_not_covered, _dd_code_override, _dd_export,
+                    _dd_major_paid_on, _dd_network_export, _dd_perio_after_srp,
+                    _dd_selected_network)
 
 
 def _portal_for_sheet(portal_raw: dict, sab_fields: dict, fee_schedule=None) -> dict:
@@ -34,8 +35,15 @@ def _portal_for_sheet(portal_raw: dict, sab_fields: dict, fee_schedule=None) -> 
 def _breakdown_for_sheet(bd: dict, portal_norm: dict) -> dict:
     """
     The breakdown as this sheet reads it. Delta Dental's answers are read as
-    the New Plan PDF reads them; a sheet-specific answer would go here.
+    the New Plan PDF reads them, except where the sheet answers differently:
+
+    A plan that covers neither basic nor major services has no downgrade to
+    ask about, and the sheet leaves both downgrade questions blank.
     """
+    if _dd_basic_and_major_not_covered(bd):
+        bd = dict(bd)
+        bd["posterior_composite_downgrade"] = ""
+        bd["porcelain_posterior_downgrade"] = ""
     return bd
 
 
@@ -441,9 +449,13 @@ def _portal_perio_after_srp(bd: dict, portal_raw: dict, sab_raw=None) -> str | N
     """
     When the first perio maintenance is allowed after SRP.
 
-    Delta Dental: the post-operative period D4910's limitation names.
+    Delta Dental: the post-operative period D4910's limitation names — left
+    blank where the plan covers neither basic nor major services, as the
+    sheet leaves it.
     """
     if _dd_export(portal_raw):
+        if _dd_basic_and_major_not_covered(bd):
+            return None
         return _dd_perio_after_srp(portal_raw)
     return None
 
