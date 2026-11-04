@@ -49,9 +49,10 @@ from __future__ import annotations
 #            ("Date of Birth", "Paid to Date($)") — take the first occurrence
 #            AFTER this anchor label
 #   aliases  other spellings seen in the wild for the same label
-#   toolkit_sabrina_fallback
-#            the portal column falls back to the Sabrina value when the
-#            Toolkit JSON states nothing (see the Insurance block below)
+#   sheet_only
+#            read off the sheet, but never compared or shown as a row (Fee
+#            Schedule: it only decides which Delta network the benefits are
+#            compared under)
 #
 # ORDER — the UI shows sections, fields and CDT rows exactly in this list's
 # order, so the list follows the Sabrina PDF top to bottom (11/02 review):
@@ -92,20 +93,14 @@ _SPEC: list[dict] = [
      "aliases": ["Employer Group", "Employer Name"]},
     {"key": "group_number", "label": "Group Number",      "kind": "id",      "section": "Insurance", "portal": "group_number",
      "aliases": ["Group #", "Group No", "Group Num"]},
-    # Fee Schedule, Insurance Phone and Eligibility Term Date — 11/02 review,
-    # Smile DD Toolkit comparator only. The reviewer marked these three as
-    # not required. They are deliberately KEPT on the UI. The portal (JSON)
-    # column uses the Toolkit JSON value when the export states one. When it
-    # does not, the value is captured from the Sabrina sheet on the JSON side
-    # too, so the row is not reported as an evidence gap. audit.py applies
-    # the fallback, gated on a Toolkit export. No other carrier or client
-    # does this.
-    {"key": "fee_schedule", "label": "Fee Schedule",      "kind": "text",    "section": "Insurance", "portal": "_toolkit_fee_schedule",
-     "toolkit_sabrina_fallback": True},
+    # Fee Schedule, Insurance Phone and Eligibility Term Date are not required
+    # and are not compared (11/04 review). Fee Schedule is still read off the
+    # sheet, because it decides which Delta network's benefits the sheet is
+    # compared with (rules._toolkit_benefit_network).
+    {"key": "fee_schedule", "label": "Fee Schedule",      "kind": "text",    "section": "Insurance", "portal": None,
+     "sheet_only": True},
     {"key": "ins_address",  "label": "Insurance Address",  "kind": "address", "section": "Insurance", "portal": "ins_address",
      "aliases": ["Carrier Address", "Claims Address"]},
-    {"key": "ins_phone",    "label": "Insurance Phone",    "kind": "id",      "section": "Insurance", "portal": "_toolkit_insurance_phone",
-     "toolkit_sabrina_fallback": True},
     {"key": "payor_id",     "label": "Payor ID",           "kind": "id",      "section": "Insurance", "portal": "payor_id",
      "aliases": ["Payer ID", "Payor Id", "Payer Id"]},
 
@@ -119,10 +114,6 @@ _SPEC: list[dict] = [
 
     {"key": "eff_date",        "label": "Patient Eff Date",            "kind": "date",  "section": "Insurance", "portal": "eff_date",
      "aliases": ["Patient Effective Date", "Eff Date", "Effective Date"]},
-    # The Toolkit export carries no termination date, so the JSON side of this
-    # row is always the Sabrina fallback described above Fee Schedule.
-    {"key": "term_date",       "label": "Eligibility Term Date",       "kind": "date",  "section": "Insurance", "portal": None,
-     "aliases": ["Patient Term Date"], "toolkit_sabrina_fallback": True},
     {"key": "plan_year_start", "label": "Starting Month of Plan Year",  "kind": "month", "section": "Insurance", "portal": "plan_year_start",
      "aliases": ["Plan Year Start", "Benefit Year Start"]},
 

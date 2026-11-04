@@ -27,7 +27,6 @@ from .rules import (
     _pdf_ortho_coverage,
     _pdf_relationship,
     _toolkit_benefit_network,
-    _toolkit_eligibility,
     _toolkit_identity_gate,
     _toolkit_not_covered_age_agrees,
 )
@@ -100,10 +99,11 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     what each system says.
     """
     sab_fields = sabrina_parsed.get("fields", {})
-    # The sheet decides which network's benefits it is compared with (11/02 and
-    # 11/03 reviews): a Premier fee schedule → Premier Dentist; In Network "Out"
-    # or a UCR fee schedule → Nonparticipating Dentist; otherwise PPO Dentist.
-    # `network_conflict` names a sheet that contradicts itself.
+    # The sheet decides which network's benefits it is compared with (11/02,
+    # 11/03 and 11/04 reviews): a Premier fee schedule → Premier Dentist (a
+    # Premier Lite one is PPO's); In Network "Out" or a UCR fee schedule →
+    # Nonparticipating Dentist; otherwise PPO Dentist. `network_conflict` names
+    # a sheet that contradicts itself.
     network, network_reason, network_conflict = _toolkit_benefit_network(sab_fields)
     bd = _portal_breakdown(portal_raw, network)
     # Derived readers work off the translated export, not the raw one.
@@ -139,6 +139,8 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
 
     for field in _SPEC:
         if field.get("toolkit_only") and not portal_norm.get("_toolkit"):
+            continue
+        if field.get("sheet_only"):
             continue
         key = field["key"]
         # A CDT percentage row anchors its code's group.
@@ -176,23 +178,6 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
         sab_blank = _blank_for(field["kind"], sab_raw)
         por_blank = _blank_for(field["kind"], por_raw)
 
-        # 11/02 review, Smile DD Toolkit comparator only: Fee Schedule,
-        # Insurance Phone and Eligibility Term Date were marked as not
-        # required, but they stay on the UI. A value the Toolkit JSON states
-        # is used as it is, so a real difference still shows as a mismatch.
-        # When the JSON states nothing, the Sabrina value is captured on the
-        # JSON side as well, so the row does not read as a missing portal
-        # value. Only rows flagged `toolkit_sabrina_fallback` in spec.py, and
-        # only for a Toolkit export.
-        por_from_sabrina = False
-        if (
-            portal_norm.get("_toolkit")
-            and field.get("toolkit_sabrina_fallback")
-            and por_blank
-            and not sab_blank
-        ):
-            por_raw, por_blank, por_from_sabrina = sab_raw, False, True
-
         # The portal shows a dash (or nothing) in History where a procedure was
         # never performed — the same statement the sheet writes as "NH". When
         # the sheet says NH and the portal cell is empty, read the portal as NH
@@ -209,13 +194,6 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
 
         if sab_blank and por_blank:
             status = STATUS_NOT_STATED
-            if (
-                portal_norm.get("_toolkit")
-                and key == "term_date"
-                and _toolkit_eligibility({}, portal_norm) == "Yes"
-            ):
-                status = STATUS_MATCH
-                note = "no termination date on either side; the member is active"
         elif por_blank:
             # The portal never stated it → cannot be called a mismatch.
             status = STATUS_NOT_IN_PORTAL
@@ -262,10 +240,6 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                 note = note or "values are not in a comparable form"
             else:
                 status = STATUS_MATCH if equal else STATUS_MISMATCH
-
-        if por_from_sabrina:
-            # Kept short: the UI's note column is narrow.
-            note = "not required; JSON side copied from Sabrina"
 
         # Toolkit data has a hard retrieval failure signal.  A failed CDT lookup
         # is data-unavailable, never a benefit mismatch.

@@ -14,8 +14,6 @@ from .common import _UNLIMITED_MAX
 from .vocabulary import _blank, _coalesce_keys, _norm_network, _num_cob, _num_money
 from .rules import (
     _toolkit_eligibility,
-    _toolkit_fee_schedule,
-    _toolkit_insurance_phone,
     _toolkit_major_payment_timing,
     _toolkit_meta_value,
     _toolkit_not_covered_age,
@@ -446,8 +444,6 @@ _DERIVED = {
     "_toolkit_eligibility": _toolkit_eligibility,
     "_toolkit_relationship": _toolkit_relationship,
     "_toolkit_major_payment_timing": _toolkit_major_payment_timing,
-    "_toolkit_insurance_phone": _toolkit_insurance_phone,
-    "_toolkit_fee_schedule": _toolkit_fee_schedule,
     "_toolkit_srp_quads_per_day": _toolkit_srp_quads_per_day,
     "_toolkit_perio_after_srp": _toolkit_perio_after_srp,
 }

@@ -1,6 +1,6 @@
 # Toolkit comparator rules (Star and Smile Partners)
 
-Rules marked **[11/03]** were added for the 11/03 Smile review (out-of-network benefits). Rules marked **[11/02]** were added for the 11/02 Smile review. Rules marked **[NEW]** were added in version 10/28. Rules marked **[10/26]** and **[10/23]** were added in earlier versions. Rules marked **[CLARIFIED]** keep their meaning but state how the code applies them.
+Rules marked **[11/04]** were added for the 11/04 Smile review (Premier Lite fee schedules; the not-required fields removed). Rules marked **[11/03]** were added for the 11/03 Smile review (out-of-network benefits). Rules marked **[11/02]** were added for the 11/02 Smile review. Rules marked **[NEW]** were added in version 10/28. Rules marked **[10/26]** and **[10/23]** were added in earlier versions. Rules marked **[CLARIFIED]** keep their meaning but state how the code applies them.
 
 The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolkit JSON) and `sabrina/carriers/delta_toolkit/` (the audit; Toolkit-only rules are in its `rules.py`), under `star_dental/` and `smile_partners/`.
 
@@ -96,10 +96,15 @@ The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolki
   - **[CLARIFIED]** The display field is read as `payorId` or `payor_id`.
 - **Deductible and max:** there is no 3× family deductible rule.
 - **Critical keys:** this list adds pct_prev, pct_basic and pct_major.
-- **Not-required fields [11/02]:** Fee Schedule, Insurance Phone and Eligibility Term Date stay on the UI although the reviewer marked them not required. The JSON side uses the Toolkit value when the export states one (a feeSchedule key or “Fee Schedule:” note; the claims phoneNumber), so a real difference is still a mismatch. Otherwise the Sabrina value is captured on the JSON side too and the row matches, with a note saying so. The Toolkit export has no termination date, so Term Date always takes the Sabrina value; blank on both sides keeps the 10/26 rule.
+- **Not-required fields [11/04, replaces 11/02]:** Fee Schedule, Insurance Phone and Eligibility Term Date are not compared and no longer appear on the UI (the reviewer marked them not required; 11/02 had kept them, with the JSON side copied from Sabrina). The sheet's Fee Schedule is still read, because it decides which network's benefits are compared (below).
 - **UI order [11/02]:** sections, fields and CDT rows follow the Sabrina PDF top to bottom: Patient/Subscriber (Relationship after Member ID, Eligibility last), Insurance, Maximums & Deductibles, Plan Provisions, Orthodontics, Clauses (Missing Tooth, Preventative in Max, Major Services Paid on Prep or Seat, Posterior Composites, Posterior Crowns, Perio After SRP), then the Benefit Details codes in Sabrina's order. D4381 Arestin is printed on the sheet but is not compared: the comparator audits the workbook's “Smile Partner Dental” code list.
 - **Which network's benefits [11/03, extends the 11/02 Premier rule]:** the sheet decides, in this order:
   1. A Fee Schedule naming Premier (“MI - DD Prem Reg6”, “MI Delta Premier Region 6”) → the plan's **Premier Dentist** benefits. A bare “Pr” (“MI - DD LITE Pr Reg6”) is not Premier: those sheets carry the PPO figures. A Premier fee schedule on a sheet whose In Network says **Out** still compares Premier, and the In Network row is a mismatch naming the conflict.
+     **[11/04]** A **Premier Lite** schedule is not Premier: it carries the **PPO Dentist** benefits (Anna Tucker, “MI Delta Premier Lite Region 4”, was compared under Premier). From the office's fee schedule table:
+     - Premier benefits: “#4 MI - DD Prem Reg6”, “MI Delta Premier Region 6”, “MI Delta Premier Perio”, “#199 MI - DD Prem Perio”.
+     - PPO benefits: “#3 MI - DD LITE Pr Reg6”, “MI Delta Premier Lite Region 6”, “MI Delta Premier Lite Perio”, “#99 MI Delta Premier Lite Region 4”, “#203 MI - DD PremLT Perio”.
+
+     Lite is checked first, since these schedules also name Premier: the word “Lite”, or “Prem”/“Premier” followed by “Lite” or “LT”. A Premier Lite sheet whose In Network says Out is compared out of network, like any PPO sheet (rule 2).
   2. In Network **Out**, or a **UCR** fee schedule (“IL General UCR”, “James Island UCR”) → the plan's **Nonparticipating Dentist** (out-of-network) benefits. A UCR fee schedule on a sheet whose In Network says **In** is flagged the same way.
   3. Anything else → PPO Dentist, as before.
 
