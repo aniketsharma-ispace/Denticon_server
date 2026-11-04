@@ -82,14 +82,22 @@ def _first(lines, pattern, after=-1.0):
 def _value_below(lines, label):
     """
     The value printed under a label ("Benefit period" / "January 01 to
-    December 31"): the next line starting at the label's x.
+    December 31"): the next line starting at the label's x, with the lines
+    a long value wraps onto ("COADVANTAGE RESOURCES," / "INC.") — 18pt
+    apart, where the next label sits 33pt below.
     """
     head = next((ln for ln in lines if ln[3].lower() == label.lower()), None)
     if head is None:
         return ''
-    below = [ln for ln in lines
-             if 0 < ln[0] - head[0] <= 40 and abs(ln[1] - head[1]) <= 5]
-    return below[0][3] if below else ''
+    column = [ln for ln in lines if ln[0] > head[0] and abs(ln[1] - head[1]) <= 5]
+    if not column or column[0][0] - head[0] > 40:
+        return ''
+    value = [column[0]]
+    for ln in column[1:]:
+        if ln[0] - value[-1][0] > 20:
+            break
+        value.append(ln)
+    return ' '.join(ln[3] for ln in value)
 
 
 def _columns_from_words(words, labels, y_from, y_to):
@@ -182,6 +190,11 @@ def _table_rows(lines, columns, anchor, y_from, y_to):
             if row is not None:
                 row.setdefault(col, ' '.join(c[3] for c in cell))
     return [r for r, _top, _bottom in rows]
+
+
+def _coverage_name(text):
+    """A coverage name rejoined where its cell wrapped it ("Orthodon" / "tic")."""
+    return re.sub(r'(?<=[a-z]) (?=[a-z])', '', text) if text else text
 
 
 def _fill_down(rows, col):
@@ -278,9 +291,14 @@ def _page_y(doc, line):
     return line[0] - sum(doc[i].rect.height for i in range(line[4]))
 
 
+# The maximums table's heading: "Plan maximums" on some plans, "Plan
+# Allowance" on others (same columns).
+_MAXIMUMS_HEADING = r'^plan (?:maximums|allowance)$'
+
+
 def _read_deductibles(lines, words):
     heading = _first(lines, r'^deductibles$')
-    stop = _first(lines, r'^plan maximums$', heading[0] if heading else -1)
+    stop = _first(lines, _MAXIMUMS_HEADING, heading[0] if heading else -1)
     if not (heading and stop):
         return []
     columns = _columns_from_words(words, [
@@ -299,15 +317,22 @@ def _read_deductibles(lines, words):
             met = (f'${met_value:.2f}' if '$' in total
                    else str(int(met_value)) if met_value == int(met_value) else str(met_value))
         out.append({
-            'coverage': r.get('coverage'), 'network': r.get('network'), 'deductible': total or None,
+            'coverage': _coverage_name(r.get('coverage')), 'network': r.get('network'), 'deductible': total or None,
             'met_to_date': met or None, 'waived_for_preventive': r.get('waived'),
             'remaining_deductible': remaining or None,
         })
     return out
 
 
+def _used(limit, remaining):
+    """What is used of a maximum the page prints only as limit and remaining."""
+    if _money_text(limit) is None or _money_text(remaining) is None:
+        return None
+    return f'${_money_text(limit) - _money_text(remaining):,.2f}'
+
+
 def _read_plan_allowance(lines, words):
-    heading = _first(lines, r'^plan maximums$')
+    heading = _first(lines, _MAXIMUMS_HEADING)
     # Some plans print a "MaxRollover summary" table between this one and
     # Plan options; its rows ("Threshold  $700") are not maximums.
     stop = _first(lines, r'^(?:maxrollover summary|plan options)$', heading[0] if heading else -1)
@@ -324,14 +349,13 @@ def _read_plan_allowance(lines, words):
     out = []
     for r in rows:
         limit, remaining = r.get('yearly'), r.get('remaining_individual')
-        met = (f'${_money_text(limit) - _money_text(remaining):,.2f}'
-               if _money_text(limit) is not None and _money_text(remaining) is not None else None)
+        life, life_remaining = r.get('lifetime'), r.get('remaining_lifetime')
         out.append({
-            'coverage': r.get('coverage'), 'network': r.get('network'),
-            'yearly_plan_limit': limit, 'year_met_to_date': met,
+            'coverage': _coverage_name(r.get('coverage')), 'network': r.get('network'),
+            'yearly_plan_limit': limit, 'year_met_to_date': _used(limit, remaining),
             'remaining_individual_maximum': remaining,
-            'lifetime_plan_limit': r.get('lifetime'),
-            'remaining_lifetime_maximum': r.get('remaining_lifetime'),
+            'lifetime_plan_limit': life, 'lifetime_met_to_date': _used(life, life_remaining),
+            'remaining_lifetime_maximum': life_remaining,
         })
     return out
 
@@ -619,19 +643,69 @@ def _expand_codes(text):
     return codes
 
 
+_CODE_GROUP_RE = re.compile(r'\(([^)]*\bD\d{4}\b[^)]*)\)', re.I)
+_EXCEPT_LEAD_RE = re.compile(r'\bEXCEPT(?:\s+FOR)?\b[^(),.;]*$', re.I)
+
+
+def _excepted_groups(text):
+    """
+    exceptedCodeGroups: the code lists a sentence leaves out ("Radiographic
+    images, except bitewings (D0270-D0277) are covered under the Basic service
+    category") — named after "except", so not the sentence's subject.
+    """
+    t = _norm(text).upper()
+    return [m for m in _CODE_GROUP_RE.finditer(t) if _EXCEPT_LEAD_RE.search(t[:m.start()])]
+
+
+def _excepted_codes(text):
+    """extractExceptedCodes"""
+    codes = set()
+    for m in _excepted_groups(text):
+        codes |= _expand_codes(m.group(0))
+    return codes
+
+
+def _without_excepted(text):
+    """stripExceptedGroups: the sentence with its "except … (codes)" lists taken out."""
+    t = _norm(text)
+    for m in reversed(_excepted_groups(t)):
+        t = t[:m.start()] + t[m.end():]
+    return _norm(t)
+
+
+# A code-free sentence about a service the page names in words ("Bitewings
+# are covered under the Preventive service category") is about that
+# service's codes alone, not every code of the row.
+_SUBJECT_SERVICE_CODES = ((re.compile(r'^\W*BITEWINGS?\b', re.I), frozenset(f'D{n:04d}' for n in range(270, 278))),)
+
+
+def _subject_service_codes(text):
+    """subjectServiceCodes"""
+    t = _norm(text).upper()
+    verb = re.search(r'\b(?:IS|ARE|WAS|WERE)\b', t)
+    subject = t[:verb.start()] if verb else t
+    for pattern, codes in _SUBJECT_SERVICE_CODES:
+        if pattern.search(subject):
+            return set(codes)
+    return set()
+
+
 def _primary_codes(text):
     """extractPrimaryCodes"""
     t = _norm(text).upper()
+    excepted = {m.start() for m in _excepted_groups(t)}
     primary = set()
-    for m in re.finditer(r'\(([^)]*\bD\d{4}\b[^)]*)\)', t):
+    for m in _CODE_GROUP_RE.finditer(t):
         group = m.group(0)
+        if m.start() in excepted:
+            continue
         if re.search(r'\bconsisting\s+of\s+(?:cdt\s+)?codes?\s+D\d{4}\s*-\s*D\d{4}\b', group, re.I):
             continue
         primary |= _expand_codes(group)
     if primary:
         return primary
     verb = re.search(r'\b(?:IS|ARE|WAS|WERE)\b', t)
-    return _expand_codes(t[:verb.start()] if verb else t)
+    return _expand_codes(t[:verb.start()] if verb else t) - _excepted_codes(t)
 
 
 def _evidence_blocks(messages):
@@ -643,9 +717,11 @@ def _evidence_blocks(messages):
         for sentence in sentences:
             all_codes = _expand_codes(sentence)
             primary = _primary_codes(sentence)
+            if not primary and not all_codes:
+                primary = _subject_service_codes(sentence)
             if not primary and inherited and _CONTINUATION_PREFIX_RE.search(sentence):
                 primary = set(inherited)
-            blocks.append({'text': sentence, 'codes': primary})
+            blocks.append({'text': sentence, 'codes': primary, 'excepted': _excepted_codes(sentence)})
             if primary and all_codes:
                 inherited = set(primary)
             elif not all_codes and not _CONTINUATION_PREFIX_RE.search(sentence):
@@ -680,9 +756,11 @@ def _universal(text):
 
 def _applies(block, code):
     """blockAppliesToCode"""
+    if code in block.get('excepted', ()):
+        return False
     if code in block['codes']:
         return True
-    return not block['codes'] and _universal(block['text'])
+    return not block['codes'] and _universal(_without_excepted(block['text']))
 
 
 def _literal_mention(text, code):

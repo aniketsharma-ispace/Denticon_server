@@ -59,6 +59,11 @@ def _breakdown_for_sheet(bd: dict, portal_norm: dict) -> dict:
     waived = meta.get("prev_deductible_waived")
     applies = None if waived is None else ("No" if waived else "Yes")
     bd["ded_prev"] = bd["ded_diag"] = applies
+    # The shared breakdown fills an unstated amount met with 0.00; with no
+    # deductible read off the page there is nothing it was met against.
+    for total, paid in (("indiv_ded", "indiv_ded_paid"), ("family_ded", "family_ded_paid")):
+        if _blank(bd.get(total)):
+            bd[paid] = None
     return bd
 
 
@@ -272,18 +277,31 @@ def _portal_ortho_used(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     return None if _blank(value) else str(value)
 
 
+def _no_ortho_deductible(portal_raw: dict) -> bool:
+    """
+    Whether the page shows there is no orthodontic deductible: orthodontics
+    Not Covered, or an orthodontic maximum alongside a Deductibles table that
+    lists only dental deductibles — the sheet records either as 0.
+    """
+    if _ortho_not_covered(portal_raw):
+        return True
+    meta = _guardian_meta(portal_raw)
+    return bool(meta.get("ortho_max_present") and meta.get("deductibles_listed")
+                and not meta.get("ortho_deductible_listed"))
+
+
 def _portal_ortho_ded(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
-    Orthodontic deductible. Guardian lists no deductible of its own for
-    orthodontics; with orthodontics Not Covered there is none to state, which
-    the sheet records as 0. Otherwise the page says nothing.
+    Orthodontic deductible: 0 where the page shows there is none (above).
+    Guardian lists no amount of its own for one, so otherwise the page says
+    nothing.
     """
-    return "0.00" if _ortho_not_covered(portal_raw) else None
+    return "0.00" if _no_ortho_deductible(portal_raw) else None
 
 
 def _portal_ortho_ded_met(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """Amount met against the orthodontic deductible, under the same rule."""
-    return "0.00" if _ortho_not_covered(portal_raw) else None
+    return "0.00" if _no_ortho_deductible(portal_raw) else None
 
 
 def _portal_ortho_age(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:

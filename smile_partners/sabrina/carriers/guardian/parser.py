@@ -204,7 +204,14 @@ def _label_span(words: list[str], i: int, target: str) -> int:
     Matched LONGEST-first so decoration that normalizes away ("$", "$:", "#")
     is consumed as part of the printed label; otherwise
     "Orthodontics Deductible Met Amount $: $0.00" would yield "$: $0.00".
+
+    Sabrina prints every label capitalised ("Family Deductible($)",
+    "D0220 PAs"), so a lowercase run of the same words is prose, not a label —
+    an Eligibility Note saying "no use amount from family deductible however
+    individual $50 has been met" must not be read as Family Deductible($).
     """
+    if words[i][:1].islower():
+        return 0
     n_target_words = len(target.split())
     max_take = min(len(words) - i, n_target_words + 3)
     for take in range(max_take, 0, -1):

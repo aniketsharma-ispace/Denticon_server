@@ -110,7 +110,7 @@
     // =====================================================================
 
     const DEFAULT_FREQUENCY = "Frequency not available";
-    const PROCEDURE_DERIVATION_VERSION = "1.37.0";
+    const PROCEDURE_DERIVATION_VERSION = "1.38.0";
 
     const REQUIRE_EXPLICIT_CODE_MENTION = new Set();
 
@@ -198,16 +198,72 @@
             .filter(Boolean);
     }
 
+    // "Radiographic images, except bitewings (D0270-D0277) are covered under
+    // the Basic service category": a code list named after "except" is what
+    // the sentence leaves out, not its subject.
+    const CODE_GROUP_RE = /\(([^)]*\bD\d{4}\b[^)]*)\)/gi;
+    const EXCEPT_LEAD_RE = /\bEXCEPT(?:\s+FOR)?\b[^(),.;]*$/i;
+
+    function exceptedCodeGroups(text) {
+        const normalized = normalizeEvidenceText(text).toUpperCase();
+        const groups = [];
+        CODE_GROUP_RE.lastIndex = 0;
+        let m;
+        while ((m = CODE_GROUP_RE.exec(normalized)) !== null) {
+            if (EXCEPT_LEAD_RE.test(normalized.slice(0, m.index))) {
+                groups.push({ start: m.index, end: m.index + m[0].length, text: m[0] });
+            }
+        }
+        return groups;
+    }
+
+    function extractExceptedCodes(text) {
+        const codes = new Set();
+        for (const group of exceptedCodeGroups(text)) {
+            for (const code of expandCodesInText(group.text)) codes.add(code);
+        }
+        return codes;
+    }
+
+    function stripExceptedGroups(text) {
+        let t = normalizeEvidenceText(text);
+        for (const group of exceptedCodeGroups(t).reverse()) {
+            t = t.slice(0, group.start) + t.slice(group.end);
+        }
+        return normalizeEvidenceText(t);
+    }
+
+    // A code-free sentence about a service the page names in words
+    // ("Bitewings are covered under the Preventive service category") is
+    // about that service's codes alone, not every code of the row.
+    const SUBJECT_SERVICE_CODES = [
+        [/^\W*BITEWINGS?\b/i, ["D0270", "D0271", "D0272", "D0273", "D0274", "D0275", "D0276", "D0277"]]
+    ];
+
+    function subjectServiceCodes(text) {
+        const normalized = normalizeEvidenceText(text).toUpperCase();
+        const firstVerb = normalized.search(/\b(?:IS|ARE|WAS|WERE)\b/);
+        const subject = firstVerb >= 0 ? normalized.slice(0, firstVerb) : normalized;
+        for (const [pattern, codes] of SUBJECT_SERVICE_CODES) {
+            if (pattern.test(subject)) return new Set(codes);
+        }
+        return new Set();
+    }
+
     function extractPrimaryCodes(text) {
         const normalized = normalizeEvidenceText(text).toUpperCase();
         const primary = new Set();
+        const excepted = new Set(exceptedCodeGroups(normalized).map(g => g.start));
 
         // Parenthesized CDT lists are the strongest signal for the subject of a
         // Guardian benefit statement. This prevents a reference code in phrases
         // such as "D0180 is not covered ... as an allowed D4355" from being
         // incorrectly treated as another negative rule for D4355.
-        const parenthesized = normalized.match(/\(([^)]*\bD\d{4}\b[^)]*)\)/g) || [];
-        for (const group of parenthesized) {
+        CODE_GROUP_RE.lastIndex = 0;
+        let match;
+        while ((match = CODE_GROUP_RE.exec(normalized)) !== null) {
+            const group = match[0];
+            if (excepted.has(match.index)) continue;
             // A broad CDT range can occur inside a parenthesis as a condition
             // (e.g. "consisting of cdt codes D2140-D7991"). It is not a
             // benefit-code listing and must not make an endpoint look like a
@@ -223,7 +279,8 @@
         // subject. Only inspect the prefix before the main predicate.
         const firstVerb = normalized.search(/\b(?:IS|ARE|WAS|WERE)\b/);
         const subjectPrefix = firstVerb >= 0 ? normalized.slice(0, firstVerb) : normalized;
-        const subjectCodes = expandCodesInText(subjectPrefix);
+        const exceptedCodes = extractExceptedCodes(normalized);
+        const subjectCodes = new Set([...expandCodesInText(subjectPrefix)].filter(c => !exceptedCodes.has(c)));
         if (subjectCodes.size > 0) return subjectCodes;
 
         return new Set();
@@ -240,6 +297,9 @@
                 const allCodes = expandCodesInText(sentence);
                 let primaryCodes = extractPrimaryCodes(sentence);
 
+                if (primaryCodes.size === 0 && allCodes.size === 0) {
+                    primaryCodes = subjectServiceCodes(sentence);
+                }
                 if (primaryCodes.size === 0 && inheritedCodes.size > 0 && CONTINUATION_PREFIX_RE.test(sentence)) {
                     primaryCodes = new Set(inheritedCodes);
                 }
@@ -247,6 +307,7 @@
                 blocks.push({
                     text: sentence,
                     codes: primaryCodes,
+                    exceptedCodes: extractExceptedCodes(sentence),
                     allCodes,
                     source_message: normalizeEvidenceText(rawMessage)
                 });
@@ -301,9 +362,10 @@
 
     function blockAppliesToCode(block, code) {
         const target = String(code || "").toUpperCase();
+        if (block.exceptedCodes && block.exceptedCodes.has(target)) return false;
         if (block.codes.has(target)) return true;
         if (REQUIRE_EXPLICIT_CODE_MENTION.has(target)) return false;
-        return block.codes.size === 0 && isUniversalServiceClause(block.text);
+        return block.codes.size === 0 && isUniversalServiceClause(stripExceptedGroups(block.text));
     }
 
     function isLiteralCodeMention(text, code) {

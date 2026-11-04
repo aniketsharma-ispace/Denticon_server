@@ -637,6 +637,8 @@ def _normalize_guardian_portal(raw):
         'ortho_not_covered': ortho_not_covered,
         'ortho_age_limit': clean(info.get('orthodontics_age_limit')),
         'ortho_max_present': bool(ortho),
+        'deductibles_listed': bool(deductibles),
+        'ortho_deductible_listed': any('ortho' in clean(d.get('coverage')).lower() for d in deductibles),
         'posterior_composite_downgrade': _guardian_composite_downgrade(raw),
         # What the page states; with nothing stated the audit uses Guardian's
         # standard answer (carriers/guardian/rules.py).
