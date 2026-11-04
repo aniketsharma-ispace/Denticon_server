@@ -3569,6 +3569,7 @@ _gd_res, _gd_rows = _gd_audit({
     "ortho_max": "0", "ortho_ded": "0", "ortho_coverage": "0", "ortho_coverage__age": "0",
     "prev_in_max": "Yes", "perio_maint_after_srp": "Next day", "d2980": "80%",
     "d1510": "100%", "d1510__freq": "1XLifetime", "d7140": "80%", "d7210": "80%", "d9944": "80%",
+    "porcelain_posterior_downgrade": "Yes",
 })
 check("guardian: the audit is run by the Guardian folder", _gd_res["carrier"], "guardian")
 check("guardian: every plan-level row the page states agrees",
@@ -3590,8 +3591,13 @@ check("guardian: the child filling frequency the page states is compared as stat
 check("guardian: a dependent's subscriber is not the patient's own name",
       (_gd_rows["subscriber_name"]["portal"], _gd_rows["subscriber_name"]["status"]), (None, "not_in_portal"))
 check("guardian: what the page never states reads not on portal",
-      tuple(_gd_rows[k]["status"] for k in ("prev_in_max", "perio_maint_after_srp", "d2980")),
-      ("not_in_portal",) * 3)
+      tuple(_gd_rows[k]["status"] for k in ("perio_maint_after_srp", "d2980")),
+      ("not_in_portal",) * 2)
+# Team rule 2026-11-04: Guardian's standard Yes, unless the page says otherwise.
+check("guardian: preventive in the max and posterior crowns default to Guardian's Yes",
+      tuple((_gd_rows[k]["portal"], _gd_rows[k]["status"])
+            for k in ("prev_in_max", "porcelain_posterior_downgrade")),
+      (("Yes", "match"), ("Yes", "match")))
 check("guardian: a code-search answer is compared",
       tuple(_gd_rows[k]["status"] for k in ("d1510", "d1510__freq", "d1510__age", "d7140")),
       ("match",) * 4)
@@ -3677,29 +3683,106 @@ _gd_other.new_page().insert_text((72, 72), "Delta Dental of Wisconsin  Eligibili
 check("guardian pdf: and Smile Partners' reader leaves any other PDF to the shared parser",
       _main_gd.client_portal_pdf("smile_partners", _gd_other.tobytes()), None)
 
+# The rules added 2026-11-04 from Keith Cline's page, on inline rows.
+from smile_partners.portals import guardian as _gpn
+
+_GDN = dict(_gd_export("Husband"),
+            deductibles=[{"coverage": "Individual Dental", "network": "In network", "deductible": "$50.00",
+                          "met_to_date": "$0.00", "waived_for_preventive": "Yes", "remaining_deductible": "$50.00"}],
+            effective_dates_of_coverage=[],
+            plan_options=[
+                _gd_row("Fillings", "Basic", "80%", "80%", [
+                    "Resin-based composite restorations (white fillings) (D2330-D2335, D2391-D2394) are "
+                    "covered on all teeth with no surface restriction."]),
+                _gd_row("Repair/Reline/Rebase", "Major", "50%", "50%", [
+                    "Maintenance and repair of inlay, onlay, crown, post and core, veneer, denture, implant "
+                    "prosthetic and bridge (D2910-D2920, D2980-D2983, D5410-D5671) are covered under Major."]),
+                _gd_row("Oral Surgery", "Basic", "80%", "80%", []),
+            ],
+            procedure_codes=[_gd_rec("D2980", None, None, "Frequency not available",
+                                     status="CDT code search not done: no click on Search within 3 minutes")])
+_gdn_norm = _gpn._normalize_guardian_portal(_GDN)
+_gdn_meta = _gdn_norm["_guardian_meta"]
+_gdn_procs = {p["procedure_code"]: p for p in _gdn_norm["benefit_coverage"]["procedures"]}
+check("guardian: the preventive waiver is read from the Deductibles table itself",
+      _gdn_meta["prev_deductible_waived"], True)
+check("guardian: posterior composites covered with no alternate benefit are not downgraded",
+      _gdn_meta["posterior_composite_downgrade"], "No")
+check("guardian: an unsearched code the main page names in a statement of its own is read from it",
+      (_gdn_procs["D2980"]["benefit_level"], _gdn_procs["D2980"]["_guardian_lookup"]),
+      ("50%", _gpdf.NAMED_LOOKUP))
+check("guardian: and one the page never names still waits for the search",
+      ("D7140" in _gdn_procs, _gdn_meta["cdt_search_missing"]),
+      (False, ["D1510", "D4260", "D7140", "D7210", "D9944"]))
+_GDN_OUT = dict(_GDN, plan_options=_GDN["plan_options"] + [_gd_row("Other Preventive", None, None, None, [
+    "Preventive services do not count toward the annual maximum."])])
+check("guardian: a page saying preventive is outside the maximum answers No",
+      _gpn._normalize_guardian_portal(_GDN_OUT)["_guardian_meta"]["prev_in_max"], "No")
+
+
+# The eligibility printout in Material/ is whichever patient was saved last:
+# each known one is checked against its own sheet.
 _GD_PORTAL_PDF = os.path.join(BASE, "Material", "Smile Partners", "Gaurdian",
                               "Dental Eligibility - Provider _ Guardian.pdf")
-if os.path.exists(_GD_PORTAL_PDF) and os.path.exists(_GD_SHEET):
+_GD_PRINTOUTS = {
+    "Titus K Jackson": {
+        "sheet": "TITUS JACKSON.pdf",
+        "reads": ("Son", "00532450", "Preventive", "Yes", "3 per family", "2", "10/22/2025"),
+        "mismatches": ["d0210__hist", "d0330__hist", "d2160__freq", "d2391__freq"],
+        "cdt_search_missing": ["D2980", "D4260", "D7140", "D7210"],
+    },
+    # Keith Cline (2026-11-04): a spouse; relationship and first date print on
+    # one line, a MaxRollover table follows the maximums, and the page names
+    # D1510, D2980, D4260 and D9944 in statements of their own.
+    "Keith Cline": {
+        "sheet": "Keith Cline - Sabrina.pdf",
+        "reads": ("Husband", "00567419", "Preventive", "Yes", "3 per family", "1", "12/26/2024"),
+        "mismatches": [],
+        "cdt_search_missing": ["D7140", "D7210"],
+    },
+}
+if os.path.exists(_GD_PORTAL_PDF):
     with open(_GD_PORTAL_PDF, "rb") as _fh:
         _gdx = _gpdf.read_guardian_eligibility_pdf(_fh.read())
-    _gdx_procs = {r["code"]: r for r in _gdx["procedure_codes"]}
-    _gdx_fam = next(d for d in _gdx["deductibles"] if d["coverage"] == "Family Dental" and d["network"] == "In network")
-    check("guardian pdf: Titus Jackson's printout reads like the page",
-          (_gdx["patient_name"], _gdx["relation_to_member"], _gdx["plan_information"]["group_number"],
-           len(_gdx["plan_options"]), _gdx_fam["deductible"], _gdx_fam["met_to_date"],
-           _gdx_procs["D0210"]["last_visit_date"], _gdx_procs["D4341"]["last_visit_date"]),
-          ("Titus K Jackson", "Son", "00532450", 23, "3 per family", "2", "10/22/2025", "Date Not Found"))
-    check("guardian pdf: the code-search codes are left out — the printout has no code search",
-          sorted(_gpdf.CDT_SEARCH_CODES & set(_gdx_procs)), [])
-    _gdx_res = _sp.compare_sabrina_to_portal(_gd_sheet, _gdx)
-    check("guardian pdf: audited against the sheet, it finds the four disagreements the page states",
-          (_gdx_res["carrier"],
-           sorted(m["key"] for m in _gdx_res["mismatches"]),
-           _gdx_res["diagnostics"]["cdt_search_missing"]),
-          ("guardian", ["d0210__hist", "d0330__hist", "d2160__freq", "d2391__freq"],
-           ["D1510", "D2980", "D4260", "D7140", "D7210", "D9944"]))
+    _gdx_case = _GD_PRINTOUTS.get(_gdx["patient_name"])
+    _gdx_sheet_path = os.path.join(BASE, "Material", "Smile Partners", "Gaurdian", (_gdx_case or {}).get("sheet", "-"))
+    if _gdx_case and os.path.exists(_gdx_sheet_path):
+        from smile_partners.sabrina.carriers.guardian import parse_sabrina_pdf as _gd_parse
+        with open(_gdx_sheet_path, "rb") as _fh:
+            _gdx_sheet = _gd_parse(_fh.read())
+        _gdx_procs = {r["code"]: r for r in _gdx["procedure_codes"]}
+        _gdx_fam = next(d for d in _gdx["deductibles"]
+                        if d["coverage"] == "Family Dental" and d["network"] == "In network")
+        _gdx_ind = next(d for d in _gdx["deductibles"]
+                        if d["coverage"] == "Individual Dental" and d["network"] == "In network")
+        check(f"guardian pdf: {_gdx['patient_name']}'s printout reads like the page",
+              (_gdx["relation_to_member"], _gdx["plan_information"]["group_number"],
+               _gdx["effective_dates_of_coverage"][0]["service_category"], _gdx_ind["waived_for_preventive"],
+               _gdx_fam["deductible"], _gdx_fam["met_to_date"], _gdx_procs["D0210"]["last_visit_date"]),
+              _gdx_case["reads"])
+        check("guardian pdf: the reader leaves the code-search codes to the audit",
+              sorted(_gpdf.CDT_SEARCH_CODES & set(_gdx_procs)), [])
+        _gdx_res = _sp.compare_sabrina_to_portal(_gdx_sheet, _gdx)
+        check(f"guardian pdf: audited against {_gdx['patient_name']}'s sheet, only what the page contradicts disagrees",
+              (_gdx_res["carrier"], sorted(m["key"] for m in _gdx_res["mismatches"]),
+               _gdx_res["diagnostics"]["cdt_search_missing"]),
+              ("guardian", _gdx_case["mismatches"], _gdx_case["cdt_search_missing"]))
+    else:
+        skip("Guardian eligibility printout", f"no known sheet for {_gdx['patient_name']!r}")
 else:
-    skip("Titus Jackson Guardian printout", "Material/Smile Partners/Gaurdian not present")
+    skip("Guardian eligibility printout", "Material/Smile Partners/Gaurdian not present")
+
+# Keith Cline's sheet against his printout: the nine fields the team listed on
+# 2026-11-04 as "missing but available on the website".
+if os.path.exists(_GD_PORTAL_PDF) and _gdx["patient_name"] == "Keith Cline" and os.path.exists(_gdx_sheet_path):
+    _gdk = {r["key"]: r["status"] for s in _gdx_res["sections"] for r in s["rows"]}
+    check("guardian pdf: Keith's deductible, max, downgrade and D2980/D4260 rows are compared and agree",
+          {k: _gdk[k] for k in ("ded_prev", "ded_diag", "prev_in_max", "posterior_composite_downgrade",
+                                "porcelain_posterior_downgrade", "d2980", "d4260", "d1510")
+           if _gdk[k] != "match"},
+          {})
+    check("guardian pdf: the subscriber, which the page does not show, stays not on portal",
+          (_gdk["subscriber_name"], _gdk["subscriber_dob"]), ("not_in_portal", "not_in_portal"))
 
 
 # ══════════════════════════════════════════════════════════════════════════════

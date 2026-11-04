@@ -73,8 +73,10 @@ the patient's Dental Eligibility page saved as a PDF, which
 `smile_partners/portals/guardian_pdf.py` reads into the same shape (the web
 page sends the client with a PDF, and `/api/parse-pdf` lets a client's
 `sabrina.read_portal_pdf` take it before the shared parser). D1510, D2980,
-D4260, D7140, D7210 and D9944 are taken only from Guardian's CDT code search,
-never from the main page, so from a PDF they read "not on portal". `sheet/`
+D4260, D7140, D7210 and D9944 are taken from Guardian's CDT code search; without
+one (a PDF, a skipped search) only a main-page row that names the code counts
+("D2980-D2983 … are covered under Major"), and otherwise they read "not on
+portal". `sheet/`
 only acknowledges the upload; a parsing fix for an audit goes in the carrier's
 own `parser.py`.
 

@@ -73,6 +73,17 @@ def _guardian_coinsurance(coinsurance, network):
     return ''
 
 
+def _guardian_category_coinsurance(raw, category, network):
+    """The percentage of the first Plan Options row in that category, or ''."""
+    wanted = clean(category).lower()
+    for row in raw.get('plan_options') or [] if wanted else []:
+        if isinstance(row, dict) and clean(row.get('category')).lower() == wanted:
+            pct = _guardian_coinsurance(row.get('coinsurance'), network)
+            if pct:
+                return pct
+    return ''
+
+
 # ── Frequency ────────────────────────────────────────────────────────────────
 #
 # Guardian states a limit in prose, and the extension keeps the clause:
@@ -327,6 +338,22 @@ def _guardian_deductible_waived(raw, category, network):
     return None
 
 
+def _guardian_preventive_waived(raw, network):
+    """
+    Whether the deductible is waived for preventive services on that network:
+    the Deductibles table's own "Waived for preventive?" for the individual
+    deductible, else the Preventive category's flag.
+    """
+    for row in _guardian_on_network(raw.get('deductibles'), network):
+        if 'individual' in clean(row.get('coverage')).lower():
+            value = clean(row.get('waived_for_preventive')).lower()
+            if value in ('yes', 'y', 'true'):
+                return True
+            if value in ('no', 'n', 'false'):
+                return False
+    return _guardian_deductible_waived(raw, 'Preventive', network)
+
+
 def _guardian_row(raw, service):
     """The Plan Options row of that name."""
     for row in raw.get('plan_options') or []:
@@ -356,21 +383,90 @@ def _guardian_alternate_benefit(raw, service, subject_re):
     return ''
 
 
+def _guardian_composite_downgrade(raw):
+    """
+    Whether posterior composites are paid as amalgam: Yes where the Fillings
+    row gives them the alternate benefit of an amalgam; No where it covers
+    them without one ("… (D2330-D2335, D2391-D2394) are covered on all teeth
+    with no surface restriction"); '' when the row says nothing about them.
+    """
+    if _guardian_alternate_benefit(raw, 'Fillings', r'posterior|D239[1-4]'):
+        return 'Yes'
+    row = _guardian_row(raw, 'Fillings')
+    for message in (row or {}).get('message') or []:
+        text = str(message)
+        if (re.search(r'D239[1-4]|posterior', text, re.IGNORECASE)
+                and re.search(r'\bcovered\b', text, re.IGNORECASE)
+                and not re.search(r'\bnot\s+covered\b', text, re.IGNORECASE)):
+            return 'No'
+    return ''
+
+
+# "Preventive services do not count toward the annual maximum" and the like.
+# Guardian states it only when preventive is kept out of the maximum.
+_GUARDIAN_PREVENTIVE_OUTSIDE_MAX_RE = re.compile(
+    r'preventive[^.]*\b(?:do(?:es)?\s+not|don.t|not|never)\b[^.]*'
+    r'\b(?:count|apply|applied|reduce|deduct\w*|accumulate)\b[^.]*\bmaximum'
+    r'|maximum[^.]*\b(?:excludes?|does\s+not\s+include)\b[^.]*\bpreventive', re.IGNORECASE)
+
+
+def _guardian_preventive_outside_max(raw):
+    """'No' when the page says preventive does not count toward the maximum, else ''."""
+    texts = [str(m) for row in raw.get('plan_options') or [] if isinstance(row, dict)
+             for m in row.get('message') or []]
+    texts.append(str((raw.get('plan_information') or {}).get('out_of_network_note') or ''))
+    return 'No' if any(_GUARDIAN_PREVENTIVE_OUTSIDE_MAX_RE.search(t) for t in texts) else ''
+
+
+def _guardian_patient_age(raw):
+    """The patient's age on the day the page was read."""
+    from .guardian_pdf import _date, _patient_age
+
+    m = re.match(r'(\d{4})-(\d{2})-(\d{2})', str(raw.get('scraped_at') or ''))
+    reference = _date(f'{m.group(2)}/{m.group(3)}/{m.group(1)}') if m else None
+    return _patient_age((raw.get('plan_information') or {}).get('date_of_birth'), reference)
+
+
 # ── Translation ──────────────────────────────────────────────────────────────
 
-# Codes Guardian's main page cannot answer for (team rule, 2026-11-02): the
-# extension looks each up in the page's "Search coverage by CDT code" box, and
-# only that answer counts. A record derived from the Plan Options rows for one
-# of them — an export from before the search, or a search the user skipped —
-# states nothing.
+# Codes Guardian's main page usually cannot answer for (team rule,
+# 2026-11-02): the extension looks each up in the page's "Search coverage by
+# CDT code" box, and that answer counts. Without one — a printout, or a search
+# the user skipped — a main-page row that names the code in a statement of its
+# own counts too (2026-11-04: "D2980-D2983 … are covered under Major",
+# "Includes codes: … D4260"). A record the extension derived for one of them
+# by its usual service mapping states nothing.
 _GUARDIAN_CDT_SEARCH_CODES = frozenset({'D1510', 'D2980', 'D4260', 'D7140', 'D7210', 'D9944'})
 _GUARDIAN_CDT_SEARCH_LOOKUP = 'Guardian CDT code search'
 
 
 def _guardian_cdt_unsearched(record):
-    """Whether this is a search-only code without a search answer."""
+    """Whether this is a search-only code without a search or named-code answer."""
+    from .guardian_pdf import NAMED_LOOKUP
+
     return (clean(record.get('code')).upper() in _GUARDIAN_CDT_SEARCH_CODES
-            and clean(record.get('lookup_status')) != _GUARDIAN_CDT_SEARCH_LOOKUP)
+            and clean(record.get('lookup_status')) not in (_GUARDIAN_CDT_SEARCH_LOOKUP, NAMED_LOOKUP))
+
+
+def _guardian_records(raw):
+    """
+    The export's per-code records, with each search-only code the search did
+    not answer taken from the main page where a row names it.
+    """
+    from .guardian_pdf import derive_named_code_record
+
+    records = {}
+    for record in raw.get('procedure_codes') or []:
+        if isinstance(record, dict) and clean(record.get('code')):
+            records.setdefault(clean(record.get('code')).upper(), record)
+    searched = {code for code, r in records.items()
+                if clean(r.get('lookup_status')) == _GUARDIAN_CDT_SEARCH_LOOKUP}
+    age = _guardian_patient_age(raw)
+    for code in sorted(_GUARDIAN_CDT_SEARCH_CODES - searched):
+        named = derive_named_code_record(raw, code, age)
+        if named:
+            records[code] = named
+    return list(records.values())
 
 
 _GUARDIAN_CATEGORY_CONTRACT = {
@@ -400,7 +496,9 @@ def _guardian_procedure(record, raw, network):
     if covered is True:
         pct = _guardian_coinsurance(record.get('coinsurance'), network)
     elif age_only:
-        pct = _guardian_coinsurance(row.get('coinsurance'), network)
+        # An "Other …" row prints no percentage; its code pays its category's.
+        pct = (_guardian_coinsurance(row.get('coinsurance'), network)
+               or _guardian_category_coinsurance(raw, record.get('dental_service_category'), network))
     elif covered is False:
         pct = '0%'
     else:
@@ -449,11 +547,8 @@ def _normalize_guardian_portal(raw):
     dental = next((a for a in allowance if 'ortho' not in clean(a.get('coverage')).lower()), {})
     ortho = next((a for a in allowance if 'ortho' in clean(a.get('coverage')).lower()), {})
 
-    procedures = [
-        _guardian_procedure(record, raw, network)
-        for record in raw.get('procedure_codes') or []
-        if isinstance(record, dict) and clean(record.get('code'))
-    ]
+    records = _guardian_records(raw)
+    procedures = [_guardian_procedure(record, raw, network) for record in records]
 
     covered_services = []
     seen = set()
@@ -469,7 +564,8 @@ def _normalize_guardian_portal(raw):
         if not (in_pct or out_pct):
             continue
         seen.add(contract)
-        waived = _guardian_deductible_waived(raw, category, network)
+        waived = (_guardian_preventive_waived(raw, network) if contract == 'PREVENTIVE'
+                  else _guardian_deductible_waived(raw, category, network))
         applies = '' if waived is None else f" Deductible Applies : {'No' if waived else 'Yes'}"
         covered_services.append({
             'category': contract,
@@ -541,18 +637,22 @@ def _normalize_guardian_portal(raw):
         'ortho_not_covered': ortho_not_covered,
         'ortho_age_limit': clean(info.get('orthodontics_age_limit')),
         'ortho_max_present': bool(ortho),
-        'posterior_composite_downgrade': _guardian_alternate_benefit(
-            raw, 'Fillings', r'posterior|D239[1-4]'),
+        'posterior_composite_downgrade': _guardian_composite_downgrade(raw),
+        # What the page states; with nothing stated the audit uses Guardian's
+        # standard answer (carriers/guardian/rules.py).
         'porcelain_posterior_downgrade': _guardian_alternate_benefit(
             raw, 'Crown/Inlay/Onlay', r'posterior|porcelain|molar'),
-        'prev_deductible_waived': _guardian_deductible_waived(raw, 'Preventive', network),
+        'prev_in_max': _guardian_preventive_outside_max(raw),
+        'prev_deductible_waived': _guardian_preventive_waived(raw, network),
         'codes_without_row': [
-            clean(r.get('code')) for r in raw.get('procedure_codes') or []
-            if isinstance(r, dict) and clean(r.get('lookup_status')).lower().startswith('no matching')
+            clean(r.get('code')) for r in records
+            if clean(r.get('lookup_status')).lower().startswith('no matching')
         ],
-        'cdt_search_missing': sorted(_GUARDIAN_CDT_SEARCH_CODES - {
-            clean(r.get('code')).upper() for r in raw.get('procedure_codes') or []
-            if isinstance(r, dict) and clean(r.get('lookup_status')) == _GUARDIAN_CDT_SEARCH_LOOKUP
-        }),
+        # Search-only codes with neither a search answer nor a main-page row
+        # naming them: their rows read "not on portal".
+        'cdt_search_missing': sorted(
+            code for code in _GUARDIAN_CDT_SEARCH_CODES
+            if not any(clean(r.get('code')).upper() == code and not _guardian_cdt_unsearched(r)
+                       for r in records)),
     }
     return normalized

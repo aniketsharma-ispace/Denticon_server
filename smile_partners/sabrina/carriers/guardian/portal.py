@@ -43,7 +43,8 @@ def _breakdown_for_sheet(bd: dict, portal_norm: dict) -> dict:
     "Alternate Benefits" paragraph), so they come from what the translation
     read off the Guardian page instead. Diagnostic services — exams and
     x-rays — sit in Guardian's Preventive category, so the deductible answer
-    for Diagnostic is Preventive's.
+    for Diagnostic is Preventive's. A posterior-crown downgrade the page does
+    not mention is Guardian's standard answer.
     """
     meta = _guardian_meta(portal_norm)
     if not meta:
@@ -52,6 +53,9 @@ def _breakdown_for_sheet(bd: dict, portal_norm: dict) -> dict:
     for key in ("plan_year_start", "waiting_period", "missing_tooth",
                 "posterior_composite_downgrade", "porcelain_posterior_downgrade"):
         bd[key] = meta.get(key) or None
+    if not bd["porcelain_posterior_downgrade"]:
+        bd["porcelain_posterior_downgrade"] = _guardian_standard_answer(
+            portal_norm, "porcelain_posterior_downgrade")
     waived = meta.get("prev_deductible_waived")
     applies = None if waived is None else ("No" if waived else "Yes")
     bd["ded_prev"] = bd["ded_diag"] = applies
@@ -308,12 +312,21 @@ def _portal_d4341_quads(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     return value if value.isdigit() else None
 
 
+def _portal_prev_in_max(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """
+    Whether preventive services count toward the yearly maximum: No where the
+    page says they do not, otherwise Guardian's standard Yes.
+    """
+    return (_guardian_meta(portal_raw).get("prev_in_max")
+            or _guardian_standard_answer(portal_raw, "prev_in_max"))
+
+
 # Portal values that must be computed rather than read from one breakdown key.
 # All share the (breakdown, raw_portal, sheet value) signature so
-# `_portal_value` can call them uniformly. "_prev_in_max" and
-# "_perio_after_srp" are absent on purpose: Guardian's page states neither, so
-# those rows read "not on portal".
+# `_portal_value` can call them uniformly. "_perio_after_srp" is absent on
+# purpose: Guardian's page does not state it, so that row reads "not on portal".
 _DERIVED = {
+    "_prev_in_max": _portal_prev_in_max,
     "_subscriber_name": _portal_subscriber_name,
     "_subscriber_dob": _portal_subscriber_dob,
     "_cob": _portal_cob,

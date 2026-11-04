@@ -234,12 +234,14 @@ _EFFECTIVE_CATEGORIES = (
 )
 
 
-def _read_effective_dates(doc, lines):
+def _read_effective_dates(doc, lines, words):
     """
     The patient's row of "Effective dates of coverage": relationship, and a
-    date per service category. Dates sit a little left of their headers, so
-    each goes to the nearest header. "Prev" prints run into "Relationship",
-    so its position is searched for inside that word.
+    date per service category. Read word by word, since a printout may run the
+    relationship and the first date into one line ("Husband   01/01/20").
+    Dates sit a little left of their headers, so each goes to the nearest
+    header. "Prev" prints run into "Relationship", so its position is searched
+    for inside that word.
     """
     heading = _first(lines, r'^effective dates of coverage')
     name = _first(lines, r'^name$', heading[0] if heading else -1)
@@ -256,17 +258,19 @@ def _read_effective_dates(doc, lines):
                 break
     relation_x = next((rect.x0 for rect in page.search_for('Relation')
                        if abs(page_top + rect.y0 - name[0]) <= 14), None)
-    body = [ln for ln in lines if name[0] + 10 < ln[0] < stop[0]]
-    relationship = ''
+    # The first date column starts where the relationship column ends.
+    relation_end = min((x for x, _c in headers), default=float('inf')) - 15
+    body = sorted((w for w in words if name[0] + 10 < w[0] < stop[0]), key=lambda w: (round(w[0]), w[1]))
+    relationship = []
     dates = {}
-    for y, x0, _x1, text, _pno in body:
+    for _y, x0, text in body:
         if re.fullmatch(r'\d{1,2}/\d{1,2}/\d{2,4}', text) and headers:
             category = min(headers, key=lambda h: abs(h[0] - x0))[1]
             dates.setdefault(category, text)
-        elif relation_x is not None and abs(x0 - relation_x) <= 12 and not relationship:
-            relationship = text
-    return relationship, [{'service_category': cat, 'effective_date': dates[cat]}
-                          for _label, cat in _EFFECTIVE_CATEGORIES if cat in dates]
+        elif relation_x is not None and relation_x - 12 <= x0 < relation_end:
+            relationship.append(text)
+    return ' '.join(relationship), [{'service_category': cat, 'effective_date': dates[cat]}
+                                    for _label, cat in _EFFECTIVE_CATEGORIES if cat in dates]
 
 
 def _page_y(doc, line):
@@ -304,7 +308,9 @@ def _read_deductibles(lines, words):
 
 def _read_plan_allowance(lines, words):
     heading = _first(lines, r'^plan maximums$')
-    stop = _first(lines, r'^plan options$', heading[0] if heading else -1)
+    # Some plans print a "MaxRollover summary" table between this one and
+    # Plan options; its rows ("Threshold  $700") are not maximums.
+    stop = _first(lines, r'^(?:maxrollover summary|plan options)$', heading[0] if heading else -1)
     if not (heading and stop):
         return []
     columns = _columns_from_words(words, [
@@ -448,7 +454,7 @@ def read_guardian_eligibility_pdf(pdf_bytes):
     words = _document_words(doc)
 
     head = _read_plan_information(lines)
-    relationship, effective = _read_effective_dates(doc, lines)
+    relationship, effective = _read_effective_dates(doc, lines, words)
     deductibles = _read_deductibles(lines, words)
     plan_options = _read_plan_options(lines, words)
     if not plan_options:
@@ -1056,3 +1062,35 @@ def derive_procedure_record(result, code, age):
         }
     return _record_from_row(code, row, age, rows,
                             (result.get('plan_information') or {}).get('orthodontics_age_limit'))
+
+
+NAMED_LOOKUP = 'Named on Guardian main page'
+
+
+def derive_named_code_record(result, code, age):
+    """
+    A record for a code that needs Guardian's CDT code search, from the main
+    page — only where a Plan Options row names the code in a statement of its
+    own ("Maintenance and repair … (D2910-D2920, D2980-D2983, …) are covered
+    under Major"; "Includes codes: … D4260 …" under a row that states its
+    category). None when no row does: the code then still needs the search.
+
+    Not part of the extension's derivation: the extension leaves these codes
+    to the search. The row is chosen on that evidence alone, without the
+    extension's D9944 → "Other Basic" shortcut, so a plan that homes D9944
+    under Periodontics (Major) reads Major.
+    """
+    rows = result.get('plan_options') if isinstance(result.get('plan_options'), list) else []
+    scored = [(score, i, r) for i, r in enumerate(rows) for score in [_row_score(r, code)] if score >= 200]
+    if not scored:
+        return None
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    record = _record_from_row(code, scored[0][2], age, rows,
+                              (result.get('plan_information') or {}).get('orthodontics_age_limit'))
+    # A row with no percentages of its own that names the code's category
+    # ("Space maintainers (D1510-D1527 …) are covered under the Basic service
+    # category", in "Other Preventive") pays that category's percentage.
+    if record['covered'] is True and not record['coinsurance'] and record['dental_service_category']:
+        record['coinsurance'] = _category_coinsurance(rows, record['dental_service_category']) or []
+    record['lookup_status'] = NAMED_LOOKUP
+    return record

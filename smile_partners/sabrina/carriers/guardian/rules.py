@@ -20,6 +20,11 @@ _GUARDIAN_STANDARD = {
     # "Multi-visit procedures are paid on the preparation date." — the page's
     # footnote legend.
     "major_paid_on": "Prep Date",
+    # Team rule (2026-11-04): Guardian's answer unless the page says otherwise.
+    # The eligibility page states neither (Titus Jackson's and Keith Cline's
+    # sheets both answer Yes).
+    "prev_in_max": "Yes",
+    "porcelain_posterior_downgrade": "Yes",
 }
 
 
