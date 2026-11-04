@@ -1,6 +1,6 @@
 # Toolkit comparator rules (Star and Smile Partners)
 
-Rules marked **[11/04]** were added for the 11/04 Smile review (Premier Lite fee schedules; the not-required fields removed). Rules marked **[11/03]** were added for the 11/03 Smile review (out-of-network benefits). Rules marked **[11/02]** were added for the 11/02 Smile review. Rules marked **[NEW]** were added in version 10/28. Rules marked **[10/26]** and **[10/23]** were added in earlier versions. Rules marked **[CLARIFIED]** keep their meaning but state how the code applies them.
+Rules marked **[11/04]** were added for the 11/04 Smile review (Premier Lite fee schedules; the not-required fields removed; D0220 periapical frequency). Rules marked **[11/03]** were added for the 11/03 Smile review (out-of-network benefits). Rules marked **[11/02]** were added for the 11/02 Smile review. Rules marked **[NEW]** were added in version 10/28. Rules marked **[10/26]** and **[10/23]** were added in earlier versions. Rules marked **[CLARIFIED]** keep their meaning but state how the code applies them.
 
 The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolkit JSON) and `sabrina/carriers/delta_toolkit/` (the audit; Toolkit-only rules are in its `rules.py`), under `star_dental/` and `smile_partners/`.
 
@@ -118,6 +118,7 @@ The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolki
   - Every service date is kept, newest first and joined with “, ”, on the portal side. The sheet's wrapped History cell (“08/31/2026;” / “04/20/2026”) is read whole, so both sides show every date; history compares as sets of dates.
 - **Posterior crowns [11/02]:** “Posterior porcelain or resin crowns are covered benefits/services” anywhere in the export (Exclusions and Limitations, or any code lookup's limitations) answers “Are Posterior Crowns Downgraded?” with **No**. Without it, an explicit downgrade sentence on D2740 still gives Yes; otherwise the answer stays blank. A sheet answer of “Not Available In Web” against a stated Yes/No is a mismatch: the website does state it.
 - **Frequency wording [11/02]:** a count tied to the lifetime in any wording is a lifetime limit (“Limited to one per tooth per lifetime” → 1XLifetime, not only “once”); “once in any five consecutive calendar years” → 1X5Years.
+- **D0220 periapicals [11/04]:** D0220's frequency is read from the sentence on periapical x-rays (“periapical x-rays” or “periapical radiographs”) under All Other Radiographs: “Periapical x-rays are limited to two x-rays per calendar year.” → 2X1Year (Timothy Zorn; it used to read Frequency not available). The full-mouth/panorex sentence beside it still belongs to D0210 and D0330 only.
 
 ## Shared Toolkit rules
 
