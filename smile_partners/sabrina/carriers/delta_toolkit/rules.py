@@ -39,12 +39,6 @@ def _toolkit_major_payment_timing(bd: dict, portal_raw: dict, sab_raw=None) -> s
     return _toolkit_meta_value(portal_raw, "major_payment_timing")
 
 
-def _toolkit_fee_schedule(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
-    """Fee Schedule as the Toolkit JSON states it (a feeSchedule key or a
-    "Fee Schedule: …" note); None when the export has none."""
-    return _toolkit_meta_value(portal_raw, "fee_schedule")
-
-
 def _toolkit_relationship(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """Map Toolkit relationship wording to the Sabrina sheet wording."""
     if not isinstance(portal_raw, dict) or not portal_raw.get("_toolkit"):
@@ -116,19 +110,36 @@ _PREMIER_NETWORK = "Premier Dentist"
 _OUT_OF_NETWORK = "Nonparticipating Dentist"
 
 
-# "MI - DD Prem Reg6", "MI Delta Premier Region 6". A bare "Pr" is not Premier:
-# "MI - DD LITE Pr Reg6" sheets carry the PPO figures.
+# Which benefits a Delta Fee Schedule carries, from the office's fee schedule
+# table (11/04 review):
+#   Premier benefits: "#4 MI - DD Prem Reg6", "MI Delta Premier Region 6",
+#                     "MI Delta Premier Perio", "#199 MI - DD Prem Perio"
+#   PPO benefits:     "#3 MI - DD LITE Pr Reg6", "MI Delta Premier Lite Region 6",
+#                     "MI Delta Premier Lite Perio", "#99 MI Delta Premier Lite Region 4",
+#                     "#203 MI - DD PremLT Perio"
+# A Premier Lite schedule names Premier too, so Lite is checked first. A bare
+# "Pr" is not Premier.
 _PREMIER_FEE_SCHEDULE_RE = re.compile(r"\bprem(?:ier)?\b", re.IGNORECASE)
+_PREMIER_LITE_FEE_SCHEDULE_RE = re.compile(r"\blite\b|\bprem(?:ier)?\s*(?:lite|lt)\b", re.IGNORECASE)
+
+
+def _fee_schedule_is_premier(fee_schedule: str) -> bool:
+    """Whether a sheet's Fee Schedule carries the Premier Dentist benefits:
+    it names Premier and is not a Premier Lite schedule (those carry PPO's)."""
+    return bool(_PREMIER_FEE_SCHEDULE_RE.search(fee_schedule)
+                and not _PREMIER_LITE_FEE_SCHEDULE_RE.search(fee_schedule))
 
 
 def _toolkit_benefit_network(fields: dict) -> tuple[str | None, str, str]:
     """
     The Delta network whose benefits the sheet records, why, and any
-    contradiction on the sheet itself (11/02 and 11/03 reviews).
+    contradiction on the sheet itself (11/02, 11/03 and 11/04 reviews).
 
-    1. A Fee Schedule naming Premier: the Toolkit's Premier Dentist figures
+    1. A Premier Fee Schedule: the Toolkit's Premier Dentist figures
        (Timothy Zorn: 90/80/60 against PPO 100/90/70), even when In Network
        says Out. Such a sheet contradicts itself, so the conflict is returned.
+       A Premier Lite schedule is not a Premier one: it carries the PPO
+       figures (Anna Tucker: 90% against Premier 70%).
     2. In Network "Out", or a UCR fee schedule (the office's own fees, as an
        out-of-network office bills): the Nonparticipating Dentist figures. A
        UCR fee schedule on a sheet that says In is a conflict too.
@@ -140,7 +151,7 @@ def _toolkit_benefit_network(fields: dict) -> tuple[str | None, str, str]:
 
     fee_schedule = str(fields.get("fee_schedule") or "").strip()
     in_network = _norm_network(fields.get("in_network"))
-    if fee_schedule and _PREMIER_FEE_SCHEDULE_RE.search(fee_schedule):
+    if _fee_schedule_is_premier(fee_schedule):
         conflict = ("the sheet says In Network: Out, but its Fee Schedule names Premier"
                     if in_network == "OUT" else "")
         return _PREMIER_NETWORK, f"sheet Fee Schedule: {fee_schedule}", conflict
@@ -229,15 +240,6 @@ def _toolkit_raw_section(portal_raw: dict, *path: str):
             return None
         node = node.get(step)
     return node
-
-
-def _toolkit_insurance_phone(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
-    """Claims/inquiry phone as the Toolkit states it; None when the field is null."""
-    value = _toolkit_raw_section(
-        portal_raw, "more_information", "claim_and_inquiry_mailing_addresses", "phoneNumber")
-    if isinstance(value, (dict, list)) or _blank(value):
-        return None
-    return str(value).strip()
 
 
 def _toolkit_srp_quads_per_day(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
