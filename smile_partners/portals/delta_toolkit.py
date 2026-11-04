@@ -47,6 +47,9 @@ _FREQUENCY_PHRASES: dict[str, tuple[str, ...]] = {
     "D0150": ("oral examinations", "oral exams"),
     "D0180": ("oral examinations", "oral exams"),
     "D0210": ("full mouth x-rays", "panorex"),
+    # "Periapical x-rays are limited to two x-rays per calendar year." under
+    # All Other Radiographs (11/04 review).
+    "D0220": ("periapical x-rays", "periapical radiographs"),
     "D0330": ("panorex",),
     "D0272": ("bitewing x-rays",),
     "D0274": ("bitewing x-rays",),
