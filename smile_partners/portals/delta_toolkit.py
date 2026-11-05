@@ -405,17 +405,107 @@ def _frequency_scope(text: str) -> str | None:
     return None
 
 
-def _derive_frequency(code: str, limitations: list[str]) -> tuple[str, str | None, str | None]:
+# One Toolkit limitation entry can hold several sentences about different
+# procedures: "Prophylaxis (cleanings) are payable twice per calendar year. …
+# Full mouth debridement is payable once per lifetime." (Ronald Abramas, 11/05).
+# Read as one string, the debridement's lifetime limit was handed to D1110 and,
+# through inheritance, D4910. Each sentence is now read on its own.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=\.)\s+(?=[A-Z])")
+
+
+def _split_sentences(text: str) -> list[str]:
+    return [s.strip() for s in _SENTENCE_SPLIT_RE.split(_text(text)) if s.strip()]
+
+
+# "… payable twice per calendar year for patients age 18 and under and once per
+# calendar year for patients age 19 and over." Each clause opens with its own
+# count; the split happens at the "and"/";" that introduces the next count.
+_AGE_CLAUSE_SPLIT_RE = re.compile(
+    r"\s*(?:;|,?\s+and)\s+(?=(?:once|twice|thrice|one|two|three|four|five|\d+\s+times?)\b)",
+    re.IGNORECASE,
+)
+
+
+def _clause_age_band(clause: str) -> tuple[int, int] | None:
+    low = clause.lower()
+    m = re.search(r"age\s+(\d{1,3})\s+(?:and|or)\s+(?:under|younger|below)", low)
+    if m:
+        return 0, int(m.group(1))
+    m = re.search(r"(?:under|through|thru|to|up\s+to)\s+age\s+(\d{1,3})", low)
+    if m:
+        return 0, int(m.group(1))
+    m = re.search(r"age\s+(\d{1,3})\s+(?:and|or)\s+(?:over|older|above)", low)
+    if m:
+        return int(m.group(1)), 999
+    m = re.search(r"(?:over|above)\s+age\s+(\d{1,3})", low)
+    if m:
+        return int(m.group(1)) + 1, 999
+    return None
+
+
+def _age_clause(sentence: str, age: int | None) -> str:
+    """The clause of an age-banded sentence that applies to a patient of `age`.
+
+    A sentence without age bands, or a patient whose age is unknown, keeps the
+    whole sentence (the earlier behaviour).
+    """
+    if age is None:
+        return sentence
+    clauses = [c for c in _AGE_CLAUSE_SPLIT_RE.split(sentence) if c.strip()]
+    if len(clauses) < 2:
+        return sentence
+    for clause in clauses:
+        band = _clause_age_band(clause)
+        if band and band[0] <= age <= band[1]:
+            return clause
+    return sentence
+
+
+def _patient_age(birthdate: Any, as_of: Any = None) -> int | None:
+    """Age in whole years on `as_of` (the export's capture date, else today)."""
+    def parse(value: Any) -> datetime.date | None:
+        text = _text(value)
+        if not text:
+            return None
+        for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
+            try:
+                return datetime.datetime.strptime(text[:10], fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    dob = parse(birthdate)
+    if not dob:
+        return None
+    ref = parse(as_of) or datetime.date.today()
+    return ref.year - dob.year - ((ref.month, ref.day) < (dob.month, dob.day))
+
+
+def _derive_frequency(
+    code: str, limitations: list[str], age: int | None = None
+) -> tuple[str, str | None, str | None]:
     """
     Return (frequency, exact limitation used, optional scope).
+
+    Every limitation is read one sentence at a time, so a frequency stated for
+    another procedure in the same entry cannot be picked up. An age-banded
+    sentence is narrowed to the patient's band when `age` is known. The whole
+    entry is tried only when no single sentence yields a frequency.
 
     `Frequency not available` is intentional and is the only fallback for a
     successful code with no explicit applicable frequency sentence.
     """
+    for limitation in limitations:
+        for sentence in _split_sentences(limitation):
+            if not _phrase_applies(code, sentence):
+                continue
+            frequency = _frequency_from_text(_age_clause(sentence, age))
+            if frequency:
+                return frequency, sentence, _frequency_scope(sentence)
     for sentence in limitations:
         if not _phrase_applies(code, sentence):
             continue
-        frequency = _frequency_from_text(sentence)
+        frequency = _frequency_from_text(_age_clause(sentence, age))
         if frequency:
             return frequency, sentence, _frequency_scope(sentence)
     return "Frequency not available", None, None
@@ -1406,6 +1496,8 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = N
     )
     routine_by_code = _routine_rows_by_code(raw)
 
+    patient_age = _patient_age(selected.get("birthdate"), raw.get("captured_at"))
+
     procedures: list[dict[str, Any]] = []
     for code, result in result_by_code.items():
         if code in unavailable:
@@ -1420,7 +1512,7 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = N
             if _phrase_applies(code, sentence) and sentence not in limitations:
                 limitations.append(sentence)
 
-        frequency, frequency_source, frequency_scope = _derive_frequency(code, limitations)
+        frequency, frequency_source, frequency_scope = _derive_frequency(code, limitations, patient_age)
         age_limit, age_source = _derive_age(code, limitations)
         level = _network_level(result, network, separate_networks, offered_networks)
         network_entry = _network_entry(result, network) if network else None
