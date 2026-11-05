@@ -1,6 +1,7 @@
 /*
  * content_dd_toolkit.js
- * Delta Dental Office Toolkit benefit extractor - PDF-integrated PPO revision
+ * Delta Dental Office Toolkit benefit extractor - PDF-integrated, one provider network per crawl
+ * (PPO, Premier or Nonparticipating Dentist, picked in a pop-up before the crawl)
  *
  * No background/service worker is used.
  *
@@ -67,6 +68,19 @@
     const PROCEDURE_CONCURRENCY = 6;              // 3 was unnecessarily serial for this endpoint; 6 matches observed latency well
     const PROCEDURE_THROTTLE_MS = 25;              // tiny cooperative delay; avoid adding ~0.2s per request
     const RESULT_ACK_TIMEOUT_MS = 1500;            // fallback only if the isolated bridge genuinely fails
+
+    // Provider network. Which network the office participates in is something
+    // the user knows and the portal does not say, so before every crawl the
+    // user picks one of the three networks the Member Benefits page has tabs
+    // for. Only that network's benefits are scraped and exported; the other
+    // networks' buckets are dropped wherever the Toolkit returns them.
+    const NETWORK_CHOICES = Object.freeze([
+        Object.freeze({ key: "ppo", name: "PPO Dentist", label: "PPO" }),
+        Object.freeze({ key: "premier", name: "Premier Dentist", label: "Premier" }),
+        Object.freeze({ key: "oon", name: "Nonparticipating Dentist", label: "Non-participating" })
+    ]);
+    // Set by startCrawl from the user's pick; the extraction reads it throughout.
+    let selectedNetwork = null;
 
     // The source workbook is converted to a bundled, versioned specification at build time.
     // Never assume the browser extension can read an arbitrary workbook from the development machine.
@@ -321,20 +335,26 @@
 
         chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
             if (request?.command === "START_CRAWL") {
-                const requestId = makeId();
-                const timer = setTimeout(() => {
-                    const wait = pendingStarts.get(requestId);
-                    if (!wait) return;
-                    pendingStarts.delete(requestId);
-                    wait.sendResponse({
-                        status: "[!] Delta Toolkit page extractor is unavailable. Refresh the Toolkit tab and ensure content_dd_toolkit.js is loaded in both MAIN and ISOLATED worlds.",
-                        started: false
-                    });
-                }, 4000);
-
-                pendingStarts.set(requestId, { sendResponse, timer });
-                window.postMessage({ source: EXT_SOURCE, type: "START_CRAWL", requestId }, window.location.origin);
-                return true;
+                // The popup closes as soon as the user clicks the page, so it is
+                // answered now; the pick and the crawl report through
+                // sendPopupStatus, which the popup reads back from storage.
+                sendResponse({
+                    status: "Choose the provider network on the Toolkit page to start the crawl.",
+                    started: true
+                });
+                askProviderNetwork().then(choice => {
+                    const requestId = makeId();
+                    const timer = setTimeout(() => {
+                        if (!pendingStarts.has(requestId)) return;
+                        pendingStarts.delete(requestId);
+                        sendPopupStatus("[!] Delta Toolkit page extractor is unavailable. Refresh the Toolkit tab and ensure content_dd_toolkit.js is loaded in both MAIN and ISOLATED worlds.", "error", { state: "FAILED" });
+                    }, 4000);
+                    // STARTED and ERROR answer the popup through sendPopupStatus too.
+                    pendingStarts.set(requestId, { sendResponse: () => {}, timer });
+                    sendPopupStatus(`Starting the ${choice.name} crawl…`, "working");
+                    window.postMessage({ source: EXT_SOURCE, type: "START_CRAWL", requestId, network: choice.key }, window.location.origin);
+                });
+                return false;
             }
 
             if (request?.command === "GET_TOOLKIT_STATUS") {
@@ -357,6 +377,68 @@
 
             return false;
         });
+
+        // The same pop-up as the DD INS extractor: the crawl waits until one of
+        // the three networks is picked.
+        function askProviderNetwork() {
+            return new Promise(resolve => {
+                document.getElementById("dd-toolkit-network-choice")?.remove();
+
+                const overlay = document.createElement("div");
+                overlay.id = "dd-toolkit-network-choice";
+                overlay.style.cssText = [
+                    "position:fixed", "inset:0", "z-index:2147483647", "display:flex",
+                    "align-items:center", "justify-content:center", "background:rgba(15,23,42,.45)",
+                    "font:14px/1.45 Arial,sans-serif"
+                ].join(";");
+
+                const box = document.createElement("div");
+                box.setAttribute("role", "dialog");
+                box.setAttribute("aria-modal", "true");
+                box.setAttribute("aria-labelledby", "dd-toolkit-network-choice-title");
+                box.style.cssText = [
+                    "width:360px", "max-width:calc(100vw - 32px)", "background:#fff", "color:#172033",
+                    "border-radius:10px", "box-shadow:0 12px 36px rgba(0,0,0,.28)", "padding:18px"
+                ].join(";");
+
+                const title = document.createElement("div");
+                title.id = "dd-toolkit-network-choice-title";
+                title.textContent = "Provider network";
+                title.style.cssText = "font-weight:700;font-size:16px;margin-bottom:6px;color:#075985";
+
+                const text = document.createElement("div");
+                text.textContent = "Which network does this office participate in? Only that network's benefits are exported.";
+                text.style.cssText = "margin-bottom:14px;color:#475569";
+
+                box.append(title, text);
+                const buttons = NETWORK_CHOICES.map(choice => {
+                    const button = document.createElement("button");
+                    button.type = "button";
+                    button.style.cssText = [
+                        "display:block", "width:100%", "text-align:left", "margin:0 0 8px",
+                        "padding:10px 12px", "border:1px solid #9db3c7", "border-radius:8px",
+                        "background:#f8fafc", "color:#172033", "cursor:pointer", "font:inherit"
+                    ].join(";");
+                    const name = document.createElement("div");
+                    name.textContent = choice.label;
+                    name.style.cssText = "font-weight:700";
+                    const hint = document.createElement("div");
+                    hint.textContent = choice.name;
+                    hint.style.cssText = "font-size:12px;color:#64748b";
+                    button.append(name, hint);
+                    button.addEventListener("click", () => {
+                        overlay.remove();
+                        resolve(choice);
+                    });
+                    box.appendChild(button);
+                    return button;
+                });
+
+                overlay.appendChild(box);
+                (document.body || document.documentElement).appendChild(overlay);
+                buttons[0].focus();
+            });
+        }
 
         function sendPopupStatus(status, mode = "working", extra = {}) {
             const payload = {
@@ -912,7 +994,7 @@
                     requestId: message.requestId,
                     status: "[+] Delta Toolkit crawl requested. Validating member/API context…"
                 });
-                startCrawl(state, nativeFetch, message.requestId).catch(error => {
+                startCrawl(state, nativeFetch, message.requestId, message.network).catch(error => {
                     setStatus(state, error.message, "error", { state: "FAILED" });
                     postPageMessage("ERROR", { requestId: message.requestId, error: error.message });
                 });
@@ -1598,9 +1680,11 @@
         return [...String(text || "").matchAll(/\b\d{2}\/\d{2}\/\d{4}\b/g)].map(match => match[0]);
     }
 
-    function isPpoNetworkLabel(network) {
+    // A faxback "Networks: PPO Dentist, Premier Dentist" heading that covers the
+    // picked network. Rows under no heading apply to the whole plan.
+    function isSelectedNetworkLabel(network) {
         if (network === null || network === undefined || network === "") return true;
-        return String(network).split(/\s*,\s*/).some(name => /^PPO Dentist$/i.test(cleanText(name)));
+        return String(network).split(/\s*,\s*/).some(isSelectedNetworkName);
     }
 
     function parsePdfOfficeVisit(page1Lines) {
@@ -1663,46 +1747,71 @@
         const percentPattern = /^(?:\d+(?:\.\d+)?%|Not Covered|Optional)$/i;
         const nextIsCoverage = percentPattern.test(nextLine);
         const description = nextIsCoverage ? "" : nextLine;
-        let i = startIndex + (nextIsCoverage ? 1 : 2);
-        const coverage = [];
-        while (i < lines.length && coverage.length < 2) {
-            const line = normalizePdfText(lines[i]);
-            if (/^D\d{4}$/i.test(line) || PDF_BENEFIT_CATEGORIES.some(category => category.toLowerCase() === line.toLowerCase()) || line === "•") break;
-            coverage.push(line);
-            i += 1;
-        }
-        if (coverage.length < 2) return null;
-        const firstPercent = coverage[0];
-        const firstWait = coverage[1];
-        if (!percentPattern.test(firstPercent)) return null;
-        const rowCoverage = {
-            "PPO Dentist": {
-                percent: firstPercent,
-                waiting_period: firstWait || null,
-                met_date: null
-            }
-        };
         const isBoundary = line => /^D\d{4}$/i.test(line) || PDF_BENEFIT_CATEGORIES.some(category => category.toLowerCase() === line.toLowerCase()) || line === "•";
-        const oonPercent = normalizePdfText(lines[i] || "");
-        if (percentPattern.test(oonPercent)) {
-            const oonWait = normalizePdfText(lines[i + 1] || "");
-            const hasWait = Boolean(oonWait) && !isBoundary(oonWait) && !percentPattern.test(oonWait);
-            rowCoverage["Premier Dentist, Nonparticipating Dentist"] = {
-                percent: oonPercent,
-                waiting_period: hasWait ? oonWait : null,
-                met_date: null
-            };
+        // One column per group of networks that pay alike, left to right, each a
+        // percentage and its waiting period. The column headings do not survive
+        // text extraction, so which networks a column covers is settled later
+        // from the Toolkit API (resolvePdfNetworkColumns).
+        const columns = [];
+        let i = startIndex + (nextIsCoverage ? 1 : 2);
+        while (i < lines.length) {
+            const percent = normalizePdfText(lines[i] || "");
+            if (!percentPattern.test(percent)) break;
+            const wait = normalizePdfText(lines[i + 1] || "");
+            const hasWait = Boolean(wait) && !isBoundary(wait) && !percentPattern.test(wait);
+            columns.push({ percent, waiting_period: hasWait ? wait : null, met_date: null });
             i += hasWait ? 2 : 1;
         }
+        if (!columns.length) return null;
 
         return {
             nextIndex: i,
             row: {
                 procedure_code: code,
                 description,
-                coverage: rowCoverage
+                coverage_columns: columns
             }
         };
+    }
+
+    // The network groups of a list of Toolkit buckets, in the API's order.
+    function bucketNetworkGroups(buckets) {
+        return toArray(buckets)
+            .filter(bucket => bucket && typeof bucket === "object" && Array.isArray(bucket.networks))
+            .map(bucket => toArray(bucket.networks).map(item => typeof item === "string" ? item : item?.name));
+    }
+
+    // The faxback prints one coverage column per group of networks that pay
+    // alike ("PPO Dentist / Premier Dentist" over one column, "Nonparticipating
+    // Dentist" over the next), in the order the Toolkit API returns those
+    // groups. Text extraction loses the headings, so each row's column for the
+    // picked network is found from the API buckets of the same code, or from
+    // the plan's benefit buckets for a code the API was not asked about. A row
+    // whose columns do not line up with those groups keeps no PDF coverage, so
+    // the PDF cannot put another network's figure in.
+    //
+    // The maximum/deductible figures are read from the PDF's first column group
+    // only; they are kept when that group (the API's first bucket) covers the
+    // picked network.
+    function resolvePdfNetworkColumns(pdfModel, rawByCode, benefitRoot) {
+        if (!pdfModel) return;
+        const planGroups = bucketNetworkGroups(benefitRoot?.networkBenefits);
+        for (const group of toArray(pdfModel.benefit_breakdown?.categories)) {
+            for (const item of toArray(group?.procedures)) {
+                const value = rawByCode?.get?.(item.procedure_code);
+                const apiGroups = bucketNetworkGroups(value?.response || value);
+                const groups = apiGroups.length ? apiGroups : planGroups;
+                const columns = toArray(item.coverage_columns);
+                const at = columns.length === groups.length
+                    ? groups.findIndex(names => names.some(isSelectedNetworkName))
+                    : -1;
+                item.coverage = at >= 0 ? columns[at] : null;
+            }
+        }
+        const maximumGroups = bucketNetworkGroups(benefitRoot?.maximumsAndDeductions);
+        if (pdfModel.eligibility && !toArray(maximumGroups[0]).some(isSelectedNetworkName)) {
+            pdfModel.eligibility.maximum_and_deductibles = null;
+        }
     }
 
     function buildFaxbackBenefitGroups(pages) {
@@ -1827,7 +1936,7 @@
             reason: "SOURCE_CODE_NOT_PARSED_INTO_A_BENEFIT_ROW",
             source: "faxback_pdf"
         }));
-        const sourceRoutineCount = toArray(officeVisit.procedures).filter(item => isPpoNetworkLabel(item?.network)).length;
+        const sourceRoutineCount = toArray(officeVisit.procedures).filter(item => isSelectedNetworkLabel(item?.network)).length;
         const sourceLimitationCount = toArray(pages).slice(1).flatMap(page => toArray(page?.lines)).filter(line => normalizePdfText(line) === "•").length;
         const allSourceLines = pages.flatMap(page => toArray(page?.lines)).map(normalizePdfText);
         const benefitBreakdownNotice = normalizePdfField(pdfBenefitBreakdownNoticeText(page1));
@@ -1880,11 +1989,14 @@
         "Occlusal Guard": "D9944"
     });
 
+    // The PDF's benefit rows for the picked network (resolvePdfNetworkColumns
+    // sets each row's `coverage`). A row with no column for it is left out.
     function pdfProcedureRows(pdfModel) {
         const rows = [];
         for (const group of toArray(pdfModel?.benefit_breakdown?.categories)) {
             for (const item of toArray(group?.procedures)) {
-                const coverage = item?.coverage?.["PPO Dentist"] || {};
+                const coverage = item?.coverage;
+                if (!coverage) continue;
                 rows.push({
                     procedureCode: item.procedure_code,
                     description: item.description,
@@ -1896,8 +2008,7 @@
                     radioGraphsRequired: null,
                     remarksRequired: null,
                     status: /^(not covered|0%)$/i.test(coverage.percent || "") ? "Not Covered" : (coverage.percent === "Optional" ? "Optional" : "Covered"),
-                    limitations: [],
-                    pdf_coverage_by_network: item?.coverage || {}
+                    limitations: []
                 });
             }
         }
@@ -1909,10 +2020,10 @@
         const errorDetail = rawByCode?.__errorDetails?.get?.(code) || null;
         const value = rawByCode?.get?.(code);
         const response = value?.response || value;
-        const bucket = toArray(response).find(isExactPpoBucket);
+        const bucket = toArray(response).find(isSelectedNetworkBucket);
         if (!bucket) {
-            const failureKind = errorDetail?.failure_kind || (value && value.http_status >= 200 && value.http_status < 300 ? "NO_PPO_BUCKET" : error ? "REQUEST_FAILED" : null);
-            const unavailableKinds = new Set(["NO_PPO_BUCKET", "INVALID_JSON"]);
+            const failureKind = errorDetail?.failure_kind || (value && value.http_status >= 200 && value.http_status < 300 ? "NO_NETWORK_BUCKET" : error ? "REQUEST_FAILED" : null);
+            const unavailableKinds = new Set(["NO_NETWORK_BUCKET", "INVALID_JSON"]);
             const notInCodeList = failureKind === "NOT_IN_PORTAL_CODE_LIST";
             const status = notInCodeList ? "NOT_IN_CODE_LIST"
                 : unavailableKinds.has(failureKind) || (!error && value) ? "UNAVAILABLE" : error ? "FAILED" : "UNAVAILABLE";
@@ -1934,7 +2045,7 @@
                 utilization_source_present: false,
                 error: notInCodeList
                     ? "Not in the Toolkit's procedure code list (HTTP 404)."
-                    : error || (value ? "No usable PPO Dentist benefit bucket was returned for this code." : "Toolkit procedure response was unavailable.")
+                    : error || (value ? `No usable ${selectedNetwork} benefit bucket was returned for this code.` : "Toolkit procedure response was unavailable.")
             };
         }
 
@@ -2123,7 +2234,7 @@
 
     function pdfRoutineRows(pdfModel, procedureResults) {
         const resultByCode = new Map(toArray(procedureResults).map(row => [row.procedureCode, row]));
-        return toArray(pdfModel?.office_visit?.procedures).filter(item => isPpoNetworkLabel(item?.network)).map(item => {
+        return toArray(pdfModel?.office_visit?.procedures).filter(item => isSelectedNetworkLabel(item?.network)).map(item => {
             const code = PDF_ROUTINE_CODES[item.procedure];
             const coverage = resultByCode.get(code)?.percentCovered;
             const dates = uniqueStrings(item.service_dates || []);
@@ -2329,7 +2440,7 @@
         if (max.benefit_periods?.general && !maxRows.some(row => row.from && row.to && max.benefit_periods.general.includes(row.from) && max.benefit_periods.general.includes(row.to))) missing.push("general benefit period");
         const containsText = (list, text) => toArray(list).some(item => cleanText(item).toLowerCase().includes(cleanText(text).toLowerCase().replace(/[\s,;:.-]+$/, "")));
         for (const detail of toArray(max.details)) if (!containsText(canonical?.maximums_and_deductibles?.notes, detail)) missing.push(`maximum detail: ${detail}`);
-        for (const item of toArray(pdfModel?.office_visit?.procedures).filter(entry => isPpoNetworkLabel(entry?.network))) {
+        for (const item of toArray(pdfModel?.office_visit?.procedures).filter(entry => isSelectedNetworkLabel(entry?.network))) {
             const code = PDF_ROUTINE_CODES[item.procedure];
             if (!routine.has(code)) missing.push(`routine procedure: ${item.procedure}`);
             else if (routine.get(code).eligibleNow !== item.eligible_now) missing.push(`routine status: ${item.procedure}`);
@@ -2464,13 +2575,13 @@
             member_details: memberDetails,
             routine_procedures: {
                 section_title: "Routine Procedures",
-                network: "PPO Dentist",
+                network: selectedNetwork,
                 notes: cleanSectionNotes([...(toolkit.routineNotes || []), ...(pdfModel?.office_visit?.notes || [])]),
                 rows: routineRows
             },
             coverages: {
                 section_title: "Coverages",
-                network: "PPO Dentist",
+                network: selectedNetwork,
                 notes: cleanSectionNotes([...(toolkit.coverageNotes || []), pdfModel?.benefit_breakdown?.notice]),
                 coverage_rows: coverageRows,
                 procedure_code_search: {
@@ -2485,13 +2596,13 @@
             },
             exclusions_and_limitations: {
                 section_title: "Exclusions And Limitations",
-                network: "PPO Dentist",
+                network: selectedNetwork,
                 notes: [],
                 records: exclusions
             },
             maximums_and_deductibles: {
                 section_title: "Maximums and Deductibles",
-                network: "PPO Dentist",
+                network: selectedNetwork,
                 notes: maximumNotes,
                 accumulationPeriodType: toolkit.accumulationPeriodType || null,
                 rows: maxRows
@@ -2631,12 +2742,13 @@
         };
     }
 
-    async function startCrawl(state, nativeFetch, requestId) {
+    async function startCrawl(state, nativeFetch, requestId, network) {
         // Always extract the global workbook-wide scope. The portal's current
         // member/plan context is captured separately; no workbook client is selected.
         if (state.activeRun && !state.activeRun.done) {
             state.activeRun.cancelled = true;
         }
+        const choice = useSelectedNetwork(network);
 
         const run = {
             id: makeId(), requestId, cancelled: false, done: false,
@@ -2658,8 +2770,19 @@
             );
         }
 
+        // A plan that does not offer the picked network has no benefits to
+        // export for it; say so instead of exporting a sheet of failed codes.
+        const offered = planNetworkNames(state.memberBenefitsResponse);
+        if (offered.length && !offered.some(isSelectedNetworkName)) {
+            throw new Error(`This plan has no ${choice.name} network (it offers ${offered.join(", ")}). Crawl again and pick one of those.`);
+        }
+
         setBusy(state, true);
-        setStatus(state, `Starting ${PROCEDURE_CODES.length}-code extraction…`, "working", { state: "RUNNING", completed: 0, total: PROCEDURE_CODES.length });
+        setStatus(state, `Starting ${PROCEDURE_CODES.length}-code extraction for ${choice.name}…`, "working", { state: "RUNNING", completed: 0, total: PROCEDURE_CODES.length });
+        // The few figures read off the page itself (the Maximums table) must be
+        // the picked network's, so its tab is opened, as the DD INS extractor
+        // opens the tabs it reads.
+        await showNetworkTab(choice.name);
 
         try {
             // Start PDF capture immediately. It is independent of the procedure
@@ -2832,12 +2955,12 @@
         };
 
         if (response.ok && data !== null) {
-            const hasPpoBucket = toArray(data).some(isExactPpoBucket);
-            if (!hasPpoBucket) {
-                const error = new Error(`${code}: HTTP ${response.status} returned JSON without a usable PPO Dentist benefit bucket.`);
+            const hasNetworkBucket = toArray(data).some(isSelectedNetworkBucket);
+            if (!hasNetworkBucket) {
+                const error = new Error(`${code}: HTTP ${response.status} returned JSON without a usable ${selectedNetwork} benefit bucket.`);
                 error.transaction = transaction;
                 error.http_status = response.status;
-                error.failure_kind = "NO_PPO_BUCKET";
+                error.failure_kind = "NO_NETWORK_BUCKET";
                 throw error;
             }
             return transaction;
@@ -3018,28 +3141,27 @@
     }
 
     function extractToolkitNetworkTabs() {
-        // User only wants the PPO Dentist level. We intentionally do not expose
-        // Premier/Non-PPO tabs even though the page may render them.
-        return ["PPO Dentist"];
+        // Only the picked network's tab is extracted, although the page renders all three.
+        return [selectedNetwork];
     }
 
-    function extractPpoRoutineBuckets(response) {
+    function extractSelectedRoutineBuckets(response) {
         return toArray(response)
-            .filter(item => isExactPpoBucket(item))
-            .map(item => sanitizePpoNetworkDataForOutput(item))
+            .filter(item => isSelectedNetworkBucket(item))
+            .map(item => sanitizeSelectedNetworkDataForOutput(item))
             .filter(Boolean);
     }
 
-    function extractPpoNetworkBenefitBuckets(benefitRoot) {
+    function extractSelectedNetworkBenefitBuckets(benefitRoot) {
         return toArray(benefitRoot?.networkBenefits)
-            .filter(item => isExactPpoBucket(item))
-            .map(item => sanitizePpoNetworkDataForOutput(item))
+            .filter(item => isSelectedNetworkBucket(item))
+            .map(item => sanitizeSelectedNetworkDataForOutput(item))
             .filter(Boolean);
     }
 
-    function extractExclusionsAndLimitations(ppoNetworkBenefits) {
+    function extractExclusionsAndLimitations(networkBenefitBuckets) {
         const records = [];
-        for (const bucket of ppoNetworkBenefits) {
+        for (const bucket of networkBenefitBuckets) {
             for (const item of toArray(bucket?.coverages)) {
                 const limitations = toArray(item?.exclusionsAndLimitations).filter(Boolean);
                 if (!limitations.length) continue;
@@ -3053,16 +3175,16 @@
         return records;
     }
 
-    function ppoOrthoAgeLimits(benefitRoot) {
+    function selectedOrthoAgeLimits(benefitRoot) {
         return toArray(benefitRoot?.orthoAgeLimitConfig)
-            .filter(item => toArray(item?.networks).some(name => /^PPO Dentist$/i.test(cleanText(name))))
-            .map(item => sanitizePpoNetworkDataForOutput(item))
+            .filter(isSelectedNetworkBucket)
+            .map(item => sanitizeSelectedNetworkDataForOutput(item))
             .filter(Boolean);
     }
 
-    function buildCoveragePageRows(ppoNetworkBenefits) {
+    function buildCoveragePageRows(networkBenefitBuckets) {
         const rows = [];
-        for (const bucket of toArray(ppoNetworkBenefits)) {
+        for (const bucket of toArray(networkBenefitBuckets)) {
             for (const item of toArray(bucket?.coverages)) {
                 rows.push({
                     procedure: item?.procedure ?? null,
@@ -3135,7 +3257,27 @@
         return `${cleanText(row?.type).toLowerCase()}|${cleanText(row?.category).toLowerCase()}|${cleanText(row?.name).toLowerCase()}`;
     }
 
-    function buildAccumulatorPageRows(ppoAccumulatorBuckets, section = null) {
+    // Whether the Maximums table on the page is the picked network's: every
+    // individual and family amount it shows for an accumulator the API also
+    // returns must equal the API's amount, and at least one must be shown.
+    // (The page renders a null family amount as $0, so only amounts the API
+    // states are compared.)
+    function displayedAccumulatorsAgree(pairs) {
+        let agreed = 0;
+        for (const [api, displayed] of toArray(pairs)) {
+            if (!displayed) continue;
+            for (const memberType of ["individual", "family"]) {
+                const apiAmount = api?.[memberType]?.amount;
+                const shownAmount = displayed?.[memberType]?.amount;
+                if (apiAmount === null || apiAmount === undefined || shownAmount === undefined) continue;
+                if (Number(apiAmount) !== Number(shownAmount)) return false;
+                agreed += 1;
+            }
+        }
+        return agreed > 0;
+    }
+
+    function buildAccumulatorPageRows(networkAccumulatorBuckets, section = null) {
         const rows = [];
         const displayedRows = extractDisplayedAccumulatorValues(section);
         const displayedByKey = new Map(displayedRows.map(row => [accumulatorDisplayMatchKey(row), row]));
@@ -3148,8 +3290,10 @@
         }
         const categoryOffsets = new Map();
         const usedDisplayedIndexes = new Set();
+        // Each API accumulator with the page row it was matched to (or null).
+        const pairs = [];
 
-        for (const bucket of toArray(ppoAccumulatorBuckets)) {
+        for (const bucket of toArray(networkAccumulatorBuckets)) {
             for (const acc of toArray(bucket?.accumulators)) {
                 const base = {
                     type: acc?.accumulatorType ?? null,
@@ -3179,22 +3323,36 @@
                 const displayed = exact || list[offset] || null;
                 if (!exact && displayed) categoryOffsets.set(typeCategoryKey, offset + 1);
                 if (displayed && Number.isInteger(displayed.index)) usedDisplayedIndexes.add(displayed.index);
+                pairs.push([base, displayed]);
+            }
+        }
 
-                if (displayed) {
-                    for (const memberType of ["individual", "family"]) {
-                        for (const amountKey of ["amount", "used", "remaining"]) {
-                            const visible = displayed?.[memberType]?.[amountKey];
-                            if (visible !== undefined) base[memberType][amountKey] = visible;
-                        }
+        // The page shows one network's Maximums table at a time, whichever tab
+        // is open, and that need not be the picked network (11/05: a
+        // Nonparticipating crawl read the PPO tab's $1,500 general maximum over
+        // the API's $1,000). The table is used only when it agrees with the
+        // picked network's own amounts.
+        const tableIsSelectedNetworks = displayedAccumulatorsAgree(pairs);
+        if (displayedRows.length && !tableIsSelectedNetworks) {
+            console.warn(`Delta Toolkit: the Maximums and Deductibles table on the page is not the ${selectedNetwork} one; its figures were not used.`);
+        }
+
+        for (const [base, displayed] of pairs) {
+            if (displayed && tableIsSelectedNetworks) {
+                for (const memberType of ["individual", "family"]) {
+                    for (const amountKey of ["amount", "used", "remaining"]) {
+                        const visible = displayed?.[memberType]?.[amountKey];
+                        if (visible !== undefined) base[memberType][amountKey] = visible;
                     }
                 }
-                rows.push(base);
             }
+            rows.push(base);
         }
 
         // If an accumulator is visible in the website table but absent from the API response,
         // keep the displayed website row instead of replacing it with a PDF-derived value.
         for (const displayed of displayedRows) {
+            if (!tableIsSelectedNetworks) break;
             if (usedDisplayedIndexes.has(displayed.index)) continue;
             rows.push({
                 type: displayed.type,
@@ -3231,6 +3389,9 @@
         const patient = memberApiContext.patient || { isSubscriber: false, record: {} };
         const procedureErrors = rawByCode.__errors || new Map();
         const pdf = parsedPdfDocument?.structured || null;
+        // Point every PDF benefit row at the picked network's column before any
+        // PDF figure is read.
+        resolvePdfNetworkColumns(pdf, rawByCode, state.memberBenefitsResponse);
 
         const apiSubscriberName = joinName(subscriber.subscriberFirstName, subscriber.subscriberLastName);
         const apiPatientName = patient.isSubscriber
@@ -3285,16 +3446,12 @@
         const contract = benefitRoot.contract || {};
         const clientRoot = state.clientSearchResponse?.client || state.clientSearchResponse || {};
         const subClientContract = clientRoot?.subClient?.contract || {};
-        const ppoAccumulatorSource = toArray(benefitRoot.maximumsAndDeductions).filter(isExactPpoBucket);
-        const ppoAccumulatorBuckets = ppoAccumulatorSource
-            .map(item => sanitizePpoNetworkDataForOutput(item))
+        const networkAccumulatorSource = toArray(benefitRoot.maximumsAndDeductions).filter(isSelectedNetworkBucket);
+        const networkAccumulatorBuckets = networkAccumulatorSource
+            .map(item => sanitizeSelectedNetworkDataForOutput(item))
             .filter(Boolean);
-        // The networks that share the PPO maximums/deductibles table, so the
-        // comparator can tell "same table" from "not exported" when a sheet is
-        // filled in for another network.
-        const ppoAccumulatorNetworks = uniqueStrings(ppoAccumulatorSource.flatMap(bucketNetworkNames));
-        const ppoRoutineBuckets = extractPpoRoutineBuckets(state.routineProceduresResponse);
-        const ppoNetworkBenefits = extractPpoNetworkBenefitBuckets(benefitRoot);
+        const networkRoutineBuckets = extractSelectedRoutineBuckets(state.routineProceduresResponse);
+        const networkBenefitBuckets = extractSelectedNetworkBenefitBuckets(benefitRoot);
 
         const toolkitResultsForRun = PROCEDURE_CODES.map(code => toolkitProcedureResult(code, rawByCode, procedureErrors));
         const apiSuccessfulCodes = toolkitResultsForRun.filter(result => result.status === "OK").map(result => result.procedureCode);
@@ -3327,10 +3484,10 @@
             memberDetails: familySection,
             rawByCode,
             procedureErrors,
-            routineRows: toolkitRoutineRows(ppoRoutineBuckets),
-            coverageRows: buildCoveragePageRows(ppoNetworkBenefits),
-            exclusionRows: extractExclusionsAndLimitations(ppoNetworkBenefits),
-            maximumRows: buildAccumulatorPageRows(ppoAccumulatorBuckets, findToolkitPageSection("Maximums and Deductibles")),
+            routineRows: toolkitRoutineRows(networkRoutineBuckets),
+            coverageRows: buildCoveragePageRows(networkBenefitBuckets),
+            exclusionRows: extractExclusionsAndLimitations(networkBenefitBuckets),
+            maximumRows: buildAccumulatorPageRows(networkAccumulatorBuckets, findToolkitPageSection("Maximums and Deductibles")),
             maximumNotes: extractToolkitSectionParagraphs("Maximums and Deductibles"),
             routineNotes: extractToolkitSectionParagraphs("Routine Procedures"),
             coverageNotes: extractToolkitSectionParagraphs("Coverages"),
@@ -3349,18 +3506,17 @@
             mailingNotes: extractToolkitSectionParagraphs("Claim & Inquiry Mailing Addresses"),
             orthoInformation: {
                 section_title: "Ortho Information",
-                network: "PPO Dentist",
+                network: selectedNetwork,
                 ortho_age_limit_under: orthoAgeLimit,
                 ortho_age_limit_note: orthoAgeLimitText,
                 crowns_bridges_dentures_payment_note: page4PaymentNote,
-                orthoAgeLimitConfig: ppoOrthoAgeLimits(benefitRoot),
+                orthoAgeLimitConfig: selectedOrthoAgeLimits(benefitRoot),
                 orthoPaymentSchedule: sanitizeForOutput(subClientContract.orthoPaymentSchedule || null)
             },
             orthoNotes: orthoPdfNotes,
             accumulationPeriodType: contract.accumulationPeriodType ?? null
         });
         const coverages = canonical.coverages;
-        const pdfRowsByCode = new Map(pdfProcedureRows(pdf).map(row => [row.procedureCode, row]));
         coverages.procedure_code_search.results = enrichProcedureResults(coverages.procedure_code_search.results, {
             outcomes: buildLookupOutcomeMap(toolkitResultsForRun, rawByCode),
             records: canonical.exclusions_and_limitations?.records,
@@ -3369,25 +3525,10 @@
             coverageRows: coverages.coverage_rows,
             routineDatesByCode: routineDatesByCode(canonical.routine_procedures?.rows),
             labels: PROCEDURE_LABELS
-        }).map(row => {
-            const code = normalizeCode(row?.procedureCode);
-            return { ...row, out_of_network: outOfNetworkForCode(code, rawByCode?.get?.(code), pdfRowsByCode.get(code)?.pdf_coverage_by_network) };
-        });
-        const outOfNetwork = buildOutOfNetworkSection({
-            benefitRoot,
-            routineResponse: state.routineProceduresResponse,
-            pdfModel: pdf,
-            procedureResponses: PROCEDURE_CODES.map(code => rawByCode?.get?.(code)).filter(Boolean),
-            pdfMaximumNetworks: pdfEligibility.maximum_and_deductibles?.table_networks,
-            results: coverages.procedure_code_search.results,
-            notes: coverages.notes
         });
         const termination = findTerminationDate(patient.record, subscriber, benefitRoot?.member, benefitRoot?.contract);
-        const nonPpoEvidence = collectNonPpoEvidence(rawByCode);
         const routineFromPdf = canonical.routine_procedures;
-        const maximumsAndDeductibles = canonical.maximums_and_deductibles
-            ? { ...canonical.maximums_and_deductibles, networks: ppoAccumulatorNetworks }
-            : canonical.maximums_and_deductibles;
+        const maximumsAndDeductibles = canonical.maximums_and_deductibles;
         const moreInformation = {
             section_title: "More Information",
             ...canonical.more_information,
@@ -3413,7 +3554,7 @@
             subGroupName: benefitClient.subClientName ?? null,
             pagePhoneNumbers: collectContactPhoneNumbers(),
             providerNetworkOnPage: domMember.network || null,
-            selectedNetwork: "PPO Dentist"
+            selectedNetwork
         });
 
         const outputBody = {
@@ -3421,7 +3562,10 @@
             portal: location.hostname,
             page: "Member Details & Benefits",
             captured_at: new Date().toISOString(),
-            selected_network: "PPO Dentist",
+            // The network picked before the crawl; every benefit below is that network's.
+            selected_network: selectedNetwork,
+            // "ppo" | "premier" | "oon"
+            network_choice: selectedNetworkChoice()?.key || null,
             patient_and_plan: patientAndPlan,
             run_context: {
                 run_id: run.id,
@@ -3442,7 +3586,7 @@
                     group_number: benefitClient.clientSpecifiedId ?? template.clientSpecifiedId ?? null,
                     subgroup_number: benefitClient.subClientSpecifiedId ?? template.subClientSpecifiedId ?? null,
                     subgroup_name: benefitClient.subClientName ?? null,
-                    selected_network: "PPO Dentist",
+                    selected_network: selectedNetwork,
                     captured_at: new Date().toISOString()
                 }
             },
@@ -3451,51 +3595,11 @@
 
             networks: {
                 section_title: "Networks",
-                selected: "PPO Dentist",
-                benefit_values_network: "PPO Dentist",
-                out_of_network_networks: outOfNetwork.networks,
-                available_in_output: uniqueStrings([
-                    "PPO Dentist",
-                    ...toArray(state.memberBenefitsResponse?.networks).map(item => typeof item === "string" ? item : item?.name || item?.network),
-                    ...PROCEDURE_CODES.flatMap(code => {
-                        const response = rawByCode.get(code)?.response;
-                        return toArray(response).flatMap(bucket => toArray(bucket?.networks));
-                    }),
-                    ...toArray(pdf?.benefit_breakdown?.networks)
-                ].map(cleanText).filter(Boolean)),
-                network_benefit_evidence: uniqueStrings(PROCEDURE_CODES.flatMap(code => {
-                    const response = rawByCode.get(code)?.response;
-                    return toArray(response).filter(bucket => !isExactPpoBucket(bucket) && toArray(bucket?.coverages).some(node => node?.coverage?.percent !== null && node?.coverage?.percent !== undefined)).flatMap(bucket => toArray(bucket?.networks));
-                }).map(cleanText).filter(Boolean)),
-                network_scope_note: "Selected-network benefits remain PPO Dentist. Other listed networks are source metadata unless network-specific benefit evidence is present; this does not prove provider participation."
-            },
-            network_benefit_details: {
-                source_api_networks: sanitizeNetworkEvidenceForOutput(toArray(state.memberBenefitsResponse?.networkBenefits).map(bucket => ({
-                    networks: toArray(bucket?.networks),
-                    benefits: toArray(bucket?.coverages).map(item => ({
-                        procedure: item?.procedure ?? null,
-                        procedureId: item?.procedureId ?? null,
-                        percentCovered: item?.coverage?.percent ?? null,
-                        waitingPeriod: item?.waitingPeriods ?? null,
-                        waitingPeriodMetDate: item?.waitingPeriodMetDate ?? null,
-                        limitations: toArray(item?.exclusionsAndLimitations)
-                    }))
-                }))),
-                procedure_network_evidence: sanitizeNetworkEvidenceForOutput(PROCEDURE_CODES.flatMap(code => {
-                    const response = rawByCode.get(code)?.response;
-                    return toArray(response).filter(bucket => !isExactPpoBucket(bucket) && toArray(bucket?.coverages).some(node => node?.coverage?.percent !== null && node?.coverage?.percent !== undefined)).map(bucket => ({
-                        procedure_code: code,
-                        networks: toArray(bucket?.networks),
-                        coverages: toArray(bucket?.coverages).map(item => ({
-                            procedure: item?.procedure ?? null,
-                            procedureId: item?.procedureId ?? null,
-                            percentCovered: item?.coverage?.percent ?? null,
-                            waitingPeriod: item?.waitingPeriods ?? null,
-                            waitingPeriodMetDate: item?.waitingPeriodMetDate ?? null,
-                            limitations: toArray(item?.exclusionsAndLimitations)
-                        }))
-                    }));
-                }))
+                selected: selectedNetwork,
+                // Names only: the networks the plan offers. Their benefits are
+                // not exported; every benefit in this file is the selected network's.
+                offered_by_plan: planNetworkNames(state.memberBenefitsResponse),
+                network_scope_note: `Benefits are the ${selectedNetwork} level, the network picked before the crawl. The portal does not say whether the office participates in it.`
             },
 
             claim_reminders: {
@@ -3524,8 +3628,6 @@
             ortho_information: canonical.ortho_information,
 
             more_information: moreInformation,
-
-            out_of_network: outOfNetwork,
 
             crawl_statistics: {
                 extraction_scope: `${PROCEDURE_CODES.length} requested procedure codes`,
@@ -3579,11 +3681,9 @@
 
         // Backward-compatible per-row Star checklist. Downstream comparator/spec are unchanged.
         outputBody.checklist = buildChecklistOutput(outputBody, {
-            nonPpo: nonPpoEvidence,
             termination
         });
         outputBody.plan_provisions = buildPlanProvisions(outputBody, {
-            nonPpo: nonPpoEvidence,
             pdfNotes: [
                 pdfEligibility.overview_notice,
                 pdfEligibility.client_information,
@@ -3672,11 +3772,11 @@
         return sanitizeForOutput(outputBody);
     }
 
-    function coreTransactionForOutput(state, key, endpoint, requestBody, responseBody, ppoFilter = false) {
+    function coreTransactionForOutput(state, key, endpoint, requestBody, responseBody, networkFilter = false) {
         const existing = state.coreTransactions?.[key];
         const response = responseBody === null || responseBody === undefined
             ? null
-            : (ppoFilter ? sanitizePpoNetworkDataForOutput(responseBody) : sanitizeForOutput(responseBody));
+            : (networkFilter ? sanitizeSelectedNetworkDataForOutput(responseBody) : sanitizeForOutput(responseBody));
         if (existing) {
             return {
                 endpoint,
@@ -3735,10 +3835,10 @@
             };
         }
 
-        // Business requirement: use PPO Dentist only. "Premier Dentist" and
-        // "Non-PPO Dentist" buckets are deliberately ignored, even when PPO is missing.
-        const ppoBuckets = raw.filter(isExactPpoBucket);
-        const networkRecords = ppoBuckets.map(bucket => normalizeNetworkBucket(code, bucket)).filter(Boolean);
+        // Only the picked network's bucket is used; the other networks' buckets
+        // are ignored, even when the picked network's is missing.
+        const networkBuckets = raw.filter(isSelectedNetworkBucket);
+        const networkRecords = networkBuckets.map(bucket => normalizeNetworkBucket(code, bucket)).filter(Boolean);
         const preferred = networkRecords[0] || null;
         const allLimitations = uniqueStrings(networkRecords.flatMap(item => item.limitations));
         const allWaiting = uniqueStrings(networkRecords.flatMap(item => item.waiting_periods));
@@ -3752,7 +3852,7 @@
             procedure_code: code,
             description: preferred?.description || PROCEDURE_LABELS[code] || code,
             category: CATEGORY_BY_CODE[code] || preferred?.category || "N/A",
-            network: "PPO Dentist",
+            network: selectedNetwork,
             benefit_status: preferred?.benefit_status || "Unknown",
             benefit_level: preferred?.benefit_level || "N/A",
             // Kept for backward compatibility; intentionally never populated.
@@ -3766,10 +3866,10 @@
             number_of_quads: parseQuads(allLimitations.join(" ")) || "N/A",
             exclusions_and_limitations: allLimitations,
             networks: networkRecords,
-            // Raw procedure diagnostics are also PPO-only so output does not contain
-            // Premier/Non-PPO benefit levels by accident.
-            raw_api_response: sanitizeForOutput(ppoBuckets),
-            error: error || (ppoBuckets.length ? null : "No PPO Dentist benefit bucket returned for this code.")
+            // Raw procedure diagnostics are limited to the picked network too, so
+            // output does not contain another network's benefit levels by accident.
+            raw_api_response: sanitizeForOutput(networkBuckets),
+            error: error || (networkBuckets.length ? null : `No ${selectedNetwork} benefit bucket returned for this code.`)
         };
     }
 
@@ -4259,27 +4359,6 @@
         return null;
     }
 
-    function collectNonPpoEvidence(rawByCode) {
-        const networks = new Set();
-        let codesWithNonPpoBenefits = 0;
-        for (const code of PROCEDURE_CODES) {
-            const value = rawByCode?.get?.(code);
-            const response = value?.response || value;
-            for (const bucket of toArray(response)) {
-                if (!bucket || typeof bucket !== "object" || isExactPpoBucket(bucket)) continue;
-                const hasPercent = toArray(bucket.coverages).some(node => node?.coverage?.percent !== null && node?.coverage?.percent !== undefined);
-                if (hasPercent) {
-                    toArray(bucket.networks).forEach(name => networks.add(String(name)));
-                    codesWithNonPpoBenefits += 1;
-                    break;
-                }
-            }
-        }
-        // Only the fact that non-PPO benefits exist is exported; their percentages stay out
-        // of the output on purpose (PPO-only business rule).
-        return { codesWithNonPpoBenefits, networks: [...networks] };
-    }
-
     function buildChecklistOutput(out, extras = {}) {
         const results = new Map(toArray(out?.coverages?.procedure_code_search?.results).map(row => [normalizeCode(row?.procedureCode), row]));
         const routineRows = new Map(toArray(out?.routine_procedures?.rows).map(row => [normalizeCode(row?.procedureCode), row]));
@@ -4436,14 +4515,12 @@
                     return payorId ? found(payorId, "more_information.claim_and_inquiry_mailing_addresses.payorId", { evidence: [payorId] }) : missing("Payor ID not returned.");
                 }
                 case "in_network":
-                    return derived(out?.selected_network || "PPO Dentist", "selected_network", { note: "Benefits were captured for the PPO Dentist network; the portal does not say whether the office is a participating provider." });
+                    return derived(out?.selected_network || selectedNetwork, "selected_network", { note: `Benefits were captured for the ${out?.selected_network || selectedNetwork} network picked before the crawl; the portal does not say whether the office is a participating provider.` });
                 case "patient_eff_date":
                     return member.effectiveDate ? found(member.effectiveDate, "member_details.selectedMember") : missing("Effective date not returned.");
                 case "eligibility_term_date":
                     return extras.termination ? found(extras.termination.value, `member record field ${extras.termination.key}`) : missing("No termination date field in the member/benefit responses.");
                 case "oon_benefits": {
-                    const nonPpo = extras.nonPpo || { codesWithNonPpoBenefits: 0, networks: [] };
-                    if (nonPpo.codesWithNonPpoBenefits > 0) return derived("Yes", "procedure responses", { evidence: [`${nonPpo.codesWithNonPpoBenefits} code(s) returned benefits for ${nonPpo.networks.join(", ") || "non-PPO networks"}`] });
                     const note = noteCorpus.find(text => /non-?participating|premier/i.test(text) && /percent|portion|paid/i.test(text));
                     return note ? derived("Yes", "coverages.notes", { evidence: [note] }) : missing("No out-of-network benefit information returned.");
                 }
@@ -4571,7 +4648,7 @@
             section_title: "Audit Checklist",
             schema_version: CHECKLIST_SCHEMA_VERSION,
             source_workbook: "checklist_text_extracted.xlsx",
-            network: "PPO Dentist",
+            network: selectedNetwork,
             legend: {
                 FOUND: "Every requested field has a value.",
                 PARTIAL: "Some requested fields have values, others are missing or not stated.",
@@ -4752,7 +4829,7 @@
         if (!outcome) return "NOT_ATTEMPTED";
         if (outcome.status === "SUCCESS") return "FOUND";
         if (outcome.status === "NOT_IN_CODE_LIST") return "NOT_IN_PLAN_CODE_TREE";
-        if (outcome.status === "UNAVAILABLE") return "NO_PPO_BENEFIT_RETURNED";
+        if (outcome.status === "UNAVAILABLE") return "NO_NETWORK_BENEFIT_RETURNED";
         if (Number(outcome.http_status) === 404) return "NOT_IN_PLAN_CODE_TREE";
         return "LOOKUP_FAILED";
     }
@@ -4920,110 +4997,6 @@
         for (const text of toArray(portalNotes)) add(text, "portal");
         for (const text of toArray(pdfNotes)) add(text, "pdf");
         return kept.map(item => item.text);
-    }
-
-    function bucketNetworkNames(bucket) {
-        return uniqueStrings(toArray(bucket?.networks).map(item => typeof item === "string" ? item : item?.name));
-    }
-
-    function nonPpoBuckets(value) {
-        return toArray(value).filter(bucket => bucket && typeof bucket === "object" && Array.isArray(bucket.networks) && !isExactPpoBucket(bucket));
-    }
-
-    function outOfNetworkForCode(code, rawValue, pdfCoverage) {
-        const response = rawValue?.response || rawValue;
-        const fromApi = nonPpoBuckets(response).map(bucket => {
-            const nodes = toArray(bucket?.coverages);
-            if (!nodes.length) return null;
-            const leaf = nodes.find(node => normalizeCode(node?.procedureId || node?.procedure) === code) ||
-                [...nodes].sort((a, b) => Number(a?.level || 0) - Number(b?.level || 0)).at(-1);
-            const percent = normalizePercentText(leaf?.coverage?.percent);
-            if (!percent) return null;
-            return {
-                networks: bucketNetworkNames(bucket),
-                percentCovered: percent,
-                waitingPeriod: leaf?.waitingPeriods ?? "N/A",
-                waitingPeriodMetDate: leaf?.waitingPeriodMetDate ?? null,
-                source: "toolkit_api"
-            };
-        }).filter(Boolean);
-        if (fromApi.length) return fromApi;
-        return Object.entries(pdfCoverage || {})
-            .filter(([network, value]) => !/^PPO Dentist$/i.test(network) && normalizePercentText(value?.percent))
-            .map(([network, value]) => ({
-                networks: network.split(/\s*,\s*/).filter(Boolean),
-                percentCovered: normalizePercentText(value.percent),
-                waitingPeriod: value?.waiting_period || "N/A",
-                waitingPeriodMetDate: value?.met_date ?? null,
-                source: "faxback_pdf"
-            }));
-    }
-
-    function buildOutOfNetworkSection(inputs = {}) {
-        const benefitRoot = inputs.benefitRoot || {};
-        const results = toArray(inputs.results);
-        const toCategoryRow = (bucket, item, source) => ({
-            networks: bucketNetworkNames(bucket),
-            procedure: item?.procedure ?? null,
-            procedureId: item?.procedureId ?? null,
-            percentCovered: normalizePercentText(item?.coverage?.percent),
-            childValuesDiffer: item?.coverage?.childValuesDiffer ?? null,
-            waitingPeriod: item?.waitingPeriods ?? "N/A",
-            waitingPeriodMetDate: item?.waitingPeriodMetDate ?? null,
-            source
-        });
-        let coverageRows = nonPpoBuckets(benefitRoot.networkBenefits).flatMap(bucket =>
-            toArray(bucket?.coverages).map(item => toCategoryRow(bucket, item, "member_benefits")));
-        if (!coverageRows.length) {
-            const seen = new Set();
-            for (const value of toArray(inputs.procedureResponses)) {
-                for (const bucket of nonPpoBuckets(value?.response || value)) {
-                    for (const item of toArray(bucket?.coverages).filter(node => Number(node?.level) === 1)) {
-                        const key = `${bucketNetworkNames(bucket).join("|")}|${item?.procedureId ?? item?.procedure}`;
-                        if (seen.has(key)) continue;
-                        seen.add(key);
-                        coverageRows.push(toCategoryRow(bucket, item, "procedure_lookups"));
-                    }
-                }
-            }
-        }
-        const apiRoutine = nonPpoBuckets(inputs.routineResponse).flatMap(bucket =>
-            toolkitRoutineRows([bucket]).map(row => ({ networks: bucketNetworkNames(bucket), ...row })));
-        const pdfRoutine = toArray(inputs.pdfModel?.office_visit?.procedures)
-            .filter(item => item?.network && !isPpoNetworkLabel(item.network))
-            .map(item => ({
-                networks: String(item.network).split(/\s*,\s*/).filter(Boolean),
-                procedureCode: PDF_ROUTINE_CODES[item.procedure] || null,
-                description: item.procedure,
-                eligibleNow: item.eligible_now,
-                serviceDates: uniqueStrings(item.service_dates || []),
-                statusDetail: item.status_detail || null,
-                source: "faxback_pdf"
-            }));
-        const maximums = nonPpoBuckets(benefitRoot.maximumsAndDeductions).flatMap(bucket =>
-            toArray(buildAccumulatorPageRows([bucket], null)).map(row => ({ networks: bucketNetworkNames(bucket), ...row })));
-        const codesWithOon = results.filter(row => toArray(row?.out_of_network).length);
-        const networks = uniqueStrings([
-            ...coverageRows.flatMap(row => row.networks),
-            ...codesWithOon.flatMap(row => toArray(row.out_of_network).flatMap(item => toArray(item?.networks))),
-            ...apiRoutine.flatMap(row => row.networks),
-            ...pdfRoutine.flatMap(row => row.networks),
-            ...maximums.flatMap(row => row.networks)
-        ]);
-        const pdfMaximumNetworks = toArray(inputs.pdfMaximumNetworks).map(cleanText);
-        const sharedMaximums = !maximums.length && pdfMaximumNetworks.some(name => /^PPO Dentist$/i.test(name)) &&
-            pdfMaximumNetworks.some(name => !/^PPO Dentist$/i.test(name));
-        return {
-            section_title: "Out-of-Network Benefits",
-            networks,
-            notes: cleanSectionNotes(toArray(inputs.notes).filter(text => /does\s+not\s+participate|non-?participating|premier/i.test(String(text || "")))),
-            codes_with_out_of_network_benefits: codesWithOon.length,
-            coverage_rows: coverageRows,
-            routine_procedures: apiRoutine.length ? apiRoutine : pdfRoutine,
-            maximums_and_deductibles: maximums,
-            maximums_shared_with_ppo: sharedMaximums,
-            ...(sharedMaximums ? { maximums_note: `The faxback PDF lists one maximum/deductible table for ${uniqueStrings(pdfMaximumNetworks).join(", ")}.` } : {})
-        };
     }
 
     function buildLookupOutcomeMap(toolkitResults, rawByCode) {
@@ -5231,10 +5204,10 @@
                 phone_number_status: apiPhone ? "PROVIDED_BY_PORTAL_API" : pagePhone ? "FOUND_ON_PAGE" : "NOT_PROVIDED_BY_PORTAL"
             },
             network: {
-                benefits_network: first(inputs.selectedNetwork) || "PPO Dentist",
+                benefits_network: first(inputs.selectedNetwork) || selectedNetwork,
                 provider_network_on_page: providerNetwork,
                 provider_participation: providerNetwork ? "SHOWN_ON_PAGE" : "NOT_STATED_BY_PORTAL",
-                note: "Benefit values are the PPO Dentist level. The portal does not state whether the treating office participates in that network."
+                note: `Benefit values are the ${selectedNetwork} level, the network picked before the crawl. The portal does not state whether the treating office participates in that network.`
             }
         };
     }
@@ -5369,11 +5342,10 @@
         const rollover = hits(/roll\s?over|carry\s?over|carryover/i);
         provisions.rollover_maximum = rollover.length ? provisionFound(rollover[0], rollover, "notes") : provisionNotStated("No rollover/carry-over maximum was returned.");
 
-        const nonPpo = extras.nonPpo || { codesWithNonPpoBenefits: 0, networks: [] };
         const oonNote = hits(/(?:does\s+not\s+participate|non-?participating)[^.]*(?:percent|responsible|paid)/i);
-        provisions.out_of_network_benefits = nonPpo.codesWithNonPpoBenefits > 0
-            ? provisionDerived("Yes", [`${nonPpo.codesWithNonPpoBenefits} procedure code(s) returned benefit percentages for ${toArray(nonPpo.networks).join(", ") || "non-PPO networks"}.`, ...oonNote], "procedure responses")
-            : oonNote.length ? provisionDerived("Yes", oonNote, "coverages.notes") : provisionNotStated("No out-of-network benefit information was returned.");
+        provisions.out_of_network_benefits = oonNote.length
+            ? provisionDerived("Yes", oonNote, "coverages.notes")
+            : provisionNotStated("No out-of-network benefit information was returned.");
 
         const from = generalMax?.from || generalDeductible?.from || null;
         const to = generalMax?.to || generalDeductible?.to || null;
@@ -5629,19 +5601,19 @@
         return { matched: false, reason: subscribers.length ? "member_snapshot_not_current" : "member_details_api_not_captured", subscriber: {}, patient: { isSubscriber: /^subscriber$/i.test(domMember?.relationship || template?.relationshipToSubscriber || ""), record: {} } };
     }
 
-    function sanitizePpoNetworkDataForOutput(value) {
+    function sanitizeSelectedNetworkDataForOutput(value) {
         if (value === null) return null;
         if (value === undefined) return undefined;
         if (Array.isArray(value)) {
             const output = [];
             for (const item of value) {
                 // Preserve literal nulls from the native API. A null returned by
-                // recursive sanitization for a non-PPO network bucket is omitted.
+                // recursive sanitization for another network's bucket is omitted.
                 if (item === null) {
                     output.push(null);
                     continue;
                 }
-                const sanitized = sanitizePpoNetworkDataForOutput(item);
+                const sanitized = sanitizeSelectedNetworkDataForOutput(item);
                 if (sanitized !== null && sanitized !== undefined) output.push(sanitized);
             }
             return output;
@@ -5649,38 +5621,38 @@
         if (typeof value !== "object") return value;
 
         // DOT uses network-scoped buckets for coverages, accumulators and
-        // routine procedures. Discard a network-scoped bucket if PPO Dentist
-        // is not one of its networks.
+        // routine procedures. Discard a network-scoped bucket if the picked
+        // network is not one of its networks.
         if (Array.isArray(value.networks) &&
             (Array.isArray(value.accumulators) || Array.isArray(value.coverages) || Array.isArray(value.routineProcedures))) {
-            if (!isExactPpoBucket(value)) return null;
+            if (!isSelectedNetworkBucket(value)) return null;
         }
 
         const out = {};
         for (const [key, child] of Object.entries(value)) {
             if (key === "maximumsAndDeductions" && Array.isArray(child)) {
                 out[key] = child
-                    .filter(isExactPpoBucket)
-                    .map(sanitizePpoNetworkDataForOutput)
+                    .filter(isSelectedNetworkBucket)
+                    .map(sanitizeSelectedNetworkDataForOutput)
                     .filter(Boolean);
                 continue;
             }
             // Root/member-benefit network metadata is an array of objects such as
-            // {name:"PPO Dentist"}, {name:"Premier Dentist"}, {name:"Non-PPO Dentist"}.
+            // {name:"PPO Dentist"}, {name:"Premier Dentist"}, {name:"Nonparticipating Dentist"}.
             // Network-scoped records also carry arrays of string names. In both cases,
-            // retain only PPO Dentist in output while preserving the surrounding shape.
+            // retain only the picked network while preserving the surrounding shape.
             if (key === "networks" && Array.isArray(child)) {
                 if (child.some(item => item && typeof item === "object" && "name" in item)) {
                     out[key] = child
-                        .filter(item => /^PPO Dentist$/i.test(cleanText(item?.name || "")))
-                        .map(sanitizePpoNetworkDataForOutput)
+                        .filter(isSelectedNetworkName)
+                        .map(sanitizeSelectedNetworkDataForOutput)
                         .filter(Boolean);
                     continue;
                 }
-                if (child.some(item => typeof item === "string" && /^(PPO Dentist|Premier Dentist|Non-PPO Dentist|Nonparticipating Dentist)$/i.test(cleanText(item)))) {
+                if (child.some(item => typeof item === "string" && /\bDentist$/i.test(cleanText(item)))) {
                     out[key] = child
-                        .filter(item => /^PPO Dentist$/i.test(cleanText(item)))
-                        .map(sanitizePpoNetworkDataForOutput)
+                        .filter(isSelectedNetworkName)
+                        .map(sanitizeSelectedNetworkDataForOutput)
                         .filter(Boolean);
                     continue;
                 }
@@ -5689,13 +5661,13 @@
                 out[key] = null;
                 continue;
             }
-            const sanitized = sanitizePpoNetworkDataForOutput(child);
+            const sanitized = sanitizeSelectedNetworkDataForOutput(child);
             if (sanitized !== null && sanitized !== undefined) out[key] = sanitized;
         }
         return out;
     }
 
-    function buildPpoFinancialRecords(sources, dom) {
+    function buildNetworkFinancialRecords(sources, dom) {
         const empty = () => ({ total: "N/A", used: "N/A", remaining: "N/A" });
         const result = {
             annualMax: empty(),
@@ -5706,7 +5678,7 @@
         };
 
         const buckets = collectMaximumDeductionBuckets(sources)
-            .filter(isExactPpoBucket);
+            .filter(isSelectedNetworkBucket);
         const accumulators = buckets.flatMap(bucket => toArray(bucket?.accumulators));
 
         const findAccumulator = (type, category) => accumulators.find(acc => {
@@ -5905,8 +5877,8 @@
         return [...grouped.entries()].map(([category, items]) => ({
             category,
             procedure_codes: items.map(item => item.procedure_code),
-            network: "PPO Dentist",
-            ppo_benefit_level: modalValue(items.map(item => item.benefit_level).filter(value => value !== "N/A")) || "N/A"
+            network: selectedNetwork,
+            network_benefit_level: modalValue(items.map(item => item.benefit_level).filter(value => value !== "N/A")) || "N/A"
         }));
     }
 
@@ -5914,7 +5886,7 @@
         return procedures
             .filter(item => !isNA(item.frequency_limit) || toArray(item.history_dates).length > 0)
             .map(item => ({
-                network: "PPO Dentist",
+                network: selectedNetwork,
                 procedure_code: item.procedure_code,
                 procedure: item.description,
                 age_limitation: valueOrNA(item.age_limit),
@@ -5927,7 +5899,7 @@
         return procedures
             .filter(item => !isNA(item.age_limit))
             .map(item => ({
-                network: "PPO Dentist",
+                network: selectedNetwork,
                 procedure_code: item.procedure_code,
                 procedure: item.description,
                 age: item.age_limit
@@ -6031,16 +6003,66 @@
 
     function preferredNetworkName(procedures) {
         const values = procedures.flatMap(item => item.networks?.map(network => network.network) || []);
-        return values.find(value => /^PPO Dentist$/i.test(cleanText(value))) || "PPO Dentist";
+        return values.find(isSelectedNetworkName) || selectedNetwork;
     }
 
     function choosePreferredNetwork(records) {
-        return records.find(item => /^PPO Dentist$/i.test(cleanText(item.network))) || null;
+        return records.find(item => isSelectedNetworkName(item.network)) || null;
     }
 
-    function isExactPpoBucket(bucket) {
-        const networks = uniqueStrings(toArray(bucket?.networks).map(cleanText));
-        return networks.some(name => /^PPO Dentist$/i.test(name));
+    // ── Provider network helpers ─────────────────────────────────────────────
+
+    function useSelectedNetwork(value) {
+        const wanted = cleanText(value).toLowerCase();
+        const choice = NETWORK_CHOICES.find(item => item.key === wanted || item.name.toLowerCase() === wanted);
+        if (!choice) throw new Error(`No provider network was chosen (got "${cleanText(value)}"). Click Crawl again and pick PPO, Premier or Non-participating.`);
+        selectedNetwork = choice.name;
+        return choice;
+    }
+
+    function selectedNetworkChoice() {
+        return NETWORK_CHOICES.find(item => item.name === selectedNetwork) || null;
+    }
+
+    function isSelectedNetworkName(name) {
+        const text = typeof name === "string" ? name : name?.name;
+        return Boolean(selectedNetwork) && cleanText(text).toLowerCase() === selectedNetwork.toLowerCase();
+    }
+
+    // The networks the member's plan offers, as the Member Benefits response names them.
+    function planNetworkNames(benefitRoot) {
+        return uniqueStrings(toArray(benefitRoot?.networks).map(item => typeof item === "string" ? item : item?.name));
+    }
+
+    // Opens the Member Benefits tab named `name` ("PPO Dentist", "Premier
+    // Dentist", "Nonparticipating Dentist"). The tab is found by its exact
+    // label, tab-like elements first. Not finding it is not fatal: the page
+    // figures are checked against the API before use (displayedAccumulatorsAgree).
+    async function showNetworkTab(name) {
+        try {
+            const wanted = cleanText(name).toLowerCase();
+            const scope = document.querySelector("app-memberdetails-benefits") || document;
+            const target = ["[role='tab']", "button", "a", "li", "span", "div"]
+                .map(selector => [...scope.querySelectorAll(selector)].find(element =>
+                    cleanText(element.textContent || "").toLowerCase() === wanted))
+                .find(Boolean);
+            if (!target) {
+                console.warn(`Delta Toolkit: no "${name}" tab was found on the page.`);
+                return false;
+            }
+            target.click();
+            await sleep(500);
+            return true;
+        } catch (error) {
+            console.warn(`Delta Toolkit: could not open the "${name}" tab: ${error.message}`);
+            return false;
+        }
+    }
+
+    // A network-scoped Toolkit bucket ({networks: [...], coverages | accumulators |
+    // routineProcedures | ...}) that applies to the picked network.
+    function isSelectedNetworkBucket(bucket) {
+        return toArray(bucket?.networks).some(isSelectedNetworkName);
     }
 
     function normalizeCode(value) {
@@ -6299,23 +6321,6 @@
         return typeof value === "string" && /\d/.test(value) && value.length < 100;
     }
 
-    function sanitizeNetworkEvidenceForOutput(value, depth = 0) {
-        if (depth > 25) return "[depth limit]";
-        if (value === null || value === undefined) return value;
-        if (typeof value === "string") return value.length > 30000 ? `${value.slice(0, 30000)}…[truncated]` : value;
-        if (["number", "boolean"].includes(typeof value)) return value;
-        if (Array.isArray(value)) return value.slice(0, 3000).map(item => sanitizeNetworkEvidenceForOutput(item, depth + 1));
-        if (typeof value === "object") {
-            const output = {};
-            for (const [key, item] of Object.entries(value)) {
-                if (/authorization|access.?token|refresh.?token|id.?token|cookie|password|secret|bearer/i.test(key)) continue;
-                output[key] = sanitizeNetworkEvidenceForOutput(item, depth + 1);
-            }
-            return output;
-        }
-        return String(value);
-    }
-
     function sanitizeForOutput(value, depth = 0) {
         if (depth > 25) return "[depth limit]";
         if (value === null || value === undefined) return value;
@@ -6559,16 +6564,14 @@
             page: data?.page || "Member Details & Benefits",
             captured_at: data?.captured_at || new Date().toISOString()
         };
-        const selectedNetwork = data?.selected_network ?? data?.networks?.selected ??
-            data?.routine_procedures?.network ?? data?.coverages?.network;
-        if (selectedNetwork) output.selected_network = selectedNetwork;
+        // The network picked before the crawl; every benefit in the file is its.
+        if (data?.selected_network) output.selected_network = data.selected_network;
+        if (data?.network_choice) output.network_choice = data.network_choice;
 
         const memberDetails = sectionBase("member_details", ["section_title", "memberAlternateId", "columns", "members", "selectedMember"]);
         if (memberDetails) output.member_details = memberDetails;
 
-        const networks = sectionBase("networks", [
-            "section_title", "selected", "available_in_output", "benefit_values_network", "out_of_network_networks"
-        ]);
+        const networks = sectionBase("networks", ["section_title", "selected", "offered_by_plan"]);
         if (networks) output.networks = networks;
 
         if (data?.claim_reminders && typeof data.claim_reminders === "object") {
@@ -6607,19 +6610,11 @@
         const limitations = sectionBase("exclusions_and_limitations", ["section_title", "network", "notes", "records"]);
         if (limitations) output.exclusions_and_limitations = limitations;
 
-        const maxima = sectionBase("maximums_and_deductibles", ["section_title", "network", "networks", "notes", "accumulationPeriodType"]);
+        const maxima = sectionBase("maximums_and_deductibles", ["section_title", "network", "notes", "accumulationPeriodType"]);
         if (maxima) {
             maxima.rows = deduplicateAccumulatorRows(stripSourceFields(data?.maximums_and_deductibles?.rows));
             output.maximums_and_deductibles = maxima;
         }
-
-        // Benefits under the networks that do not pay as PPO does. A sheet filled
-        // in for an out-of-network office is compared with these.
-        const outOfNetwork = sectionBase("out_of_network", [
-            "section_title", "networks", "coverage_rows", "maximums_and_deductibles",
-            "maximums_shared_with_ppo", "maximums_note"
-        ]);
-        if (outOfNetwork) output.out_of_network = outOfNetwork;
 
         const ortho = sectionBase("ortho_information", [
             "section_title", "network", "ortho_age_limit_under", "ortho_age_limit_note",
