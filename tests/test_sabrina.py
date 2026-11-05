@@ -3124,10 +3124,10 @@ check("and refused for jobs that need a Denticon export",
 check("the server runs its own package",
       _main.client_module(_main.CLIENTS["star_dental"], "sabrina").__name__,
       "star_dental.sabrina")
-# Delta Dental of Missouri and Guardian (2026-11-02) were added for Smile
-# Partners only.
-check("it audits the same portals as Smile Partners, but DD Missouri and Guardian",
-      _ns.CARRIERS, {k: v for k, v in _CARRIERS.items() if k not in ("delta_mo", "guardian")})
+# Delta Dental of Missouri and Guardian (2026-11-02) and United Concordia
+# (2026-11-05) were added for Smile Partners only.
+check("it audits the same portals as Smile Partners, but DD Missouri, Guardian and UCCI",
+      _ns.CARRIERS, {k: v for k, v in _CARRIERS.items() if k not in ("delta_mo", "guardian", "ucci")})
 check("a carrier's rules come from its own folder, not Smile Partners'",
       (_ns.carrier_rules(_tk)[1].__name__, _sp.carrier_rules(_tk)[1].__name__),
       ("star_dental.sabrina.carriers.delta_toolkit",
@@ -4087,6 +4087,213 @@ else:
         check(f"Delta Dental portal exports normalize without error ({ok} files)",
               ok, len(dd_files))
 
+
+
+# ── United Concordia (Smile Partners only, 11/05) ─────────────────────────────
+# The export `content_ucci.js` downloads: one Procedure Allowance lookup per
+# CDT code. The fixture is cut down from Riley Butler's (11/05) and Robert
+# Woodley's exports.
+print("── 1r. UNITED CONCORDIA ──")
+from smile_partners.portals import ucci as _up
+from smile_partners.sabrina.carriers import detect_carrier as _ucci_detect
+
+
+def _ucci_proc(covered, pct_lines, limitations, groups=(), history=(), policy=()):
+    return {
+        "procedure_name": "",
+        "details": {"covered": covered, "coverage_or_copay": pct_lines[0] if pct_lines else "",
+                    "coverage_lines": list(pct_lines), "limitations": list(limitations),
+                    "applies_to_deductible": "No", "applies_to_maximum": "No"},
+        "related_groups": [{"limitation": lim, "codes": [{"code": c} for c in codes]}
+                           for lim, codes in groups],
+        "history": [{"date": d, "procedure_code": c} for d, c in history],
+        **({"policy_details": [{"type": t, "description": d} for t, d in policy]} if policy else {}),
+    }
+
+
+_UC = {
+    "source": "UCCI",
+    "scraped_at": "2026-11-05T10:00:00.000Z",
+    "patient_info": {
+        "patient_name": "RILEY BUTLER", "dob": "10/20/2008", "age": "18", "member_id": "113860631001",
+        "relationship": "CHILD", "coverage_effective": "10/06/2025 - Present",
+        "group_id": "INTEGRATION INNOVATION INC DBA I3 405 / 926769405",
+        "policyholder": "DANIEL BUTLER", "subscriber_name": "DANIEL BUTLER", "subscriber_dob": "01/21/1981",
+        "network_status": "In", "payor_id": "89070, 99994, or CX007",
+        "claims_address": "DENTAL CLAIMS, P.O. BOX 69421, HARRISBURG, PA 17106",
+    },
+    "deductibles_and_maximums": [
+        {"benefit": "Family Deductible", "coverage": "$150 Per Calendar Year"},
+        {"benefit": "Individual Deductible", "coverage": "$50 Per Calendar Year"},
+        {"benefit": "Individual Maximum", "coverage": "$2,000 Per Lifetime ~ In network ~ Accident Related"},
+        {"benefit": "Individual Maximum", "coverage": "$1,000 Per Lifetime ~ Ortho related"},
+        {"benefit": "Individual Maximum", "coverage": "$1,500 Per Calendar Year"},
+    ],
+    "financial_accumulators": [
+        {"type": "PROGRAM DOLLAR DED", "raw_text": "", "entries": [
+            {"label": "FAMILY", "applied": "$50.00"}, {"label": "INDIVIDUAL", "applied": "$40.00"}]},
+        {"type": "PROGRAM DOLLAR MAX", "raw_text": "", "entries": [{"label": "INDIVIDUAL", "applied": "$98.90"}]},
+        {"type": "LIFETIME SVC DOLLAR MAX", "raw_text": "", "entries": [
+            {"label": "Orthodontics", "applied": "$1,250.00"}, {"label": "Implants", "applied": "$700.00"}]},
+    ],
+    "coordination_and_other_benefits": [
+        "Missing Tooth Clause - will not apply",
+        "Cob Primary Determination | Standard Calculation Method ~ All Claims",
+    ],
+    "procedures": {
+        "D0120": _ucci_proc("Yes", ["100%"], ["2 Per 12 Months"],
+                            [("2 Per 12 Months", ["D0120", "D0145", "D0150", "D0180"])],
+                            [("04/29/2026", "D0120")]),
+        "D0150": _ucci_proc("Yes", ["100%"], ["2 Per 12 Months"],
+                            [("2 Per 12 Months", ["D0120", "D0145", "D0150", "D0180"])],
+                            [("04/29/2026", "D0120")]),
+        "D0180": _ucci_proc("Yes", ["100%"], ["1 Per 3 Years", "2 Per 12 Months"],
+                            [("1 Per 3 Years", ["D0180"]),
+                             ("2 Per 12 Months", ["D0120", "D0145", "D0150", "D0180"])]),
+        "D0274": _ucci_proc("Yes", ["100%", "50% ~ $1,000 Per Lifetime ~ Ortho related"],
+                            ["1 Per 6 Months ~ Under 14 Years Of Age", "1 Per 12 Months ~ Age 14 And Older",
+                             "4 Per Day"]),
+        "D1206": _ucci_proc("Yes", ["100%"], ["2 Per 12 Months ~ Under 19 Years Of Age"],
+                            [("2 Per 12 Months ~ Under 19 Years Of Age", ["D1206", "D1208"])],
+                            [("04/29/2026", "D1208")]),
+        "D1351": _ucci_proc("No", ["0%"], ["No Coverage Due to Age Limitation",
+                                           "1 Per Tooth ~ Per 3 Years ~ Under 16 Years Of Age ~ Permanent 1st and 2nd Molars"],
+                            [("1 Per Tooth ~ Per 3 Years ~ Under 16 Years Of Age ~ Permanent 1st and 2nd Molars", ["D1351"])],
+                            [("05/11/2026", "D2391")]),
+        "D2391": _ucci_proc("Yes", ["90%"], ["1 Per 12 Months", "No Alternate Benefit"]),
+        "D2980": _ucci_proc("Yes", ["90%"], ["1 Per Tooth ~ Per 36 Months",
+                                             "1 Per Tooth ~ Integral Within 5 Years ~ Insertion of Crown or Onlay ~ By Same Dentist"]),
+        "D4381": _ucci_proc("No", ["0%"], ["--"]),
+        "D0220": _ucci_proc("Yes", ["100%"], ["No Frequency Limitation"]),
+        "D6010": _ucci_proc("Yes", ["50%"], ["1 Per Tooth ~ Per Lifetime ~ Age 18 And Older", "Age 18 And Older"]),
+        "D8080": _ucci_proc("Yes", ["50%"], ["--"], policy=[
+            ("Canceled Enrollment Benefits Cease", "Dependent ~ Age 19 And Older ~ Ortho related"),
+            ("Reimbursement Method", "Lump Sum ~ Ortho related")]),
+        "D9999": {"procedure_code": "D9999", "error": "HTTP 500"},
+    },
+}
+
+check("ucci: the export is routed to its own folder", _ucci_detect(_UC), "ucci")
+check("ucci: and so is its translation", _ucci_detect(_up._normalize_ucci_portal(_UC)), "ucci")
+check("ucci: is named among the supported portals", _CARRIERS.get("ucci"), "United Concordia")
+_ucci_old = None
+try:
+    _carrier_rules({"source": "UCCI", "benefit_categories": []})
+except ValueError as e:
+    _ucci_old = str(e)
+check_true("ucci: an export from before the per-code lookups is refused with a rescrape note",
+           _ucci_old is not None and "scrape the patient again" in _ucci_old, _ucci_old)
+
+_ucn = _up._normalize_ucci_portal(_UC)
+_ucp = {p["procedure_code"]: p for p in _ucn["benefit_coverage"]["procedures"]}
+_ucm = _ucn["_ucci_meta"]
+check("ucci: limitation lines in the sheet's frequency form",
+      tuple(_up._frequency_of_line(t)[0] for t in (
+          "2 Per 12 Months", "1 Per Tooth ~ Per 5 Years", "2 Per Calendar Year ~ All Members To Any Age",
+          "1 Per Lifetime", "4 Per Day")),
+      ("2X12Months", "1X5Years", "2X1Year", "1XLifetime", "4X1Day"))
+check("ucci: lines that are not frequencies are skipped",
+      tuple(_up._frequency_of_line(t) for t in ("In Network", "Age 5 And Older", "No Alternate Benefit", "--")),
+      (None, None, None, None))
+check("ucci: an age split takes the subscriber's band (45 → Age 14 And Older)", _ucp["D0274"]["frequency_limit"], "1X12Months")
+check("ucci: the subscriber's band even for an 18-year-old patient (Age 19 And Older)",
+      _up._choose_frequency("D0274", {}, ["1 Per 18 Months ~ Age 19 And Older",
+                                         "1 Per 12 Months ~ Under 19 Years Of Age", "4 Per Day"], 45)[0],
+      "1X18Months")
+check("ucci: with no subscriber age, the adult line",
+      _up._choose_frequency("D0274", {}, ["1 Per 12 Months ~ Under 19 Years Of Age",
+                                         "1 Per 18 Months ~ Age 19 And Older"], None)[0],
+      "1X18Months")
+check("ucci: several limitations take the code's own group (D0180 → 1 Per 3 Years)",
+      _ucp["D0180"]["frequency_limit"], "1X3Years")
+check("ucci: with nothing to decide by, the first (D2980)", _ucp["D2980"]["frequency_limit"], "1X36Months")
+check("ucci: No Frequency Limitation is No Frequency", _ucp["D0220"]["frequency_limit"], "No Frequency")
+check("ucci: a covered code whose only limitation is a qualifier reads Frequency not available",
+      _up._ucci_procedure("D2950", _ucci_proc("Yes", ["85%"], ["Permanent Teeth"]), 50)["frequency_limit"],
+      "Frequency not available")
+check("ucci: covered with no percentage is 0%",
+      _up._ucci_procedure("D9243", _ucci_proc("Yes", [], ["--"]), 50)["benefit_level"], "0%")
+check("ucci: a row printed as one Not Covered cell is 0% and NC",
+      (lambda p: (p["benefit_level"], p["frequency_limit"]))(_up._ucci_procedure(
+          "D9243", {"details": {"covered": "Not Covered", "raw_text": "Not Covered"}}, 50)),
+      ("0%", "NOT COVERED"))
+check("ucci: a covered code whose limitation is -- reads Frequency not available",
+      _up._ucci_procedure("D0140", _ucci_proc("Yes", ["100%"], ["--"]), 50)["frequency_limit"],
+      "Frequency not available")
+check("ucci: a covered code with no age clause has no age limit (99)",
+      _up._ucci_procedure("D1206", _ucci_proc("Yes", ["100%"], ["2 Per 12 Months"]), 50)["age_limit"], "0-99")
+check("ucci: not covered is 0% and NC", (_ucp["D4381"]["benefit_level"], _ucp["D4381"]["frequency_limit"]),
+      ("0%", "NOT COVERED"))
+check("ucci: past the age limit the % is not stated, the frequency and age still are",
+      (_ucp["D1351"]["benefit_level"], _ucp["D1351"]["frequency_limit"], _ucp["D1351"]["age_limit"]),
+      ("", "1X3Years", "0-16"))
+check("ucci: the code's own % skips the ortho line", _ucp["D0274"]["benefit_level"], "100%")
+check("ucci: age limits as ranges", (_ucp["D1206"]["age_limit"], _ucp["D6010"]["age_limit"]), ("0-19", "18-99"))
+check("ucci: history counts the own frequency group (D0150 takes D0120's exam)",
+      _ucp["D0150"]["late_date_of_service"], "04/29/2026")
+check("ucci: and the fluoride sibling (D1206 takes D1208's)", _ucp["D1206"]["late_date_of_service"], "04/29/2026")
+check("ucci: but not other related codes (a sealant does not take a filling)",
+      _ucp["D1351"]["late_date_of_service"], "NH")
+check("ucci: a failed lookup is not stated", "D9999" in _ucp, False)
+check("ucci: failed lookups are listed", _ucm["failed_codes"], ["D9999"])
+
+_ucf = _ucn["metlife_data"]["financials"]
+check("ucci: the plain Individual Maximum is the yearly one; Accident related is skipped",
+      _ucf["annual_max"]["total"], "1500.00")
+check("ucci: the Ortho related one is the ortho maximum", _ucf["ortho_lifetime"]["total"], "1000.00")
+_uc_none = _up._plan_amounts({"deductibles_and_maximums": [
+    {"benefit": "Individual Deductible", "coverage": "None"},
+    {"benefit": "Individual Maximum", "coverage": "None"}]}, "in")
+check("ucci: None is a $0 deductible and an unlimited maximum",
+      (_uc_none["indiv_ded"], _uc_none["annual_max"]), (0.0, 99999.0))
+check("ucci: paid to date per sidebar line",
+      (_ucf["deductible_ind"]["used"], _ucf["deductible_fam"]["used"], _ucf["annual_max"]["used"]),
+      ("40.00", "50.00", "98.90"))
+check("ucci: ortho used from the Orthodontics service line, never an implant one",
+      _ucf["ortho_lifetime"]["used"], "1250.00")
+check("ucci: no Orthodontics line in the sidebar is $0 ortho used",
+      _up._normalize_ucci_portal(dict(_UC, financial_accumulators=_UC["financial_accumulators"][:2]))
+      ["metlife_data"]["financials"]["ortho_lifetime"]["used"], "0.00")
+check("ucci: No deductible applied is 0",
+      _up._accumulator_used({"financial_accumulators": [{"type": "Deductibles", "entries": [], "raw_text":
+          "Deductibles No deductible applied to the current benefit period."}]}, "ded", "individual"), 0.0)
+check("ucci: ortho age and timing from D8080's policy details", (_ucm["ortho_age_limit"], _ucm["ortho_payment_timing"]),
+      ("19", "One Time"))
+check("ucci: To Any Age is 99; quarterly payments win over a small lump sum",
+      _up._ortho_policy({"policy_details": [
+          {"type": "Canceled Enrollment Benefits Cease", "description": "All Members To Any Age ~ Ortho related"},
+          {"type": "Reimbursement Method",
+           "description": "25% Initial Pay ~ Quarterly Payments ~ Lump Sum $1,000 Or Less ~ In network ~ Ortho related"}]}),
+      ("99", "Quarterly"))
+check("ucci: clauses from Coordination and Other Benefits",
+      (_ucm["missing_tooth"], _ucm["cob"], _ucm["waiting_period"]), ("No", "Standard", "No"))
+check("ucci: No Alternate Benefit on D2391 is no composite downgrade", _ucm["posterior_composite_downgrade"], "No")
+check("ucci: Are Posterior Crowns Downgraded is always left blank", _ucm["porcelain_posterior_downgrade"], "")
+_uc_past = dict(_UC, procedures=dict(_UC["procedures"], D8080=_ucci_proc(
+    "No", ["0%"], ["No Coverage Due to Age Limitation"], policy=[
+        ("Canceled Enrollment Benefits Cease", "Dependent ~ Age 19 And Older ~ Ortho related")])))
+_uc_past_n = _up._normalize_ucci_portal(_uc_past)
+check("ucci: a patient past the ortho age keeps the plan's ortho maximum and age",
+      (_uc_past_n["_ucci_meta"]["ortho_covered"], _uc_past_n["metlife_data"]["financials"]["ortho_lifetime"]["total"],
+       _uc_past_n["_ucci_meta"]["ortho_age_limit"]),
+      ("Yes", "1000.00", "19"))
+check("ucci: a crown that says nothing about an alternate benefit is not downgraded",
+      _up._alternate_benefit(_ucci_proc("Yes", ["60%"], ["1 Per Tooth ~ Per 5 Years"])), "No")
+check("ucci: a stated alternate benefit is a downgrade",
+      _up._alternate_benefit(_ucci_proc("Yes", ["60%"], ["1 Per Tooth ~ Per 5 Years", "Alternate Benefit ~ Full Cast"])), "Yes")
+check("ucci: January plan year from Per Calendar Year", _ucm["plan_year_start"], "January")
+
+from smile_partners.sabrina.carriers.ucci import portal as _ucpo
+check("ucci: the sheet's payor ID matches when UCCI lists it",
+      (_ucpo._portal_payor_id({}, _ucn, "CX007"), _ucpo._portal_payor_id({}, _ucn, "12345")),
+      ("CX007", "89070, 99994, or CX007"))
+check("ucci: OON benefits Yes for every UCCI plan", _ucpo._portal_oon_benefits({}, _ucn), "Yes")
+check("ucci: Seat Date and 4 quads for every UCCI plan",
+      (_ucpo._portal_major_paid_on({}, _ucn), _ucpo._portal_d4341_quads({}, _ucn)), ("Seat Date", "4"))
+check("ucci: a sheet of the other network makes the money rows not comparable",
+      bool(_ucpo._network_conflict(_up._normalize_ucci_portal(
+          dict(_UC, patient_info=dict(_UC["patient_info"], network_status="Out"))), {"in_network": "In"})), True)
+check("ucci: the same network does not", _ucpo._network_conflict(_ucn, {"in_network": "In"}), "")
 
 print(f"\n{_passed + _failed} checks: {_passed} passed, {_failed} failed, {_skipped} skipped")
 sys.exit(1 if _failed else 0)
