@@ -2029,6 +2029,21 @@ check("delta deductible: a Premier office pays the listed deductible",
 check("delta deductible: so does an out-of-network office",
       _jones("Non-Delta Dental Dentist")[:2], ("100.00", "300.00"))
 _no_networks = [dict(r, networks=[]) for r in _JONES_DEDS]
+# Regina Norrish (2026-11-05): no family deductible listed — the family one is
+# three times the individual, and whatever is used against the individual is
+# used against the family too.
+def _norrish(deductibles):
+    bd = _ded_bd(deductibles)
+    return bd.get("family_ded"), bd.get("family_ded_paid")
+
+
+_NORRISH_IND = dict(_split_ded("Individual", _PPO_PREMIER, "$40.00"), used="$40.00", remaining="$0.00")
+check("delta family deductible: none listed -> 3 x individual, paid as the individual",
+      _norrish([_NORRISH_IND]), ("120.00", "40.00"))
+check("delta family deductible: nothing used yet -> paid 0",
+      _norrish([_split_ded("Individual", _PPO_PREMIER, "$40.00")]), ("120.00", "0.00"))
+check("delta family deductible: a listed family deductible is read as listed",
+      _norrish([_NORRISH_IND, _split_ded("Family", _PPO_PREMIER, "$150.00")]), ("150.00", "0.00"))
 check("delta deductible: records that name no network keep the old reading",
       _ded_bd(_no_networks).get("indiv_ded"), "100.00")
 check("delta frequency: 'is a benefit once within a 3 year period' (D0150)",

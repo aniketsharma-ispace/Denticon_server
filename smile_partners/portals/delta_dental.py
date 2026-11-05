@@ -1033,6 +1033,18 @@ def _apply_dd_output_rules(data, normalized):
         data['ded_prev'] = 'No'
         data['ded_diag'] = 'No'
 
+    # A plan listing an individual deductible but no family one: the sheet's
+    # Family Deductible is three times the individual (the shared reader
+    # already derives it), and whatever has been used against the individual
+    # is used against the family too (agreed with the team, 2026-11-05) —
+    # Regina Norrish's $40 individual, all used, is $120 family with $40 paid.
+    individual = str((financials.get('deductible_ind') or {}).get('total') or '').strip()
+    family = str((financials.get('deductible_fam') or {}).get('total') or '').strip()
+    if (individual and individual.upper() not in ('N/A', 'NA') and _dd_amount(individual) > 0
+            and (not family or family.upper() in ('N/A', 'NA'))):
+        data['family_ded'] = f"{_dd_amount(individual) * 3:,.2f}"
+        data['family_ded_paid'] = data.get('indiv_ded_paid') or '0.00'
+
     # A plan may hold a deductible for orthodontics alone, separate from the
     # one the general work draws on. Where there is none the shared default of
     # zero already says so.
