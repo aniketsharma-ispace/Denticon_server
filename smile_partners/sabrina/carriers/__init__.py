@@ -1,7 +1,7 @@
 """
 One folder per insurance portal.
 
-    aetna/  cigna/  delta_dental/  delta_mo/  delta_toolkit/  guardian/  metlife/
+    aetna/  cigna/  delta_dental/  delta_mo/  delta_toolkit/  guardian/  metlife/  ucci/
 
 Each folder holds the whole audit for its carrier:
 
@@ -36,6 +36,7 @@ CARRIERS = {
     "delta_toolkit": "Delta Dental Office Toolkit",
     "guardian":     "Guardian",
     "metlife":      "MetLife",
+    "ucci":         "United Concordia",
 }
 
 
@@ -47,6 +48,7 @@ _SOURCE_INSURER = {
     "delta dental":    "delta_dental",
     "delta dental mo": "delta_mo",
     "guardian":        "guardian",
+    "united concordia": "ucci",
 }
 
 
@@ -102,6 +104,7 @@ def detect_carrier(portal_raw) -> str | None:
     from ...portals.delta_mo import _is_dd_mo_portal
     from ...portals.delta_toolkit import _is_dd_toolkit_portal
     from ...portals.guardian import _is_guardian_portal
+    from ...portals.ucci import _is_ucci_portal
 
     candidates = [portal_raw] + [portal_raw[key] for key in _WRAPPERS
                                  if isinstance(portal_raw.get(key), dict)]
@@ -118,6 +121,8 @@ def detect_carrier(portal_raw) -> str | None:
             return "delta_mo"
         if _is_guardian_portal(candidate):
             return "guardian"
+        if _is_ucci_portal(candidate):
+            return "ucci"
 
     if _is_metlife(portal_raw):
         return "metlife"
@@ -146,6 +151,14 @@ def carrier_rules(portal_raw):
                 "Eligibility page. Save that page from guardiananytime.com as a "
                 "PDF (all of it, including Plan options) and upload it, or "
                 "upload the <patient>_guardian_benefits.json the extension downloads.")
+        if (isinstance(portal_raw, dict)
+                and str(portal_raw.get("source") or "").strip().upper() == "UCCI"):
+            # Exports made before the per-code Procedure Allowance lookups
+            # (content_ucci.js, 11/2026) carry only the expanded categories.
+            raise ValueError(
+                "This United Concordia export was made by an older version of "
+                "the extension and has no per-code lookups. Reload the "
+                "extension and scrape the patient again.")
         raise ValueError(
             "The Sabrina audit has no rules for this portal export"
             + (f" (it reads as {seen})" if seen else "")
