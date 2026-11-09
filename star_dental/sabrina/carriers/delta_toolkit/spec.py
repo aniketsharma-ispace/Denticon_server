@@ -30,14 +30,21 @@ from __future__ import annotations
 
 _CDT = "Coverage by CDT Code"
 
+# ORDER — the UI shows sections, fields and CDT rows exactly in this file's
+# order, so it follows the Star Sabrina PDF top to bottom (Smile 11/02 review,
+# ported to Star 11/09; checked against Kenneth Krupp's and Lisa Rawlinson's
+# sheets): Patient/Subscriber → Insurance → Maximums & Deductibles → Plan
+# Provisions → Orthodontics → Clauses → Confirmations → Age Limits → Benefit
+# Details codes. The first number of each row is its checklist line, not its
+# position. Keep new rows in the place Sabrina prints them.
 _CDT_ROWS = (
-    (1, 'D0120', 'd0120', 'D0120 Periodic Exam', ()),
-    (2, 'D1110', 'd1110', 'D1110 Adult Prophy', ()),
     (3, 'D0220', 'd0220', 'D0220 Pas', ()),
     (4, 'D0230', 'd0230', 'D0230', ()),
     (5, 'D0240', 'd0240', 'D0240', ()),
     (6, 'D0150', 'd0150', 'D0150 Diagnostic Exam', ('D0150 Diagnostic Exam Comp',)),
+    (1, 'D0120', 'd0120', 'D0120 Periodic Exam', ()),
     (8, 'D0140', 'd0140', 'D0140 Limited Exam', ()),
+    (2, 'D1110', 'd1110', 'D1110 Adult Prophy', ()),
     (11, 'D1120', 'd1120', 'D1120', ()),
     (12, 'D0210', 'd0210', 'D0210 FMX', ()),
     (13, 'D0330', 'd0330', 'D0330 Pano', ()),
@@ -67,13 +74,6 @@ _CDT_ROWS = (
     (42, 'D5810', 'd5810', 'D5810', ()),
     (43, 'D5821', 'd5821', 'D5821', ()),
     (44, 'D5912', 'd5912', 'D5912 facial moulage (complete)', ()),
-    (45, 'D6010', 'd6010', 'D6010 Implants', ()),
-    # Sabrina's own table drops the leading D for these implant rows.
-    (46, 'D6104', 'd6104', 'D6104', ('Implant Crown 6104',)),
-    (47, 'D6190', 'd6190', 'D6190', ('Implant 6190',)),
-    (48, 'D6056', 'd6056', 'D6056', ()),
-    (49, 'D6057', 'd6057', 'D6057', ()),
-    (50, 'D6058', 'd6058', 'D6058', ()),
     (51, 'D6240', 'd6240', 'D6240', ()),
     (52, 'D6245', 'd6245', 'D6245', ()),
     (53, 'D9110', 'd9110', 'D9110 Palliative Exam', ()),
@@ -97,6 +97,13 @@ _CDT_ROWS = (
     (69, 'D3348', 'd3348', 'D3348 retreatment of previous root canal', ()),
     (70, 'D4260', 'd4260', 'D4260 Osseous Surgery', ()),
     (71, 'D4921', 'd4921', 'D4921 gingival irrigation - per quadrant', ()),
+    (45, 'D6010', 'd6010', 'D6010 Implants', ()),
+    # Sabrina's own table drops the leading D for these implant rows.
+    (46, 'D6104', 'd6104', 'D6104', ('Implant Crown 6104',)),
+    (47, 'D6190', 'd6190', 'D6190', ('Implant 6190',)),
+    (48, 'D6056', 'd6056', 'D6056', ()),
+    (49, 'D6057', 'd6057', 'D6057', ()),
+    (50, 'D6058', 'd6058', 'D6058', ()),
     (72, 'D7140', 'd7140', 'D7140 Simple Ext', ()),
     (73, 'D7210', 'd7210', 'D7210 Surgical Ext', ()),
     (74, 'D7230', 'd7230', 'D7230', ()),
@@ -115,14 +122,17 @@ _SPEC: list[dict] = [
      "after": "Patient Name"},
     {"key": "member_id",       "label": "Member ID#",      "kind": "id",   "section": "Patient / Subscriber", "portal": "member_id",
      "aliases": ["Member ID", "Member Id #", "Subscriber ID", "Member/Subscriber ID"]},
+    # Relationship sits where Sabrina prints "Relation to Subscriber";
+    # Eligibility is read from the Delta page attached after the sheet, so it
+    # closes the section.
+    {"key": "relationship", "label": "Relationship", "kind": "text",
+     "section": "Patient / Subscriber", "portal": "_toolkit_relationship",
+     "portal_only": True, "toolkit_only": True},
     {"key": "subscriber_name", "label": "Subscriber Name", "kind": "name", "section": "Patient / Subscriber", "portal": "subscriber_name"},
     {"key": "subscriber_dob",  "label": "Date of Birth",   "kind": "date", "section": "Patient / Subscriber", "portal": "subscriber_dob",
      "after": "Subscriber Name"},
     {"key": "eligibility", "label": "Eligibility", "kind": "yesno",
      "section": "Patient / Subscriber", "portal": "_toolkit_eligibility",
-     "portal_only": True, "toolkit_only": True},
-    {"key": "relationship", "label": "Relationship", "kind": "text",
-     "section": "Patient / Subscriber", "portal": "_toolkit_relationship",
      "portal_only": True, "toolkit_only": True},
 
     {"key": "ins_name",     "label": "Insurance Name",    "kind": "carrier", "section": "Insurance", "portal": "ins_name",
@@ -139,12 +149,12 @@ _SPEC: list[dict] = [
      "aliases": ["Payer ID", "Payor Id", "Payer Id"]},
     {"key": "in_network",   "label": "In Network",   "kind": "network", "section": "Insurance", "portal": "_in_network",
      "aliases": ["In-Network", "In Network?", "Participating"]},
+    {"key": "oon_benefits", "label": "OON Benefits", "kind": "yesno", "section": "Insurance", "portal": "_oon_benefits",
+     "aliases": ["OON Benefit", "Out of Network Benefits", "Out-of-Network Benefits"]},
     {"key": "eff_date",        "label": "Patient Eff Date",            "kind": "date",  "section": "Insurance", "portal": "eff_date",
      "aliases": ["Patient Effective Date", "Eff Date", "Effective Date"]},
     {"key": "term_date",       "label": "Eligibility Term Date",       "kind": "date",  "section": "Insurance", "portal": None,
      "aliases": ["Patient Term Date"]},
-    {"key": "oon_benefits", "label": "OON Benefits", "kind": "yesno", "section": "Insurance", "portal": "_oon_benefits",
-     "aliases": ["OON Benefit", "Out of Network Benefits", "Out-of-Network Benefits"]},
     {"key": "plan_year_start", "label": "Starting Month of Plan Year",  "kind": "month", "section": "Insurance", "portal": "plan_year_start",
      "aliases": ["Plan Year Start", "Benefit Year Start"]},
 
@@ -166,10 +176,6 @@ _SPEC: list[dict] = [
 
     {"key": "waiting_period", "label": "Is there a Waiting Period",  "kind": "yesno", "section": "Plan Provisions", "portal": "waiting_period",
      "aliases": ["Waiting Period", "Is there a Waiting Period?"]},
-    {"key": "major_payment_timing",
-     "label": "Are Major Services Paid on Prep or Seat date?", "kind": "text",
-     "section": "Plan Provisions", "portal": "_toolkit_major_payment_timing",
-     "portal_only": True, "toolkit_only": True},
     {"key": "preauth_over", "label": "PreAuthorize Over $", "kind": "money", "section": "Plan Provisions", "portal": None,
      "aliases": ["Pre-Authorize over", "Pre-Authorize Over $", "PreAuthorize Over"]},
     {"key": "cob",            "label": "Coordination Of Benefits",   "kind": "cob",   "section": "Plan Provisions", "portal": "_cob",
@@ -186,6 +192,12 @@ _SPEC: list[dict] = [
 
     {"key": "missing_tooth",  "label": "Does Missing Tooth Clause Apply?",     "kind": "yesno", "section": "Clauses", "portal": "missing_tooth",
      "aliases": ["Missing Tooth Clause", "Does Missing Tooth Clause Apply"]},
+    # Sabrina prints "Are major paid at prep or seat date?" in Benefit
+    # Details, right after Missing Tooth.
+    {"key": "major_payment_timing",
+     "label": "Are Major Services Paid on Prep or Seat date?", "kind": "text",
+     "section": "Clauses", "portal": "_toolkit_major_payment_timing",
+     "portal_only": True, "toolkit_only": True},
     {"key": "posterior_composite_downgrade",
      "label": "Are Posterior Composites Downgraded To Amalgam?", "kind": "yesno",
      "section": "Clauses", "portal": "posterior_composite_downgrade",

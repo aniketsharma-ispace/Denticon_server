@@ -19,6 +19,7 @@ from .portal import (
     _portal_value,
 )
 from .rules import (
+    _OUT_OF_NETWORK,
     _pdf_eligibility,
     _pdf_major_payment_timing,
     _pdf_ortho_coverage,
@@ -80,10 +81,12 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     what each system says.
     """
     sab_fields = sabrina_parsed.get("fields", {})
-    # The sheet's In Network answer decides which network's benefits it is
-    # compared with: an out-of-network sheet records the Nonparticipating
-    # Dentist figures, not the PPO ones.
-    network = _toolkit_benefit_network(sab_fields)
+    # The sheet decides which network's benefits it is compared with (Smile
+    # 11/02-11/04, ported to Star 11/09): a Premier fee schedule → Premier
+    # Dentist (a Premier Lite one is PPO's); In Network "Out" or a UCR fee
+    # schedule → Nonparticipating Dentist; otherwise PPO Dentist.
+    # `network_conflict` names a sheet that contradicts itself.
+    network, network_reason, network_conflict = _toolkit_benefit_network(sab_fields)
     bd = _portal_breakdown(portal_raw, network)
     # Derived readers work off the translated export, not the raw one.
     portal_norm = _portal_normalized(portal_raw, network)
@@ -274,6 +277,14 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                 # The safety gate applies to every plan/procedure comparison.
                 status = STATUS_NOT_COMPARABLE
                 note = "Identity/network validation failed: " + ", ".join(toolkit_identity_issues)
+            elif network_conflict and key == "in_network" and not sab_blank:
+                # The sheet contradicts itself. Its benefits were compared under
+                # the network its Fee Schedule names, so its In Network answer
+                # is flagged against that network.
+                por_raw, por_blank = ("Out" if network == _OUT_OF_NETWORK else "In"), False
+                status = STATUS_MISMATCH
+                note = (f"{network_conflict}; benefits compared under "
+                        f"{toolkit_meta.get('benefit_network') or 'PPO Dentist'}")
             elif forced_match:
                 status = STATUS_MATCH
                 note = forced_match
@@ -387,6 +398,9 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                 "identity_valid": toolkit_identity_ok,
                 "identity_issues": toolkit_identity_issues,
                 "benefit_network": toolkit_meta.get("benefit_network") or "PPO Dentist",
+                "benefit_network_reason": (network_reason + (f"; {network_conflict}" if network_conflict else "")
+                                           if network else ""),
+                "benefit_network_note": toolkit_meta.get("benefit_network_note") or "",
                 "accumulators_unavailable": bool(toolkit_meta.get("accumulators_unavailable")),
             } if portal_norm.get("_toolkit") else None,
         },

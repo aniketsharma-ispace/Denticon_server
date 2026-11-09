@@ -319,6 +319,12 @@ def _classify_row_cells(cells: list[str], code: str | None = None) -> dict[str, 
             continue
         if hist is None and (_num_date(s) is not None or s.lower() in _HISTORY_NONE):
             hist = s
+        elif hist is not None and re.search(r"[;,]$", hist) and _num_date(s) is not None:
+            # A History cell listing several dates wraps one date per line,
+            # each but the last ending in Sabrina's ";" — "08/31/2026;" /
+            # "04/20/2026". Keep every date, not only the first (Smile 11/02,
+            # ported to Star 11/09).
+            hist = f"{hist} {s}"
         elif age is None and (
             re.fullmatch(r"\d{1,3}", s)
             or (_TOOLKIT_PARSE.get() and s.upper() == "NC")

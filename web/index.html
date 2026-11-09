@@ -240,6 +240,7 @@
         .sab-section-title { display:flex; align-items:center; gap:10px; font-size:0.66rem; text-transform:uppercase; letter-spacing:0.12em; color:#00d2ff; font-weight:700; margin:26px 0 2px; }
         .sab-section-title .divider { flex:1; height:1px; background:rgba(255,255,255,0.08); }
         .sab-section-count { font-size:0.6rem; color:#8b93a7; letter-spacing:0.05em; }
+        .sab-blocked { background:rgba(255,152,0,0.10); border:1px solid rgba(255,152,0,0.45); border-radius:10px; padding:16px 18px; color:#ffb74d; font-weight:600; font-size:0.9rem; margin-top:14px; }
         .sab-clean { background:rgba(0,230,118,0.08); border:1px solid rgba(0,230,118,0.3); border-radius:10px; padding:16px 18px; color:#00e676; font-weight:600; font-size:0.9rem; margin-top:14px; }
         .sab-toggle { font-size:0.72rem; color:#00d2ff; cursor:pointer; text-decoration:underline; margin-top:18px; display:inline-block; }
         .sab-grouped th:first-child { width:22%; }
@@ -1236,7 +1237,13 @@ function renderSabrina(result) {
         <div class="stat-pill"><div class="num" style="color:#8b93a7;">${s.not_comparable || 0}</div><div class="lbl">Not Comparable</div></div>
     </div>`;
 
-    const mismBlock = mism.length
+    // A failed Toolkit identity/network gate leaves every row not comparable:
+    // say so instead of a green "no mismatches" verdict.
+    const blockedIssues = result.diagnostics?.toolkit?.identity_valid === false
+        ? (result.diagnostics.toolkit.identity_issues || []) : null;
+    const mismBlock = blockedIssues
+        ? `<div class="sab-blocked">⚠ Comparison blocked — nothing was compared. Identity/network validation failed: ${escHtml(blockedIssues.join(', ') || 'unknown reason')}</div>`
+        : mism.length
         ? `<div class="sab-section-title">Fields That Don't Match The Portal
                <span class="sab-section-count">${mism.length}${s.critical_mismatches ? ` · ${s.critical_mismatches} critical` : ''}</span>
                <span class="divider"></span></div>
@@ -1285,7 +1292,7 @@ function renderSabrina(result) {
         : '';
 
     matchOutput.innerHTML = `
-    <div class="result-card ${mism.length ? 'match-fail' : 'match-success'}">
+    <div class="result-card ${mism.length || blockedIssues ? 'match-fail' : 'match-success'}"${blockedIssues ? ' style="border-left-color:#ff9800;"' : ''}>
         <div class="sab-head">
             <span class="sab-patient">${escHtml(p.name || 'Sabrina Patient')}</span>
             <span class="sab-badge">Sabrina ↔ Portal Audit</span>

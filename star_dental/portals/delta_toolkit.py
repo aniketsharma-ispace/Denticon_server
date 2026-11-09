@@ -70,6 +70,9 @@ _FREQUENCY_PHRASES: dict[str, tuple[str, ...]] = {
     # a generic oral-exam rule must not bleed into D9110.
     "D9110": ("emergency examinations", "emergency exams"),
     "D0210": ("full mouth x-rays", "panorex"),
+    # "Periapical x-rays are limited to two x-rays per calendar year." under
+    # All Other Radiographs (Smile 11/04 review, ported to Star 11/09).
+    "D0220": ("periapical x-rays", "periapical radiographs"),
     "D0330": ("panorex",),
     "D0272": ("bitewing x-rays",),
     "D0274": ("bitewing x-rays",),
@@ -336,8 +339,21 @@ def _frequency_from_text(text: str) -> str | None:
         return None
 
     low = text.lower()
-    if "lifetime" in low and re.search(r"\bonce\b", low):
-        return "1XLifetime"
+    # "Limited to one per tooth per lifetime", "payable twice per lifetime":
+    # a count tied to the lifetime, worded with any number, not only "once".
+    # A digit counts only with "time(s)", so "$1,500 per lifetime" (a dollar
+    # maximum) is never read as a frequency.
+    lifetime = re.search(
+        r"\b(?:(once|one|twice|two|three|four|five)|(\d+)\s+times?)\s+(?:times?\s+)?"
+        r"(?:per\s+(?:tooth|area|quadrant|arch|site)\s+)?"
+        r"(?:per|in\s+a|in\s+the|during\s+(?:a|the))\s+lifetime\b",
+        low,
+    )
+    if lifetime:
+        word = lifetime.group(1) or lifetime.group(2)
+        count = int(word) if word.isdigit() else _WORD_COUNTS.get(word)
+        if count:
+            return f"{count}XLifetime"
 
     # Prefer frequency words over bare numbers so an age statement such as
     # "age 15 and under" can never be mistaken for a five-year count.
@@ -366,7 +382,7 @@ def _frequency_from_text(text: str) -> str | None:
     number = r"(one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
 
     month = re.search(
-        rf"(?:in|within)\s+(?:any\s+)?(?:a\s+|an\s+)?(?:period\s+of\s+)?{number}\s*(?:-| )?(?:consecutive\s+)?months?\b",
+        rf"(?:in|within)\s+(?:any\s+)?(?:a\s+|an\s+)?(?:period\s+of\s+)?{number}\s*(?:-| )?(?:consecutive\s+)?(?:calendar\s+)?months?\b",
         tail,
     )
     if not month:
@@ -380,8 +396,10 @@ def _frequency_from_text(text: str) -> str | None:
         if span:
             return f"{count}X{span}Months"
 
+    # "in any five consecutive calendar years" (Smile 11/02) is the same span
+    # as "in any five consecutive years".
     year = re.search(
-        rf"(?:in|within)\s+(?:any\s+)?(?:a\s+|an\s+)?(?:period\s+of\s+)?{number}\s*(?:-| )?(?:consecutive\s+)?years?\b",
+        rf"(?:in|within)\s+(?:any\s+)?(?:a\s+|an\s+)?(?:period\s+of\s+)?{number}\s*(?:-| )?(?:consecutive\s+)?(?:calendar\s+)?years?\b",
         tail,
     )
     if not year:
@@ -405,6 +423,12 @@ def _frequency_from_text(text: str) -> str | None:
     if re.search(r"per\s+(?:date of service|day)\b", tail):
         return f"{count}X1Day"
 
+    # Looser lifetime wording ("payable once per tooth for the lifetime of the
+    # patient"), used only when the sentence states no period of its own, so a
+    # "$1,500 per lifetime" maximum cannot override "once in a seven-year period".
+    if "lifetime" in low and re.search(r"\bonce\b", low):
+        return "1XLifetime"
+
     return None
 
 
@@ -419,17 +443,107 @@ def _frequency_scope(text: str) -> str | None:
     return None
 
 
-def _derive_frequency(code: str, limitations: list[str]) -> tuple[str, str | None, str | None]:
+# One Toolkit limitation entry can hold several sentences about different
+# procedures: "Prophylaxis (cleanings) are payable twice per calendar year. …
+# Full mouth debridement is payable once per lifetime." (Ronald Abramas, 11/05).
+# Read as one string, the debridement's lifetime limit was handed to D1110 and,
+# through inheritance, D4910. Each sentence is now read on its own.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=\.)\s+(?=[A-Z])")
+
+
+def _split_sentences(text: str) -> list[str]:
+    return [s.strip() for s in _SENTENCE_SPLIT_RE.split(_text(text)) if s.strip()]
+
+
+# "… payable twice per calendar year for patients age 18 and under and once per
+# calendar year for patients age 19 and over." Each clause opens with its own
+# count; the split happens at the "and"/";" that introduces the next count.
+_AGE_CLAUSE_SPLIT_RE = re.compile(
+    r"\s*(?:;|,?\s+and)\s+(?=(?:once|twice|thrice|one|two|three|four|five|\d+\s+times?)\b)",
+    re.IGNORECASE,
+)
+
+
+def _clause_age_band(clause: str) -> tuple[int, int] | None:
+    low = clause.lower()
+    m = re.search(r"age\s+(\d{1,3})\s+(?:and|or)\s+(?:under|younger|below)", low)
+    if m:
+        return 0, int(m.group(1))
+    m = re.search(r"(?:under|through|thru|to|up\s+to)\s+age\s+(\d{1,3})", low)
+    if m:
+        return 0, int(m.group(1))
+    m = re.search(r"age\s+(\d{1,3})\s+(?:and|or)\s+(?:over|older|above)", low)
+    if m:
+        return int(m.group(1)), 999
+    m = re.search(r"(?:over|above)\s+age\s+(\d{1,3})", low)
+    if m:
+        return int(m.group(1)) + 1, 999
+    return None
+
+
+def _age_clause(sentence: str, age: int | None) -> str:
+    """The clause of an age-banded sentence that applies to a patient of `age`.
+
+    A sentence without age bands, or a patient whose age is unknown, keeps the
+    whole sentence (the earlier behaviour).
+    """
+    if age is None:
+        return sentence
+    clauses = [c for c in _AGE_CLAUSE_SPLIT_RE.split(sentence) if c.strip()]
+    if len(clauses) < 2:
+        return sentence
+    for clause in clauses:
+        band = _clause_age_band(clause)
+        if band and band[0] <= age <= band[1]:
+            return clause
+    return sentence
+
+
+def _patient_age(birthdate: Any, as_of: Any = None) -> int | None:
+    """Age in whole years on `as_of` (the export's capture date, else today)."""
+    def parse(value: Any) -> datetime.date | None:
+        text = _text(value)
+        if not text:
+            return None
+        for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
+            try:
+                return datetime.datetime.strptime(text[:10], fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    dob = parse(birthdate)
+    if not dob:
+        return None
+    ref = parse(as_of) or datetime.date.today()
+    return ref.year - dob.year - ((ref.month, ref.day) < (dob.month, dob.day))
+
+
+def _derive_frequency(
+    code: str, limitations: list[str], age: int | None = None
+) -> tuple[str, str | None, str | None]:
     """
     Return (frequency, exact limitation used, optional scope).
+
+    Every limitation is read one sentence at a time, so a frequency stated for
+    another procedure in the same entry cannot be picked up. An age-banded
+    sentence is narrowed to the patient's band when `age` is known. The whole
+    entry is tried only when no single sentence yields a frequency.
 
     `Frequency not available` is intentional and is the only fallback for a
     successful code with no explicit applicable frequency sentence.
     """
+    for limitation in limitations:
+        for sentence in _split_sentences(limitation):
+            if not _phrase_applies(code, sentence):
+                continue
+            frequency = _frequency_from_text(_age_clause(sentence, age))
+            if frequency:
+                return frequency, sentence, _frequency_scope(sentence)
     for sentence in limitations:
         if not _phrase_applies(code, sentence):
             continue
-        frequency = _frequency_from_text(sentence)
+        frequency = _frequency_from_text(_age_clause(sentence, age))
         if frequency:
             return frequency, sentence, _frequency_scope(sentence)
     return "Frequency not available", None, None
@@ -830,30 +944,101 @@ def _latest_service_date(value: Any) -> str | None:
     return max(dates, key=key)
 
 
+def _service_dates_text(value: Any) -> str | None:
+    """
+    Every service date a Toolkit history field lists, newest first, joined
+    with ", " — the way the Delta Dental adapter reports history. The sheet
+    records each date the website shows ("08/31/2026; 04/20/2026"), so keeping
+    only the latest would leave the other dates unchecked.
+    """
+    dates: list[str] = []
+    if isinstance(value, str):
+        dates = re.findall(r"\d{1,2}/\d{1,2}/\d{2,4}", value)
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                item = item.get("date") or item.get("serviceDate") or item.get("service_date")
+            if item:
+                dates.extend(re.findall(r"\d{1,2}/\d{1,2}/\d{2,4}", str(item)))
+    if not dates:
+        return None
+
+    def key(raw: str) -> tuple[int, int, int]:
+        parts = [int(x) for x in raw.split("/")]
+        year = parts[2] + (2000 if parts[2] < 100 else 0)
+        return year, parts[0], parts[1]
+
+    unique = list(dict.fromkeys(dates))
+    return ", ".join(sorted(unique, key=key, reverse=True))
+
+
+# Routine Procedures rows that the sheet reads for more than their own code
+# (Smile 11/02 review, ported to Star 11/09). The Toolkit lists a single "Exam" row, looked up as D0120,
+# for every oral exam, so its dates are the history of D0140 and D0150 too;
+# its "Bitewings" row is looked up as D0272 and is the sheet's D0274.
+_ROUTINE_ROW_ALSO_COVERS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
+    (re.compile(r"(?:oral\s+)?exams?", re.IGNORECASE), ("D0120", "D0140", "D0150")),
+    (re.compile(r"bitewings?(?:\s+x-?rays?)?", re.IGNORECASE), ("D0272", "D0274")),
+)
+
+
+def _routine_rows_by_code(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Each CDT code's Routine Procedures row: its own row first, then a shared one."""
+    rows = [
+        row for row in ((raw.get("routine_procedures") or {}).get("rows") or [])
+        if isinstance(row, dict)
+    ]
+    by_code: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        code = _text(row.get("procedureCode")).upper()
+        if code:
+            by_code[code] = row          # a repeated code: the last row wins, as before
+    for row in rows:
+        description = _text(row.get("description"))
+        for pattern, codes in _ROUTINE_ROW_ALSO_COVERS:
+            if pattern.fullmatch(description):
+                for code in codes:
+                    by_code.setdefault(code, row)
+    return by_code
+
+
+def _routine_eligible_now(routine: dict[str, Any] | None) -> bool:
+    """Whether a Routine Procedures row's Eligible column reads "Yes"."""
+    value = (routine or {}).get("eligibleNow")
+    return value is True or _text(value).casefold() in ("yes", "y", "true")
+
+
 def _history_for_code(code: str, result: dict[str, Any], routine_by_code: dict[str, dict[str, Any]]) -> str | None:
     """Service history for exactly this CDT code, or None when the source says nothing.
 
-    History is never inherited from another code.  A routine-procedure row for
-    this exact code with no service dates is an explicit "no history" (NH); a
-    code with no row at all is simply not stated by the portal.
+    History is read per code here; the one exception, a panorex sharing the
+    full-mouth date, is applied afterwards by `_share_radiograph_history`.  A
+    routine-procedure row for this code with no service dates is an explicit
+    "no history" (NH); a code with no row at all is simply not stated by the
+    portal.
     """
+    routine = routine_by_code.get(code.upper())
+    # 11/02 review: when the website's Eligible column reads "Yes" for the
+    # routine row, the patient can have the service now, so no history date is
+    # captured for it — the sheet writes NH whatever dates the row lists.
+    if _routine_eligible_now(routine):
+        return "NH"
     direct = (
-        _latest_service_date(result.get("serviceDates"))
-        or _latest_service_date(result.get("utilization_history"))
+        _service_dates_text(result.get("serviceDates"))
+        or _service_dates_text(result.get("utilization_history"))
     )
     if direct:
         return direct
-    routine = routine_by_code.get(code.upper())
     if routine is None:
         return None
-    routine_date = _latest_service_date(routine.get("serviceDates"))
-    if routine_date:
-        return routine_date
+    routine_dates = _service_dates_text(routine.get("serviceDates"))
+    if routine_dates:
+        return routine_dates
     detail = _text(routine.get("statusDetail"))
     if re.search(r"service dates? of", detail, re.IGNORECASE):
-        detail_date = _latest_service_date(detail)
-        if detail_date:
-            return detail_date
+        detail_dates = _service_dates_text(detail)
+        if detail_dates:
+            return detail_dates
     return "NH"
 
 
@@ -879,6 +1064,13 @@ def _share_frequency(procedures: list[dict[str, Any]]) -> None:
 
 
 def _share_radiograph_history(procedures: list[dict[str, Any]]) -> None:
+    """Full mouth x-rays and the panorex share one service history.
+
+    When a single limitation sentence names both ("Full mouth x-rays … or a
+    panorex are payable once in a five-year period"), a service on either uses
+    up the shared frequency, and the sheet records that date for both.  A code
+    that already carries its own date keeps it.
+    """
     by_code = {p["procedure_code"]: p for p in procedures}
     fmx, pano = by_code.get("D0210"), by_code.get("D0330")
     if not fmx or not pano:
@@ -891,14 +1083,16 @@ def _share_radiograph_history(procedures: list[dict[str, Any]]) -> None:
     )
     if not shared_sentence:
         return
+
+    def has_dates(value: Any) -> bool:
+        # One date or several ("08/31/2026, 04/20/2026").
+        return bool(re.search(r"\d{1,2}/\d{1,2}/\d{4}", str(value or "")))
+
     fmx_date, pano_date = fmx.get("late_date_of_service"), pano.get("late_date_of_service")
-    if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", str(fmx_date or "")) and not re.fullmatch(
-        r"\d{1,2}/\d{1,2}/\d{4}", str(pano_date or "")
-    ):
+    # A code whose routine row reads Eligible "Yes" stays NH (11/02 review).
+    if has_dates(fmx_date) and not has_dates(pano_date) and not pano.get("toolkit_eligible_now"):
         pano["late_date_of_service"] = fmx_date
-    elif re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", str(pano_date or "")) and not re.fullmatch(
-        r"\d{1,2}/\d{1,2}/\d{4}", str(fmx_date or "")
-    ):
+    elif has_dates(pano_date) and not has_dates(fmx_date) and not fmx.get("toolkit_eligible_now"):
         fmx["late_date_of_service"] = pano_date
 
 
@@ -1156,6 +1350,35 @@ def _network_accumulator_rows(raw: dict[str, Any], network: str) -> list[dict[st
     return None
 
 
+_PREMIER_DENTIST = "Premier Dentist"
+
+
+def _network_figures_exported(raw: dict[str, Any], results: list[dict[str, Any]]) -> bool:
+    """
+    Whether the export says anything about networks other than PPO Dentist.
+
+    Exports made before the extension captured them (the early-October ones,
+    with no `out_of_network` key on any lookup) carry the PPO figures alone;
+    for those, the absence of a Premier entry says nothing.
+    """
+    return isinstance(raw.get("out_of_network"), dict) or any(
+        "out_of_network" in result for result in results
+    )
+
+
+def _single_network_export(raw: dict[str, Any]) -> str:
+    """
+    The network an extension 1.53+ export holds alone, or "" for an older one.
+
+    From 1.53 (11/05) the extension asks PPO / Premier / Non-participating
+    before the crawl, records the pick as `network_choice`, and exports that
+    network's benefits only, named in `selected_network`.
+    """
+    if not _text(raw.get("network_choice")):
+        return ""
+    return _text(raw.get("selected_network") or (raw.get("networks") or {}).get("selected"))
+
+
 def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = None) -> dict[str, Any]:
     """
     Translate the Toolkit extraction into the canonical Portal contract.
@@ -1169,16 +1392,41 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = N
     display = client.get("display_fields") or {}
     cob = ((raw.get("more_information") or {}).get("cob_information") or {})
     maximums = (raw.get("maximums_and_deductibles") or {}).get("rows") or []
-    # When the export cannot say what the maximums and deductibles are under
-    # the sheet's network, the PPO table stays for the plan-level facts (plan
-    # year, benefit period) and the amounts are reported as unavailable.
-    network_maximums = _network_accumulator_rows(raw, network) if network else maximums
-    accumulators_unavailable = network_maximums is None
-    if network_maximums is not None:
-        maximums = network_maximums
     ortho_info = raw.get("ortho_information") or {}
     search = (raw.get("coverages") or {}).get("procedure_code_search") or {}
     results = [r for r in (search.get("results") or []) if isinstance(r, dict)]
+
+    # A Premier sheet (Smile 11/02-11/04, ported to Star 11/09). An export from
+    # before the extension captured other networks cannot state the Premier
+    # figures, so it keeps the PPO ones and says so instead of going blank.
+    # Out-of-network sheets keep Star's 10/28 handling below.
+    requested_network = network
+    network_note = ""
+    # Extension 1.53+ (11/05) asks for one network before the crawl and exports
+    # that network's figures alone, as the lookups' own figures, with no
+    # `out_of_network` entries. When it is the sheet's network, those figures are
+    # read directly. (An export of another network is refused by the identity
+    # gate, which names the network to re-export.)
+    export_network = _single_network_export(raw)
+    if network and export_network.casefold() == network.casefold():
+        network = None
+    elif network == _PREMIER_DENTIST and not _network_figures_exported(raw, results):
+        network = None
+        network_note = (f"the sheet records {requested_network} benefits, but this export has no "
+                        f"{requested_network} figures, so PPO Dentist figures were compared; "
+                        f"re-export with the current extension to compare {requested_network}")
+
+    # When the export cannot say what the maximums and deductibles are under
+    # the sheet's network, the PPO table stays for the plan-level facts (plan
+    # year, benefit period) and the amounts are reported as unavailable.
+    # Premier shares the PPO maximums and deductibles unless the export lists
+    # rows of its own for it.
+    network_maximums = _network_accumulator_rows(raw, network) if network else maximums
+    if network_maximums is None and network == _PREMIER_DENTIST:
+        network_maximums = maximums
+    accumulators_unavailable = network_maximums is None
+    if network_maximums is not None:
+        maximums = network_maximums
     separate_networks = {
         name
         for result in results
@@ -1301,11 +1549,11 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = N
     limitation_records_present = bool(
         (raw.get("exclusions_and_limitations") or {}).get("records")
     )
-    routine_by_code = {
-        str(row.get("procedureCode") or "").upper(): row
-        for row in ((raw.get("routine_procedures") or {}).get("rows") or [])
-        if isinstance(row, dict) and row.get("procedureCode")
-    }
+    routine_by_code = _routine_rows_by_code(raw)
+
+    # The patient's age on the export date picks the band of an age-banded
+    # frequency sentence (Smile 11/05, ported to Star 11/09).
+    patient_age = _patient_age(selected.get("birthdate"), raw.get("captured_at"))
 
     procedures: list[dict[str, Any]] = []
     for code, result in result_by_code.items():
@@ -1321,7 +1569,7 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = N
             if _phrase_applies(code, sentence) and sentence not in limitations:
                 limitations.append(sentence)
 
-        frequency, frequency_source, frequency_scope = _derive_frequency(code, limitations)
+        frequency, frequency_source, frequency_scope = _derive_frequency(code, limitations, patient_age)
         age_limit, age_source = _derive_age(code, limitations)
         level = _network_level(result, network, separate_networks, offered_networks)
         network_entry = _network_entry(result, network) if network else None
@@ -1361,6 +1609,7 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = N
             "toolkit_service_dates": [],
             "toolkit_source_limitations": limitations,
             "toolkit_history_status": _text(result.get("history_status")),
+            "toolkit_eligible_now": _routine_eligible_now(routine_by_code.get(code)),
             "toolkit_age_limits": list(result.get("age_limits") or []),
             "toolkit_related_limitations": list(result.get("related_limitations") or []),
             "toolkit_raw": result,
@@ -1382,6 +1631,13 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = N
     oon_stated = bool(
         _OON_PARTICIPATION_RE.search(coverage_notes_text)
         and re.search(r"may be responsible for more than the percentage indicated", coverage_notes_text, re.IGNORECASE)
+    ) or any(
+        # [11/09] A plan whose network list names a non-participating network
+        # pays out of network, whatever the notes say (Lisa Rawlinson: "MN
+        # Non-NPF Non Par Dentist", with no non-participating note).
+        re.search(r"\bnon[\s-]?par(?:ticipating)?\b", _text(name), re.IGNORECASE)
+        for key in ("offered_by_plan", "available_in_output")
+        for name in ((raw.get("networks") or {}).get(key) or [])
     )
 
     def _is_zero(value: Any) -> bool:
@@ -1462,7 +1718,8 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = N
             if not isinstance(config, dict):
                 continue
             networks = {str(x).strip().lower() for x in (config.get("networks") or [])}
-            if "ppo dentist" in networks:
+            # A 1.53+ export lists only its own network's configuration.
+            if (export_network or "PPO Dentist").lower() in networks:
                 ortho_age = _plan_ortho_age_cap(config)
                 break
     if not ortho_age and re.fullmatch(r"\d{1,3}", _text(ortho_info.get("ortho_age_limit_under"))):
@@ -1606,7 +1863,11 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = N
             "ortho_max_type": ortho_max_type,
             "ortho_payment_timing": ortho_payment_timing,
             "no_deductible": no_deductible,
-            "benefit_network": network or "PPO Dentist",
+            "benefit_network": network or (requested_network if export_network else None) or "PPO Dentist",
+            "requested_benefit_network": requested_network or "PPO Dentist",
+            # The network a 1.53+ export holds alone ("" for an older export).
+            "export_network": export_network,
+            "benefit_network_note": network_note,
             "accumulators_unavailable": accumulators_unavailable,
             "claim_payor_id": _text(((raw.get("more_information") or {}).get("claim_and_inquiry_mailing_addresses") or {}).get("payorId")),
             "group_name": group_name,
