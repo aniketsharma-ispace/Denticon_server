@@ -311,7 +311,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
             await waitForDownloadCompletion(downloadId);
         } catch (primaryErr) {
-            console.warn('Primary Guardian download failed:', primaryErr);
+            console.warn('Primary download failed:', primaryErr);
 
             // Fallback for browsers that reject a data: URL from the downloads
             // API. Keep the object URL alive until the download itself completes.
@@ -334,7 +334,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             await chrome.storage.local.remove('audit_context');
             status.textContent = 'Success: Data Exported & Cleared';
         } else {
-            status.textContent = 'Guardian JSON downloaded successfully.';
+            status.textContent = 'JSON downloaded successfully.';
         }
 
         if (closeAfterDownload) {
