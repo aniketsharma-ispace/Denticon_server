@@ -104,27 +104,27 @@ def _in_band(age, band):
     return low <= age < high
 
 
-_UNDER_AGE_RE = re.compile(
-    r'\bunder\s+(?:age\s+)?(\d{1,3})(?:\s+years?\s+of\s+age)?\b|\bto\s+age\s+(\d{1,3})\b', re.IGNORECASE)
+_UNDER_AGE_RE = re.compile(r'\bunder\s+(?:age\s+)?(\d{1,3})(?:\s+years?\s+of\s+age)?\b', re.IGNORECASE)
 
 
 def _age_limit(lines):
     """
-    The age limit the sheet records for the code: the number UCCI states.
-    "Under 19 Years Of Age" → 0-19, "Age 18 And Older" → 18-99.
+    The age limit the sheet records for the code. "Under N" is the last age
+    still covered, N - 1 (team rule, 11/09): "Under 19 Years Of Age" → 0-18.
+    "Age 18 And Older" → 18-99.
 
     A limitation can name more than one age, per tooth:
     "Under 11 Years Of Age ~ Permanent 1st Molars ~ Under 16 Years Of Age ~
     Permanent 2nd Molars". The highest one is the code's age limit (team
-    rule, 11/05; the rule the other carriers follow too), so that is 0-16.
+    rule, 11/05; the rule the other carriers follow too), so that is 0-15.
     """
     highest = None
     for line in lines:
         for m in _UNDER_AGE_RE.finditer(clean(line)):
-            age = int(m.group(1) or m.group(2))
+            age = int(m.group(1))
             highest = age if highest is None else max(highest, age)
     if highest is not None:
-        return f'0-{highest}'
+        return f'0-{max(highest - 1, 0)}'
     for line in lines:
         band = _age_band(line)
         if band:

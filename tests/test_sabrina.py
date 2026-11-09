@@ -4226,9 +4226,14 @@ check("ucci: not covered is 0% and NC", (_ucp["D4381"]["benefit_level"], _ucp["D
       ("0%", "NOT COVERED"))
 check("ucci: past the age limit the % is not stated, the frequency and age still are",
       (_ucp["D1351"]["benefit_level"], _ucp["D1351"]["frequency_limit"], _ucp["D1351"]["age_limit"]),
-      ("", "1X3Years", "0-16"))
+      ("", "1X3Years", "0-15"))
 check("ucci: the code's own % skips the ortho line", _ucp["D0274"]["benefit_level"], "100%")
-check("ucci: age limits as ranges", (_ucp["D1206"]["age_limit"], _ucp["D6010"]["age_limit"]), ("0-19", "18-99"))
+check("ucci: a limitation naming several ages takes the highest (D1351: Under 11 … Under 16 → 15)",
+      _up._age_limit(["No Coverage Due to Age Limitation",
+                      "1 Per Tooth ~ Per 3 Years ~ Under 11 Years Of Age ~ Permanent 1st Molars ~ "
+                      "Under 16 Years Of Age ~ Permanent 2nd Molars"]), "0-15")
+check("ucci: Under N is N - 1; And Older keeps its age",
+      (_ucp["D1206"]["age_limit"], _ucp["D6010"]["age_limit"]), ("0-18", "18-99"))
 check("ucci: history counts the own frequency group (D0150 takes D0120's exam)",
       _ucp["D0150"]["late_date_of_service"], "04/29/2026")
 check("ucci: and the fluoride sibling (D1206 takes D1208's)", _ucp["D1206"]["late_date_of_service"], "04/29/2026")
