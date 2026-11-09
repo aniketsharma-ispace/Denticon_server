@@ -69,6 +69,43 @@ document.addEventListener('DOMContentLoaded', async () => {
         return 'Extractor scripts are loaded but did not answer. Reload this tab and retry.';
     }
 
+    // Must match the Guardian entry in manifest.json's host_permissions.
+    // Firefox can install the extension without granting it a site, and then
+    // content_guardian.js never runs there.
+    const GUARDIAN_ORIGINS = ['*://www.guardiananytime.com/*'];
+    let guardianSiteAccess = true;
+    if (isGuardian && chrome.permissions?.contains) {
+        try { guardianSiteAccess = await chrome.permissions.contains({ origins: GUARDIAN_ORIGINS }); } catch (_) { guardianSiteAccess = true; }
+    }
+    const guardianNoAccessText = 'This browser has not allowed the extension to access guardiananytime.com. Click Crawl to allow it; the page will reload.';
+    // Why content_guardian.js did not answer the popup.
+    async function diagnoseGuardianInjection() {
+        if (!guardianSiteAccess) return guardianNoAccessText;
+        const probe = async world => {
+            try {
+                const [result] = await chrome.scripting.executeScript({
+                    target: { tabId: tab.id },
+                    world,
+                    func: () => ({
+                        isolated: Boolean(globalThis.__GUARDIAN_ISOLATED_INSTALLED__),
+                        main: Boolean(globalThis.__GUARDIAN_MAIN_INSTALLED__)
+                    })
+                });
+                return result?.result || null;
+            } catch (error) {
+                return { error: error?.message || String(error) };
+            }
+        };
+        const isolated = await probe('ISOLATED');
+        const main = await probe('MAIN');
+        console.warn('Guardian injection diagnosis', { isolated, main });
+        if (isolated?.error) return `The browser will not let the extension run on this page: ${isolated.error}. Check the extension's site access for guardiananytime.com and any company browser policy.`;
+        if (!isolated?.isolated) return 'The Guardian scraper is not loaded in this tab. Press F5 to reload the Dental Eligibility page (needed after the extension is installed or updated), then retry. If this repeats, press F12 on the page and send the red error from the Console.';
+        if (main?.error) return `The page-level part of the Guardian scraper could not be checked: ${main.error}`;
+        if (!main?.main) return 'The page-level part of the Guardian scraper did not load (Firefox needs version 128 or newer). Reload the tab and retry.';
+        return 'The Guardian scraper is loaded but did not answer. Reload the tab and retry.';
+    }
+
     const result = await chrome.storage.local.get([
         'audit_context',
         'crawl_progress',
@@ -449,7 +486,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (isGuardian) {
         chrome.tabs.sendMessage(tab.id, { command: 'GET_GUARDIAN_STATUS' }, (response) => {
             if (chrome.runtime.lastError) {
-                status.textContent = 'Guardian extractor not loaded. Refresh the Dental Eligibility tab, then retry.';
+                status.textContent = guardianSiteAccess
+                    ? 'Guardian extractor not loaded. Checking why…'
+                    : guardianNoAccessText;
+                diagnoseGuardianInjection().then(text => { status.textContent = text; });
                 return;
             }
             if (response) renderGuardianStatus({ ...response, state: response.sweepState?.toUpperCase() });
@@ -593,9 +633,25 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Guardian's CDT endpoint again - the content script just re-saves
             // the JSON. With a code search still missing it offers those
             // searches again. A new patient/VOB capture resets the state.
+            if (!guardianSiteAccess) {
+                // Asked from the click itself, as Firefox requires.
+                chrome.permissions.request({ origins: GUARDIAN_ORIGINS }).then(granted => {
+                    if (!granted) {
+                        status.textContent = 'Site access was not allowed, so the extension cannot run on Guardian.';
+                        return;
+                    }
+                    guardianSiteAccess = true;
+                    status.textContent = 'Site access allowed. The Guardian page is reloading — open this popup and click Crawl once it has loaded.';
+                    chrome.tabs.reload(tab.id);
+                }).catch(error => {
+                    status.textContent = `Could not request site access: ${error.message}`;
+                });
+                return;
+            }
             chrome.tabs.sendMessage(tab.id, { command: 'GET_GUARDIAN_STATUS' }, (current) => {
                 if (chrome.runtime.lastError) {
-                    status.textContent = 'Guardian extractor not loaded. Refresh the Dental Eligibility tab, then retry.';
+                    status.textContent = 'Guardian extractor not loaded. Checking why…';
+                    diagnoseGuardianInjection().then(text => { status.textContent = text; });
                     return;
                 }
 
@@ -607,7 +663,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 chrome.tabs.sendMessage(tab.id, { command: 'START_CRAWL' }, (response) => {
                     if (chrome.runtime.lastError) {
-                        status.textContent = 'Guardian extractor not loaded. Refresh the tab and retry.';
+                        status.textContent = 'Guardian extractor not loaded. Checking why…';
+                        diagnoseGuardianInjection().then(text => { status.textContent = text; });
                         btnCrawl.disabled = false;
                         btnCrawl.textContent = 'Retry Crawl';
                         return;
