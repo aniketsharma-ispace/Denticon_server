@@ -358,18 +358,63 @@ def _pdf_ortho_payment_timing(text: str) -> str | None:
     return value or None
 
 
+_PREMIER_NETWORK = "Premier Dentist"
 _OUT_OF_NETWORK = "Nonparticipating Dentist"
 
 
-def _toolkit_benefit_network(fields: dict) -> str | None:
-    """
-    The Delta network whose benefits the sheet records.
+# Which benefits a Delta Fee Schedule carries, from the office's fee schedule
+# table (11/04 review):
+#   Premier benefits: "#4 MI - DD Prem Reg6", "MI Delta Premier Region 6",
+#                     "MI Delta Premier Perio", "#199 MI - DD Prem Perio"
+#   PPO benefits:     "#3 MI - DD LITE Pr Reg6", "MI Delta Premier Lite Region 6",
+#                     "MI Delta Premier Lite Perio", "#99 MI Delta Premier Lite Region 4",
+#                     "#203 MI - DD PremLT Perio"
+# A Premier Lite schedule names Premier too, so Lite is checked first. A bare
+# "Pr" is not Premier.
+_PREMIER_FEE_SCHEDULE_RE = re.compile(r"\bprem(?:ier)?\b", re.IGNORECASE)
+_PREMIER_LITE_FEE_SCHEDULE_RE = re.compile(r"\blite\b|\bprem(?:ier)?\s*(?:lite|lt)\b", re.IGNORECASE)
 
-    A sheet answering In Network "Out" is filled in for a non-participating
-    office, from the Toolkit's Nonparticipating Dentist column. Any other
-    answer, or none, is compared with the PPO Dentist column as before.
+
+def _fee_schedule_is_premier(fee_schedule: str) -> bool:
+    """Whether a sheet's Fee Schedule carries the Premier Dentist benefits:
+    it names Premier and is not a Premier Lite schedule (those carry PPO's)."""
+    return bool(_PREMIER_FEE_SCHEDULE_RE.search(fee_schedule)
+                and not _PREMIER_LITE_FEE_SCHEDULE_RE.search(fee_schedule))
+
+
+def _toolkit_benefit_network(fields: dict) -> tuple[str | None, str, str]:
     """
-    return _OUT_OF_NETWORK if _norm_network(fields.get("in_network")) == "OUT" else None
+    The Delta network whose benefits the sheet records, why, and any
+    contradiction on the sheet itself (Smile 11/02-11/04 reviews, ported to Star 11/09).
+
+    1. A Premier Fee Schedule: the Toolkit's Premier Dentist figures
+       (Timothy Zorn: 90/80/60 against PPO 100/90/70), even when In Network
+       says Out. Such a sheet contradicts itself, so the conflict is returned.
+       A Premier Lite schedule is not a Premier one: it carries the PPO
+       figures (Anna Tucker: 90% against Premier 70%).
+    2. In Network "Out", or a UCR fee schedule (the office's own fees, as an
+       out-of-network office bills): the Nonparticipating Dentist figures. A
+       UCR fee schedule on a sheet that says In is a conflict too.
+    3. Anything else: PPO Dentist, as before (None).
+    """
+    # Local import: the adapter imports this package, so a module-level import
+    # would be circular.
+    from ....portals.delta_toolkit import _network_from_fee_schedule
+
+    fee_schedule = str(fields.get("fee_schedule") or "").strip()
+    in_network = _norm_network(fields.get("in_network"))
+    if _fee_schedule_is_premier(fee_schedule):
+        conflict = ("the sheet says In Network: Out, but its Fee Schedule names Premier"
+                    if in_network == "OUT" else "")
+        return _PREMIER_NETWORK, f"sheet Fee Schedule: {fee_schedule}", conflict
+    ucr = _network_from_fee_schedule(fee_schedule) == "Out"
+    if in_network == "OUT" or ucr:
+        reasons = (["sheet In Network: Out"] if in_network == "OUT" else []) + (
+            [f"sheet Fee Schedule: {fee_schedule}"] if ucr else [])
+        conflict = ("the sheet says In Network: In, but its Fee Schedule is UCR"
+                    if ucr and in_network == "IN" else "")
+        return _OUT_OF_NETWORK, ", ".join(reasons), conflict
+    return None, "", ""
 
 
 def _toolkit_identity_gate(sabrina_parsed: dict, portal_norm: dict) -> tuple[bool, list[str]]:
@@ -400,9 +445,14 @@ def _toolkit_identity_gate(sabrina_parsed: dict, portal_norm: dict) -> tuple[boo
     if not sab_dob or not tool_dob or sab_dob != tool_dob:
         issues.append(f"DOB mismatch ({fields.get('patient_dob')!r} vs {subscriber.get('dob')!r})")
 
+    # The sheet's eligibility is read from the Delta benefit pages Sabrina
+    # embeds in the PDF. A sheet with none embedded (Matthew Frauenshuh, 11/09:
+    # verified by ticket fax) cannot state it, which is not a disagreement:
+    # name, DOB and group still identify the member. The Toolkit must still
+    # state eligibility, and the two must agree when both do.
     sab_elig = _pdf_eligibility(sabrina_parsed.get("text", ""))
     tool_elig = _toolkit_eligibility({}, portal_norm)
-    if not sab_elig or not tool_elig or sab_elig.lower() != tool_elig.lower():
+    if not tool_elig or (sab_elig and sab_elig.lower() != tool_elig.lower()):
         issues.append(f"eligibility mismatch ({sab_elig!r} vs {tool_elig!r})")
 
     sab_group = _norm_id(fields.get("group_number"))
@@ -412,7 +462,19 @@ def _toolkit_identity_gate(sabrina_parsed: dict, portal_norm: dict) -> tuple[boo
 
     tool_network = str(((portal_norm.get("metlife_data") or {}).get("plan_details") or {}).get("network") or "").strip()
     normalized_network = re.sub(r"\s+", " ", tool_network).casefold()
-    if normalized_network != "ppo dentist":
+    meta = portal_norm.get("_toolkit_meta") or {}
+    if meta.get("export_network"):
+        # Extension 1.53+ exports the one network picked before the crawl: it
+        # must be the network the sheet records (In Network Out / a UCR fee
+        # schedule → Nonparticipating Dentist, a Premier one → Premier Dentist).
+        expected = str(meta.get("requested_benefit_network") or "PPO Dentist")
+        if normalized_network != re.sub(r"\s+", " ", expected).casefold():
+            issues.append(
+                f"Toolkit network mismatch ({tool_network!r}); the sheet records {expected} "
+                f"benefits, so re-export choosing {expected}")
+    elif normalized_network != "ppo dentist":
+        # An older export keeps PPO Dentist as its own figures and every other
+        # network under `out_of_network`.
         issues.append(f"Toolkit network mismatch ({tool_network!r}); expected PPO Dentist")
 
     return not issues, issues
