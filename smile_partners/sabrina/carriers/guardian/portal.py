@@ -323,8 +323,8 @@ def _portal_major_paid_on(bd: dict, portal_raw: dict, sab_raw=None) -> str | Non
 def _portal_d4341_quads(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
     D4341 number of quadrants — the figure Sabrina prints in D4341's Age Limit
-    column. Read only where the portal states a count; Guardian's "once per
-    quadrant in any 24 consecutive month period" is a frequency, not one.
+    column. Guardian's "covered once per quadrant in any 12 consecutive month
+    period" covers each of the four (portals/guardian.py reads it as 4).
     """
     value = str(bd.get("d4341_number_of_quads") or "").strip()
     return value if value.isdigit() else None

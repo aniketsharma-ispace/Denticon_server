@@ -76,7 +76,8 @@ page sends the client with a PDF, and `/api/parse-pdf` lets a client's
 D4260, D7140, D7210 and D9944 are taken from Guardian's CDT code search; without
 one (a PDF, a skipped search) only a main-page row that names the code counts
 ("D2980-D2983 … are covered under Major"), and otherwise they read "not on
-portal". `sheet/`
+portal". D5899, D5995, D6057 and D6058 are searched too (2026-11-09), but keep
+their main-page answer when the search gets no click or shows no row. `sheet/`
 only acknowledges the upload; a parsing fix for an audit goes in the carrier's
 own `parser.py`.
 

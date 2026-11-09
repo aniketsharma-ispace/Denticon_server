@@ -168,6 +168,33 @@ def _guardian_replacement_frequency(messages, code):
     return row_wide
 
 
+# Guardian also states that a code has no limit, which the sheet writes "No
+# Frequency" (or "Frequency not available"):
+#   - in words: "Palliative (emergency) treatment (D9110) is covered with no
+#     frequency limitation"; "Amalgam restorations … and resin-based composite
+#     restorations … are covered with no frequency limitation" (no code named:
+#     the whole Fillings row);
+#   - by covering the code in a sentence of its own that gives no limit, with
+#     no sentence giving one: "Intraoral periapical and occlusal x-rays (D0220,
+#     D0230, D0240) are covered up to a maximum allowable amount …";
+#   - in the CDT code search's own answer for the code, which gives none.
+# A code Guardian never singles out (D4346 under Periodontics) stays unstated:
+# silence is not "no limit". Nor is an "Includes codes: …" listing.
+_GUARDIAN_NO_LIMIT_RE = re.compile(r'\bwith\s+no\s+(?:frequency\s+)?limitations?\b', re.IGNORECASE)
+
+
+def _guardian_states_no_limit(record, code):
+    from .guardian_pdf import _COVERED_RE, _NOT_COVERED_RE, _applies, _code_listing, _evidence_blocks
+
+    if clean(record.get('lookup_status')) == _GUARDIAN_CDT_SEARCH_LOOKUP:
+        return True
+    blocks = _evidence_blocks(record.get('message') if isinstance(record.get('message'), list) else [])
+    if any(_applies(b, code) and _GUARDIAN_NO_LIMIT_RE.search(b['text']) for b in blocks):
+        return True
+    return any(code in b['codes'] and _COVERED_RE.search(b['text']) and not _NOT_COVERED_RE.search(b['text'])
+               and not _code_listing(b['text']) for b in blocks)
+
+
 # ── Age limit ────────────────────────────────────────────────────────────────
 
 def _guardian_age_limit(text):
@@ -510,7 +537,13 @@ def _guardian_procedure(record, raw, network):
         frequency = ''
     else:
         frequency = (_guardian_frequency(record.get('frequency'))
-                     or _guardian_replacement_frequency(record.get('message'), code))
+                     or _guardian_replacement_frequency(record.get('message'), code)
+                     or ('No Frequency' if _guardian_states_no_limit(record, code) else ''))
+
+    # "Scaling and root planing (D4341, D4342) is covered once per quadrant in
+    # any 12 consecutive month period": each of the four quadrants.
+    per_quadrant = (covered is True and code in ('D4341', 'D4342')
+                    and re.search(r'\bper\s+quadrant\b', clean(record.get('frequency')), re.IGNORECASE))
 
     return {
         'procedure_code': code,
@@ -519,7 +552,7 @@ def _guardian_procedure(record, raw, network):
         'benefit_level': pct,
         'age_limit': _guardian_age_limit(record.get('age_limit')) if covered is not None else '',
         'late_date_of_service': _guardian_history(record.get('last_visit_date')) if covered is not None else '',
-        'number_of_quads': '',
+        'number_of_quads': '4' if per_quadrant else '',
         '_guardian_covered': covered,
         '_guardian_age_excluded': age_only,
         '_guardian_lookup': clean(record.get('lookup_status')),
@@ -536,7 +569,8 @@ def _normalize_guardian_portal(raw):
     relationship = clean(raw.get('relation_to_member'))
     patient_name = clean(raw.get('patient_name'))
     patient_dob = clean(info.get('date_of_birth'))
-    is_self = relationship.lower() in ('self', 'member', 'employee', 'subscriber')
+    # The live export sends Guardian's code ("M"); the page prints "Member".
+    is_self = relationship.lower() in ('self', 'member', 'm', 'employee', 'subscriber')
 
     deductibles = _guardian_on_network(raw.get('deductibles'), network)
     individual = next((d for d in deductibles if 'individual' in clean(d.get('coverage')).lower()), {})

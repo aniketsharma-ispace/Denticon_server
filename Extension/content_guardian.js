@@ -20,6 +20,8 @@
  * scripted Search clicks, so when one gets no answer an on-page prompt asks
  * the user to click Search for each of those codes. With no click for 3
  * minutes it stops asking and downloads without the remaining searches.
+ * CDT_EXTRA_SEARCH_CODES (D5899, D5995, D6057, D6058) are searched the same
+ * way after them, but keep their main-page record when no row comes back.
  *
  * ARCHITECTURE (dual-world, same as content_dd_toolkit.js):
  *   MAIN world     -> monkey-patches fetch()/XHR only to capture the VOB
@@ -66,6 +68,12 @@
     // own "Search coverage by CDT code" box (team rule, 2026-11-02). Every
     // other code is derived from the Plan Options rows.
     const CDT_SEARCH_CODES = Object.freeze(["D1510", "D2980", "D4260", "D7140", "D7210", "D9944"]);
+    // Also searched (team request, 2026-11-09): the main page seldom names
+    // these, so Guardian's own answer is asked for too. Unlike the codes
+    // above they keep their main-page record until a search answers with a
+    // row (Implants rows do state D6057/D6058 on some plans).
+    const CDT_EXTRA_SEARCH_CODES = Object.freeze(["D5899", "D5995", "D6057", "D6058"]);
+    const CDT_ALL_SEARCH_CODES = Object.freeze([...CDT_SEARCH_CODES, ...CDT_EXTRA_SEARCH_CODES]);
     const CDT_SEARCH_LOOKUP = "Guardian CDT code search";
 
     // Guardian Plan Options are service-level rows, not one row per CDT code.
@@ -1364,8 +1372,29 @@
                 : isCompletedProcedureRecord(record);
         }
 
+        // Whether Guardian's search has answered for a code (an extra code's
+        // answer may have been "no row", noted on its main-page record).
+        function isSearched(code) {
+            const record = procedureCodes.get(code);
+            return record?.lookup_status === CDT_SEARCH_LOOKUP ||
+                (CDT_EXTRA_SEARCH_CODES.includes(code) && Boolean(record?.cdt_search));
+        }
+
         function cdtMissing() {
-            return CDT_SEARCH_CODES.filter((code) => !isRecordDone(code));
+            return CDT_ALL_SEARCH_CODES.filter((code) => !isSearched(code));
+        }
+
+        // A search answer onto the code's record. An extra code whose search
+        // showed no row keeps its main-page record, with the search noted.
+        function applyCdtCapture(code, capture) {
+            const record = buildCdtSearchRecord(code, capture.rows, latestResult, capture);
+            const found = (Array.isArray(capture.rows) ? capture.rows : []).filter(Boolean).length;
+            if (!found && CDT_EXTRA_SEARCH_CODES.includes(code)) {
+                const base = procedureCodes.get(code) || buildLocalProcedureRecord(code);
+                procedureCodes.set(code, { ...base, cdt_search: record.cdt_search });
+                return;
+            }
+            procedureCodes.set(code, record);
         }
 
         function buildExport() {
@@ -1381,8 +1410,8 @@
                 procedure_codes_complete: ALL_CODES.every(isRecordDone),
                 procedure_codes: materializedProcedureCodes,
                 cdt_search: {
-                    required: CDT_SEARCH_CODES.slice(),
-                    searched: CDT_SEARCH_CODES.filter(isRecordDone),
+                    required: CDT_ALL_SEARCH_CODES.slice(),
+                    searched: CDT_ALL_SEARCH_CODES.filter(isSearched),
                     missing: cdtMissing(),
                     click_mode: cdtClickMode
                 }
@@ -1394,17 +1423,17 @@
         function codeInSearchBox() {
             const digits = String(findCdtInput()?.value || "").replace(/\D/g, "");
             const code = digits.length === 4 ? `D${digits}` : null;
-            return CDT_SEARCH_CODES.includes(code) ? code : null;
+            return CDT_ALL_SEARCH_CODES.includes(code) ? code : null;
         }
 
         function recordCdtCapture(capture, code = null) {
             const target = code || activeSearch?.code || codeInSearchBox();
-            if (!target || !CDT_SEARCH_CODES.includes(target)) return;
+            if (!target || !CDT_ALL_SEARCH_CODES.includes(target)) return;
             cdtCaptures.set(target, { ...capture, at: Date.now() });
             // Searched by hand outside a crawl: keep it, so Crawl does not
             // ask for that code again.
             if (!activeSearch && latestResult && sweepState !== "running") {
-                procedureCodes.set(target, buildCdtSearchRecord(target, capture.rows, latestResult, capture));
+                applyCdtCapture(target, capture);
                 persist();
             }
         }
@@ -1413,10 +1442,21 @@
             const rows = findCdtRows(msg.data);
             // One code's answer is a row or two; a full Plan Options list is
             // some other call, never a search.
-            if (!rows.length || rows.length > 5) return;
+            if (rows.length > 5) return;
+            // The search call itself (/gaprovider/api/cdt/plan-options on the
+            // live site) answering with no row is still its answer — kept
+            // with what Guardian said, so a table left from the previous code
+            // is never taken for it.
+            const isSearchCall = /\/cdt\//i.test(String(msg.url || ""));
+            if (!rows.length && !(isSearchCall && msg.ok !== false)) return;
             recordCdtCapture(
-                { method: "api", url: msg.url || null, rows },
-                cdtCodeFromRequest(msg.url, msg.body, CDT_SEARCH_CODES)
+                {
+                    method: "api",
+                    url: msg.url || null,
+                    rows,
+                    text: rows.length ? null : JSON.stringify(msg.data ?? null).slice(0, 2000)
+                },
+                cdtCodeFromRequest(msg.url, msg.body, CDT_ALL_SEARCH_CODES)
             );
         }
 
@@ -1534,6 +1574,19 @@
             return table ? normalizeEvidenceText(table.innerText) : "";
         }
 
+        // Guardian's message under the search box (#cdt-input-error-message),
+        // shown when a search has no answer. "Please enter any search
+        // criteria" is only the empty-box warning.
+        function cdtErrorText() {
+            const el = document.getElementById("cdt-input-error-message") ||
+                document.querySelector(".error-result-not-found");
+            if (!el) return "";
+            const r = el.getBoundingClientRect();
+            if (!(r.width > 0 && r.height > 0)) return "";
+            const text = normalizeEvidenceText(el.innerText);
+            return /please enter any search criteria/i.test(text) ? "" : text;
+        }
+
         function cdtTableCells(table) {
             const headers = Array.from(table.querySelectorAll("th"))
                 .map((th) => normalizeEvidenceText(th.innerText).toLowerCase());
@@ -1576,6 +1629,18 @@
                     sawLoading = true;
                     await sleep(300);
                     continue;
+                }
+                // A "not found" message is this search's answer — checked
+                // before the table, which may still show the previous code.
+                const error = cdtErrorText();
+                if (error && (error !== search.beforeError || sawLoading ||
+                        (search.userClickedAt && Date.now() - search.userClickedAt >= 1500))) {
+                    await sleep(500);   // the API answer wins when it comes too
+                    const late = cdtCaptures.get(code);
+                    if (late && late.at >= search.startedAt) return late;
+                    const capture = { method: "message", rows: [], text: error.slice(0, 1000), at: Date.now() };
+                    cdtCaptures.set(code, capture);
+                    return capture;
                 }
                 const table = findCdtResultTable();
                 const text = table ? normalizeEvidenceText(table.innerText) : "";
@@ -1630,7 +1695,7 @@
             const label = `${code} (${position} of ${total})`;
             const beforeText = cdtTableText();
             const button = findCdtSearchButton();
-            const search = { code, startedAt: Date.now(), userClickedAt: null };
+            const search = { code, startedAt: Date.now(), userClickedAt: null, beforeError: cdtErrorText() };
             // Only a real click is trusted; the extension's own is not.
             const onClick = (event) => { if (event.isTrusted) search.userClickedAt = Date.now(); };
             button?.addEventListener("click", onClick, true);
@@ -1765,8 +1830,11 @@
             }
             if (sweepState === "done") {
                 const missing = cdtMissing();
+                const required = missing.filter((code) => CDT_SEARCH_CODES.includes(code));
+                const extra = missing.filter((code) => CDT_EXTRA_SEARCH_CODES.includes(code));
                 return `[+] Guardian data + ${ALL_CODES.length} procedure-code records. JSON downloaded.` +
-                    (missing.length ? ` Not searched (will read "not on portal"): ${missing.join(", ")}.` : "");
+                    (required.length ? ` Not searched (will read "not on portal"): ${required.join(", ")}.` : "") +
+                    (extra.length ? ` Not searched (main page used): ${extra.join(", ")}.` : "");
             }
             if (sweepState === "failed") {
                 return `[!] Guardian crawl paused. ${failureReason || "Retry the crawl."}`;
@@ -1810,10 +1878,12 @@
             const pending = ALL_CODES.filter((code) => {
                 if (CDT_SEARCH_CODES.includes(code)) return false;
                 if (force) return true;
+                // An extra code Guardian's search answered keeps that answer.
+                if (CDT_EXTRA_SEARCH_CODES.includes(code) && isSearched(code)) return false;
                 const record = procedureCodes.get(code);
                 return !record || record.lookup_status !== "Derived from Guardian Plan Options" || record.error;
             });
-            const pendingSearches = force ? CDT_SEARCH_CODES.slice() : cdtMissing();
+            const pendingSearches = force ? CDT_ALL_SEARCH_CODES.slice() : cdtMissing();
 
             sweepState = "running";
             failureReason = null;
@@ -1864,7 +1934,11 @@
                     outcome = { error: `search failed (${String(err)})` };
                 }
                 if (outcome.capture) {
-                    procedureCodes.set(code, buildCdtSearchRecord(code, outcome.capture.rows, latestResult, outcome.capture));
+                    applyCdtCapture(code, outcome.capture);
+                } else if (CDT_EXTRA_SEARCH_CODES.includes(code)) {
+                    // Not searched: the main-page record stands, and Crawl
+                    // offers the search again.
+                    if (/not found on this page/.test(outcome.error)) cdtSearchStopped = true;
                 } else {
                     procedureCodes.set(code, {
                         ...buildMissingProcedureRecord(code, `CDT code search not done: ${outcome.error}`),
@@ -1989,7 +2063,7 @@
                 return String(url).includes(API_PATH);
             }
         };
-        const handleApiJson = (url, body, json) => {
+        const handleApiJson = (url, body, json, ok = true) => {
             try {
                 if (!/cdt|procedure/i.test(String(url)) && !/"(?:dental_service|coinsurance)"/.test(JSON.stringify(json))) return;
                 window.postMessage({
@@ -1997,6 +2071,7 @@
                     type: "API_RESPONSE",
                     url: String(url),
                     body: typeof body === "string" ? body.slice(0, 2000) : "",
+                    ok: Boolean(ok),
                     data: json
                 }, window.location.origin);
             } catch (_) {}
@@ -2010,7 +2085,7 @@
                     try { response.clone().json().then(handleVobJson).catch(() => {}); } catch (_) {}
                 } else if (isGuardianApi(url)) {
                     try {
-                        response.clone().json().then((json) => handleApiJson(url, init?.body, json)).catch(() => {});
+                        response.clone().json().then((json) => handleApiJson(url, init?.body, json, response.ok)).catch(() => {});
                     } catch (_) {}
                 }
                 return response;
@@ -2034,7 +2109,9 @@
                     });
                 } else if (url && isGuardianApi(url)) {
                     this.addEventListener("load", () => {
-                        try { handleApiJson(url, body, JSON.parse(this.responseText)); } catch (_) {}
+                        try {
+                            handleApiJson(url, body, JSON.parse(this.responseText), this.status >= 200 && this.status < 300);
+                        } catch (_) {}
                     });
                 }
                 return originalSend.call(this, body);
@@ -2337,6 +2414,6 @@
     // Expose for Node-side unit testing only; harmless no-op in the browser
     // (module is undefined there, so this whole block never runs).
     if (typeof module !== "undefined" && module.exports) {
-        module.exports = { transformVobResponse, buildProcedureRecord, buildProcedureRecordFromPlanOption, extractFrequency, extractAgeLimit, extractConditionalExclusions, ALL_CODES, PROCEDURE_SERVICE_MAP, deriveCoverage, resolveGoverningRow, buildDeductibles, buildPlanAllowance, toMoney, isLiteralCodeMention, deriveMissingToothExclusion, evaluateAgeEligibility, inferCategoryFromRowName, deriveLocalProcedureRecord, exportFilename, PROCEDURE_DERIVATION_VERSION, CDT_SEARCH_CODES, CDT_SEARCH_LOOKUP, cdtRowFromApi, findCdtRows, cdtRowsFromTableCells, cdtCodeFromRequest, buildCdtSearchRecord };
+        module.exports = { transformVobResponse, buildProcedureRecord, buildProcedureRecordFromPlanOption, extractFrequency, extractAgeLimit, extractConditionalExclusions, ALL_CODES, PROCEDURE_SERVICE_MAP, deriveCoverage, resolveGoverningRow, buildDeductibles, buildPlanAllowance, toMoney, isLiteralCodeMention, deriveMissingToothExclusion, evaluateAgeEligibility, inferCategoryFromRowName, deriveLocalProcedureRecord, exportFilename, PROCEDURE_DERIVATION_VERSION, CDT_SEARCH_CODES, CDT_EXTRA_SEARCH_CODES, CDT_ALL_SEARCH_CODES, CDT_SEARCH_LOOKUP, cdtRowFromApi, findCdtRows, cdtRowsFromTableCells, cdtCodeFromRequest, buildCdtSearchRecord };
     }
 })();

@@ -3813,6 +3813,56 @@ check("guardian: ortho maximum and used are read, and no ortho deductible listed
       {"ortho_max": ("1,500.00", "match"), "ortho_max_paid": ("834.00", "match"),
        "ortho_ded": ("0.00", "match"), "ortho_ded_paid": ("0.00", "match")})
 
+# Charles Young's live export (2026-11-09), the first from the real site: the
+# relationship comes as Guardian's code "M" (the page prints "Member"), and
+# the page states "no limit" for codes the extension gives no frequency.
+_GD_FILL_FREE = ["Amalgam restorations (silver fillings) and resin-based composite restorations (white fillings) "
+                 "are covered with no frequency limitation, subject to all other plan provisions."]
+_GD_XRAY = ["Intraoral periapical and occlusal x-rays (D0220, D0230, D0240) are covered up to a maximum "
+            "allowable amount of a full mouth series of x-rays (D0210)."]
+_GD_PERIO = ["Periodontal scaling and root planing (D4341, D4342) is covered once per quadrant in any 12 "
+             "consecutive month period.", "Includes codes: D4249, D4261."]
+_GD_LIVE = dict(_gd_export("M"), patient_name="CHARLES YOUNG", procedure_codes=[
+    _gd_rec("D9110", True, "Palliative Emergency Treatment", "Frequency not available", _GD_PREV, messages=[
+        "Palliative (emergency) treatment (D9110) is covered with no frequency limitation, when no other "
+        "treatment, other than x-rays, is performed during the same visit."]),
+    _gd_rec("D2160", True, "Fillings", "Frequency not available", _GD_BASIC, messages=_GD_FILL_FREE),
+    _gd_rec("D0220", True, "X-Rays", "Frequency not available", _GD_PREV, messages=_GD_XRAY),
+    _gd_rec("D2980", True, "Other Basic", "Frequency not available", _GD_BASIC,
+            status="Guardian CDT code search"),
+    _gd_rec("D4346", True, "Periodontics", "Frequency not available", _GD_BASIC, messages=_GD_PERIO),
+    _gd_rec("D4249", True, "Periodontics", "Frequency not available", _GD_BASIC, messages=_GD_PERIO),
+    _gd_rec("D4341", True, "Periodontics", "once per quadrant in any 12 consecutive month period", _GD_BASIC,
+            messages=_GD_PERIO),
+])
+_gd_live = _gpn._normalize_guardian_portal(_GD_LIVE)
+_gd_live_procs = {p["procedure_code"]: p for p in _gd_live["benefit_coverage"]["procedures"]}
+check("guardian: relationship 'M' is the member, who is then the subscriber",
+      (_gd_live["subscriber_info"]["name"], _gd_live["subscriber_info"]["dob"]), ("CHARLES YOUNG", "01/17/2017"))
+check("guardian: 'no frequency limitation', a code covered with no limit given, or a search answer giving none "
+      "read No Frequency; a code never singled out, or only listed, stays unstated",
+      {c: _gd_live_procs[c]["frequency_limit"] for c in ("D9110", "D2160", "D0220", "D2980", "D4346", "D4249")},
+      {"D9110": "No Frequency", "D2160": "No Frequency", "D0220": "No Frequency", "D2980": "No Frequency",
+       "D4346": "", "D4249": ""})
+check("guardian: scaling and root planing 'once per quadrant' covers all 4 quadrants",
+      _gd_live_procs["D4341"]["number_of_quads"], "4")
+
+# D5899, D5995, D6057 and D6058 are also searched (team request 2026-11-09).
+# A search answer is read like any other; a search that showed no row leaves
+# the main-page record, noted with what Guardian said.
+_GD_EXTRA = dict(_gd_export("M"), procedure_codes=[
+    dict(_gd_rec("D6057", False, "Implants", "Frequency not available", messages=[
+        "Implant abutments (D6056, D6057) are not covered."], status="Guardian CDT code search"),
+         cdt_search={"method": "api", "rows_found": 1}),
+    dict(_gd_rec("D6058", True, "Implants", "Frequency not available", (("In-Network", "50%"), ("Out-Network", "50%")),
+                 messages=["Implant procedures are covered without review, when there is a liability."]),
+         cdt_search={"method": "api", "rows_found": 0, "row": None, "text": '{"plan_options":[]}'}),
+])
+_gd_extra = {p["procedure_code"]: p for p in _gpn._normalize_guardian_portal(_GD_EXTRA)["benefit_coverage"]["procedures"]}
+check("guardian: an extra code's search answer is read; one with no row keeps its main-page record",
+      ((_gd_extra["D6057"]["benefit_level"], _gd_extra["D6057"]["frequency_limit"]), _gd_extra["D6058"]["benefit_level"]),
+      (("0%", "NOT COVERED"), "50%"))
+
 
 # The eligibility printouts in Material/ ("Dental Eligibility - Provider _
 # Guardian.pdf", then " 1", …, whichever patients were saved): each known one
@@ -3880,7 +3930,7 @@ for _gd_path in _gd_printout_paths:
           ("guardian", _gdx_case["mismatches"], _gdx_case["cdt_search_missing"]))
     _gd_results[_gdx["patient_name"]] = {r["key"]: r["status"] for s in _gdx_res["sections"] for r in s["rows"]}
 if not _gd_printout_paths:
-    skip("Guardian eligibility printout", "Material/Smile Partners/Gaurdian not present")
+    skip("Guardian eligibility printout", "no 'Dental Eligibility*.pdf' in Material/Smile Partners/Gaurdian")
 
 # Keith Cline's sheet against his printout: the nine fields the team listed on
 # 2026-11-04 as "missing but available on the website".
@@ -3904,6 +3954,28 @@ if "Sheisa Claudio Sandoval" in _gd_results:
                                 "ortho_ded", "ortho_ded_paid", "d0210", "d0220", "d0330")
            if _gds[k] != "match"},
           {})
+
+# Charles Young's sheet against his live extension export (2026-11-09). What
+# stays "not on portal" is what neither his page nor the export states.
+_GD_CHARLES_SHEET = os.path.join(_GD_FOLDER, "Charles Young.pdf")
+_GD_CHARLES_JSON = os.path.join(_GD_FOLDER, "charles_young_guardian_benefits.json")
+if os.path.exists(_GD_CHARLES_SHEET) and os.path.exists(_GD_CHARLES_JSON):
+    import json as _json_gd
+    from smile_partners.sabrina.carriers.guardian import parse_sabrina_pdf as _gd_parse
+    with open(_GD_CHARLES_SHEET, "rb") as _fh:
+        _gdc_sheet = _gd_parse(_fh.read())
+    with open(_GD_CHARLES_JSON, encoding="utf-8") as _fh:
+        _gdc_res = _sp.compare_sabrina_to_portal(_gdc_sheet, _json_gd.load(_fh))
+    _gdc = {r["key"]: r["status"] for s in _gdc_res["sections"] for r in s["rows"]}
+    check("guardian live export: Charles Young's sheet agrees with his export everywhere it is stated",
+          (_gdc_res["carrier"], [m["key"] for m in _gdc_res["mismatches"]], _gdc_res["diagnostics"]["cdt_search_missing"]),
+          ("guardian", [], []))
+    check("guardian live export: only what Guardian does not state stays not on portal",
+          sorted(k for k, v in _gdc.items() if v == "not_in_portal"),
+          sorted(["member_id", "perio_maint_after_srp", "d5899", "d5995", "d6057", "d6058", "d1351__hist",
+                  "d4346__freq", "d5899__freq", "d5995__freq", "d6057__freq", "d6058__freq"]))
+else:
+    skip("Guardian live export", "Charles Young's sheet or export not in Material/Smile Partners/Gaurdian")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
