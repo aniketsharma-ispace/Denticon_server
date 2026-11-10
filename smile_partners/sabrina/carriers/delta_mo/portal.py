@@ -214,7 +214,15 @@ def _portal_yearly_max_paid(bd: dict, portal_raw: dict, sab_raw=None) -> str | N
     """
     Amount applied to the yearly max. Portals report the REMAINING balance, so
     paid-to-date = total − remaining.
+
+    This portal states the amount used itself, which is the only figure there
+    is under an Unlimited maximum (David Olea: $99 used).
     """
+    if _mo_export(portal_raw):
+        ml = (portal_raw or {}).get("metlife_data") or {}
+        used = _num_money(((ml.get("financials") or {}).get("annual_max") or {}).get("used"))
+        if used is not None:
+            return f"{used:.2f}"
     total = _num_money(bd.get("yearly_max"))
     remaining = _num_money(bd.get("yearly_rem"))
     if total is None or remaining is None:

@@ -55,6 +55,52 @@ def _age_from_dob(dob) -> int | None:
     return age if 0 <= age <= 130 else None
 
 
+# Amounts the portal keeps moving as claims are paid.
+_PAID_TO_DATE_KEYS = {"yearly_max_paid", "indiv_ded_paid", "family_ded_paid",
+                      "ortho_max_paid", "ortho_ded_paid"}
+
+
+def _services_after(portal_norm, verified_on) -> list[str]:
+    """Portal service dates later than the sheet's verification date, oldest first."""
+    from .rules import _mo_date
+    verified = _mo_date(verified_on)
+    raw = (portal_norm or {}).get("_raw_export") if isinstance(portal_norm, dict) else None
+    if not verified or not isinstance(raw, dict):
+        return []
+    later = {}
+    for row in raw.get("patient_history") or []:
+        if not isinstance(row, dict):
+            continue
+        when = _mo_date(row.get("date_of_service"))
+        if when and when > verified:
+            later[when] = str(row.get("date_of_service")).strip()
+    return [later[d] for d in sorted(later)]
+
+
+def _team_rule_status(key, status, note, sab_raw, por_raw, sheet_ssn, verified_on, later_services):
+    """DD MO review rules [11/10, team rule] applied on top of the plain comparison."""
+    import re
+    from .vocabulary import _num_yesno
+
+    # A Member ID that is the SSN on the sheet is accepted.
+    if key == "member_id" and status == STATUS_MISMATCH and sheet_ssn:
+        if re.sub(r"\D", "", str(sab_raw or "")) == sheet_ssn:
+            return STATUS_MATCH, f"the sheet's Member ID is the SSN on file; portal ID {str(por_raw).strip()}"
+
+    # The portal answers crown downgrades from D2740's limitations, so a sheet
+    # that calls it "not available" disagrees with the portal.
+    if (key == "porcelain_posterior_downgrade" and status == STATUS_NOT_COMPARABLE
+            and _num_yesno(por_raw) is not None):
+        return STATUS_MISMATCH, "the portal answers this from D2740's limitations (none stated = No)"
+
+    # Claims the portal paid after the sheet was verified move these amounts.
+    if key in _PAID_TO_DATE_KEYS and status == STATUS_MISMATCH and later_services:
+        shown = ", ".join(later_services[:4]) + ("…" if len(later_services) > 4 else "")
+        return STATUS_NOT_COMPARABLE, (f"the portal has services dated after the sheet was verified "
+                                       f"({verified_on}): {shown}; amounts have moved since")
+    return status, note
+
+
 def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     """
     Audit a parsed Sabrina PDF against the insurance portal export.
@@ -71,6 +117,12 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     bd = _portal_breakdown(portal_raw)
     # Derived readers work off the translated export, not the raw one.
     portal_norm = _portal_normalized(portal_raw)
+    # The sheet is held to the day it was verified [11/10, team rule].
+    verified_on = sabrina_parsed.get("verification_date")
+    if verified_on and isinstance(portal_norm, dict) and isinstance(portal_norm.get("_mo_meta"), dict):
+        portal_norm = {**portal_norm, "_mo_meta": {**portal_norm["_mo_meta"], "verified_on": verified_on}}
+    later_services = _services_after(portal_norm, verified_on)
+    sheet_ssn = sabrina_parsed.get("ssn")
     bd = _breakdown_for_sheet(bd, portal_norm)
     # A History cell that wraps onto a second line is read in full.
     sab_fields = _mo_wrapped_history(sab_fields, sabrina_parsed.get("benefit_rows"), portal_norm)
@@ -125,6 +177,9 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             else:
                 status = STATUS_MATCH if equal else STATUS_MISMATCH
 
+        status, note = _team_rule_status(key, status, note, sab_raw, por_raw,
+                                         sheet_ssn, verified_on, later_services)
+
         row = {
             "key": key,
             "label": field["label"],
@@ -172,6 +227,8 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             "not_in_portal": _count(STATUS_NOT_IN_PORTAL),
             "missing_in_sabrina": _count(STATUS_MISSING_IN_SABRINA),
             "not_stated": _count(STATUS_NOT_STATED, STATUS_NOT_COMPARABLE),
+            # The UI's "Not Comparable" tile reads this key.
+            "not_comparable": _count(STATUS_NOT_COMPARABLE),
             "match_rate": round(matched / compared * 100, 1) if compared else 0.0,
         },
         "mismatches": mismatches,

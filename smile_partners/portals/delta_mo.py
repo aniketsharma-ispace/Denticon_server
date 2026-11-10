@@ -33,14 +33,28 @@ from .common import _blank_present_end_date, _dollar
 # The networks a coverage row states a percentage for.
 _MO_NETWORK_PCT = {'ppo': 'ppo_pct', 'premier': 'premier_pct', 'oon': 'oon_pct'}
 
-# Codes whose service dates count against each other — only where the export
-# itself says the codes share a limit (11/02). The portal files a date under
-# the one code that was billed, and its coverage table states each code's
-# frequency on its own ("1 every 36 Months from the last date of service of
-# the same treatment"), so nothing is shared by default: a D0120 exam is not
-# a D0150 history, nor a full-mouth series a panoramic one. A limitation that
-# names another code as sharing it ("also applies to D0330", "shared with
-# D1208", "combined with D0150") links the two.
+# Codes whose service dates count against each other. The portal files a date
+# under the one code that was billed; the team records it against each code of
+# the pair (11/10, team rule, Mahesh): an exam history is D0120's and D0150's,
+# a full-mouth series is panoramic history and the reverse, and varnish is
+# fluoride history and the reverse.
+_MO_DEFAULT_SHARED = (
+    ('D0120', 'D0150'),
+    ('D0210', 'D0330'),
+    ('D1206', 'D1208'),
+)
+
+# One-way: a perio maintenance visit is prophy history and SRP on one to three
+# teeth (D4342) is D4341 history, but the sheets keep D4910 to its own dates
+# (NH on Anna's, David's, Evan's, Tammy's and Tia's with D1110 dates on the
+# portal), so a prophy is not perio maintenance history.
+_MO_HISTORY_ALSO_FROM = {
+    'D1110': ('D4910',),
+    'D4341': ('D4342',),
+}
+
+# A limitation that names another code as sharing it ("also applies to
+# D0330", "shared with D1208", "combined with D0150") links the two as well.
 _MO_SHARED_LIMIT_RE = re.compile(
     r'(?:also\s+appl(?:y|ies)\s+to|shared?\s+(?:limit\w*\s+|frequency\s+)?with|combined\s+with)'
     r'\s*:?\s*(?P<codes>D\d{4}(?:\s*(?:,|/|&|and|or)\s*D\d{4})*)',
@@ -48,23 +62,36 @@ _MO_SHARED_LIMIT_RE = re.compile(
 
 
 def _mo_shared_history_groups(coverage_levels):
-    """Each code's history group: itself, plus any code a limitation says it shares with."""
+    """Each code's history group: itself, its team pair, and any code a limitation says it shares with."""
     groups = {}
+
+    def _link(code, other):
+        merged = groups.get(code, {code}) | groups.get(other, {other})
+        for member in merged:
+            groups[member] = merged
+
+    for code, other in _MO_DEFAULT_SHARED:
+        _link(code, other)
     for row in coverage_levels or []:
         if not isinstance(row, dict) or not row.get('code'):
             continue
         code = str(row['code']).upper().strip()
         for m in _MO_SHARED_LIMIT_RE.finditer(str(row.get('other_limitations') or '')):
             for other in re.findall(r'D\d{4}', m.group('codes'), re.IGNORECASE):
-                other = other.upper()
-                merged = groups.get(code, {code}) | groups.get(other, {other})
-                for member in merged:
-                    groups[member] = merged
+                _link(code, other.upper())
     return groups
 
 # The orthodontic codes, which carry the plan's orthodontic age rather than one
 # of their own.
 _MO_ORTHO_CODES = ('D8010', 'D8070', 'D8080', 'D8090')
+
+
+_MO_PAYER_ID = '43090'
+_MO_CLAIMS_ADDRESS = 'PO Box 8690, Saint Louis, MO 63126'
+
+
+def _is_missouri_insurer(insurer):
+    return bool(re.search(r'\bmissouri\b|\(mo\)', str(insurer or ''), re.IGNORECASE))
 
 
 def _is_dd_mo_portal(raw):
@@ -246,58 +273,6 @@ def _mo_accumulator(record, used_key):
                   'remaining': _mo_money(remaining)}
 
 
-def _mo_prev_in_max_evidence(raw, accumulators, period_start, as_of):
-    """
-    Whether preventive work counts toward the annual maximum, as the export's
-    own figures show it; '' where they cannot tell.
-
-    The MAXAdvantage flag alone does not settle it: Umar Aamer's plan reads
-    MAXAdvantage "No", yet five preventive services this benefit year left his
-    $2,000 maximum untouched. So, this benefit year:
-
-        a paid Preventative-group service and nothing used    -> "No"
-        money used, and only Preventative-group services paid -> "Yes"
-
-    The maximum is the export's PPO accumulator, which is the plan's own
-    whatever network the sheet records.
-    """
-    try:
-        start = datetime.strptime(period_start, '%m/%d/%Y').date()
-    except (TypeError, ValueError):
-        return ''
-    record = accumulators.get('individual_regular_annual_maximum')
-    used = record.get('used') if isinstance(record, dict) else None
-    if not isinstance(used, (int, float)):
-        return ''
-
-    preventive = set()
-    for row in raw.get('coverage_levels') or []:
-        if not isinstance(row, dict) or not row.get('listed'):
-            continue
-        group = str(row.get('benefit_group') or '').strip().lower()
-        pct = row.get('ppo_pct')
-        if group.startswith(('prevent', 'diagnos')) and isinstance(pct, (int, float)) and pct > 0:
-            preventive.add(str(row.get('code') or '').upper().strip())
-
-    in_period = set()
-    for row in raw.get('patient_history') or []:
-        if not isinstance(row, dict) or not row.get('code'):
-            continue
-        try:
-            when = datetime.strptime(str(row.get('date_of_service') or '').strip(), '%m/%d/%Y').date()
-        except ValueError:
-            continue
-        if start <= when <= as_of:
-            in_period.add(str(row['code']).upper().strip())
-    if not in_period:
-        return ''
-    if used == 0 and in_period & preventive:
-        return 'No'
-    if used > 0 and in_period <= preventive:
-        return 'Yes'
-    return ''
-
-
 def _mo_yes_no(value):
     text = str(value or '').strip().lower()
     if text in ('yes', 'y'):
@@ -353,12 +328,19 @@ def _normalize_dd_mo_portal(raw):
     if max_stated and not fam_stated and 'family_regular_deductible' in accumulators:
         deductible_fam = dict(zero)
 
-    # The export carries the PPO network's accumulators only, so an
-    # out-of-network audit has no maximum or deductible to read.
-    if network == 'oon':
-        blank = {'total': '', 'used': '', 'remaining': ''}
-        annual, deductible_ind, deductible_fam, ortho_max = dict(blank), dict(blank), dict(blank), dict(blank)
-        ortho_ded_stated = False
+    # The export carries the PPO network's accumulators only. They are the
+    # plan's own: the portal's out-of-network column states the same figures
+    # (David Olea's capture), and the team reads them for an out-of-network
+    # sheet too (11/10, Evan Hopf).
+
+    # A plan with orthodontics whose table has no orthodontic maximum or
+    # deductible for this member has none: 0 (11/10, team rule, Mahesh).
+    zero_used = {'total': '$0.00', 'used': '$0.00', 'remaining': '$0.00'}
+    if not str(ortho_max.get('total') or '').strip():
+        ortho_max = dict(zero_used)
+    if not ortho_ded_stated:
+        ortho_ded_stated, ortho_ded = True, {'total': '$0.00', 'met': '$0.00', 'remaining': '$0.00',
+                                             'used': '$0.00'}
 
     # ── service history, shared across codes ───────────────────────────────
     history_by_code = {}
@@ -375,7 +357,7 @@ def _normalize_dd_mo_portal(raw):
     shared_groups = _mo_shared_history_groups(raw.get('coverage_levels'))
 
     def _history(code):
-        codes = sorted(shared_groups.get(code, {code}))
+        codes = sorted(set(shared_groups.get(code, {code})) | set(_MO_HISTORY_ALSO_FROM.get(code, ())))
         dates = []
         for c in codes:
             for when in history_by_code.get(c, []):
@@ -388,12 +370,30 @@ def _normalize_dd_mo_portal(raw):
 
     # ── per-code benefits ──────────────────────────────────────────────────
     ortho_age = _mo_ortho_age(member.get('ortho_age'))
+    has_ortho = _mo_yes_no(member.get('has_ortho'))
     procedures = []
     categories = {}
     for row in raw.get('coverage_levels') or []:
         if not isinstance(row, dict) or not row.get('code'):
             continue
         code = str(row['code']).upper().strip()
+        if not row.get('listed') and code in _MO_ORTHO_CODES and has_ortho == 'Yes':
+            # The plan covers orthodontics but the coverage table leaves the
+            # codes out for this member (an adult past the plan's ortho age,
+            # Anna Hayes). The plan's ortho age still stands; its percentage
+            # is not on the page.
+            procedures.append({
+                'procedure_code': code,
+                'description': '',
+                'benefit_level': '',
+                'frequency_limit': '',
+                'age_limit': ortho_age,
+                'late_date_of_service': _history(code),
+                'deductible': '',
+                'limitation': '',
+                'mo_listed': False,
+            })
+            continue
         if not row.get('listed'):
             # The coverage table lists every procedure the plan pays for, so a
             # requested code it does not list is one the plan does not cover —
@@ -480,9 +480,13 @@ def _normalize_dd_mo_portal(raw):
         '_source_insurer': 'delta dental mo',
         'carrier_information': {
             'name': insurer,
-            # The portal states neither the payer ID nor a claims address.
-            'payer_id': '',
-            'address': '',
+            # The portal states neither the payer ID nor a claims address; the
+            # team records Delta Dental of Missouri's (11/10, team rule,
+            # Mahesh). The payer ID is the same for the other Delta companies
+            # this portal serves (Tammy Swank's South Carolina plan), whose
+            # claims address is their own and stays unstated.
+            'payer_id': _MO_PAYER_ID,
+            'address': _MO_CLAIMS_ADDRESS if _is_missouri_insurer(insurer) else '',
         },
         'subscriber_info': {
             'name': subscriber_name,
@@ -522,7 +526,6 @@ def _normalize_dd_mo_portal(raw):
             'waiting_period': waiting,
             'missing_tooth': clause,
             'is_max_advantage': _mo_yes_no(member.get('is_max_advantage')),
-            'prev_in_max_evidence': _mo_prev_in_max_evidence(raw, accumulators, period_start, as_of),
             'has_ortho': _mo_yes_no(member.get('has_ortho')),
             'ded_applies_preventative': (by_code.get('D0120') or {}).get('deductible', ''),
             'ded_applies_diagnostic': (by_code.get('D0220') or {}).get('deductible', ''),
@@ -570,20 +573,25 @@ def _apply_dd_mo_output_rules(data, normalized):
         m = re.search(r'(\d+(?:\.\d+)?)\s*%', str(record['benefit_level']))
         return bool(m) and float(m.group(1)) > 0
 
-    # The portal has no Alternate Benefits provision; as on Delta Dental's own
-    # site the two downgrade questions are answered through the codes. A
-    # posterior composite is downgraded exactly when the plan pays the amalgam
-    # and not the composite, so both have to be stated first. A plan paying
-    # neither (a preventive-only plan, such as Christine White's) has nothing
-    # to downgrade, so the question is left unanswered rather than "Yes".
-    amalgam, composite = _covered('D2160'), _covered('D2391')
-    if amalgam is not None and composite is not None:
-        if composite:
-            data['posterior_composite_downgrade'] = 'No'
-        elif amalgam:
-            data['posterior_composite_downgrade'] = 'Yes'
+    def _limitation(code):
+        return re.sub(r'\s+', ' ', str((procedures.get(code) or {}).get('limitation') or '')).strip()
+
+    # The portal has no Alternate Benefits provision; the two downgrade
+    # questions are answered from the codes' own limitations (11/10, team
+    # rule, Mahesh). A posterior composite is downgraded where D2391 reads
+    # "Covered as amalgam on molars", and not otherwise. A posterior crown is
+    # downgraded where D2740 states any limitation, and not where it states
+    # none. A code the plan does not cover (Christine White's preventive-only
+    # plan) has nothing to downgrade, so the question is left unanswered.
+    if _covered('D2391') is True:
+        data['posterior_composite_downgrade'] = (
+            'Yes' if re.search(r'covered\s+as\s+(?:an\s+)?amalgam', _limitation('D2391'), re.IGNORECASE)
+            else 'No')
+    elif _covered('D2391') is False and _covered('D2160') is True:
+        # Only the amalgam is paid: a composite is paid as one.
+        data['posterior_composite_downgrade'] = 'Yes'
     if _covered('D2740') is True:
-        data['porcelain_posterior_downgrade'] = 'No'
+        data['porcelain_posterior_downgrade'] = 'Yes' if _limitation('D2740') else 'No'
 
     meta = normalized.get('_mo_meta') or {}
 
@@ -606,14 +614,6 @@ def _apply_dd_mo_output_rules(data, normalized):
         data['ortho_ded'] = _dollar(ortho_ded.get('total'), default='0.00')
         data['ortho_ded_paid'] = _dollar(ortho_ded.get('used'), default='0.00')
 
-    # An out-of-network sheet: the export holds the PPO accumulators only, so
-    # the deductible paid to date and the orthodontic deductible are as unknown
-    # as the maximums blanked in `_normalize_dd_mo_portal`. Left alone, the
-    # shared extraction would fill them with 0.00 and report them as matches.
-    if meta.get('network') == 'oon':
-        data['indiv_ded_paid'] = '—'
-        data['ortho_ded'] = '—'
-        data['ortho_ded_paid'] = '—'
     # A plan without orthodontic coverage has no orthodontic maximum or
     # deductible in any network.
     if meta.get('has_ortho') == 'No':
@@ -643,4 +643,15 @@ def _apply_dd_mo_output_rules(data, normalized):
     subscriber = normalized.get('subscriber_info') or {}
     if not str(subscriber.get('dob') or '').strip():
         data['subscriber_dob'] = '—'
+    # A dependent read without the family list (Tia Hoehne) has no subscriber
+    # named in the export; the shared extraction would name the patient.
+    if (str(subscriber.get('relation') or '').strip().lower() not in ('', 'self')
+            and not str(subscriber.get('name') or '').strip()):
+        data['subscriber_name'] = '—'
+
+    # "Periodontal Scaling And Root Planing - Four Or More Teeth Per Quadrant"
+    # is the sheet's 4 quadrants (11/10, team rule, Mahesh).
+    d4341 = str((procedures.get('D4341') or {}).get('description') or '')
+    if re.search(r'four\s+or\s+more\s+teeth\s+per\s+quadrant', d4341, re.IGNORECASE):
+        data['d4341_number_of_quads'] = '4'
     return data

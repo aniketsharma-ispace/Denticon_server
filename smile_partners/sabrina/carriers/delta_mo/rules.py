@@ -108,20 +108,33 @@ def _mo_history_in_window(value, portal_raw: dict, codes: tuple, sab_raw=None):
 
     A lifetime limit, no stated frequency or NC keeps every date. Where no
     date counts, the portal side reads "—", the same as the sheet's NH.
+
+    The sheet is held to the day it was verified [11/10, team rule]: a portal
+    date after the sheet's Verification Date (typically the appointment
+    itself) did not exist when the sheet was filled, so it is dropped, and
+    the window is measured back from that day.
     """
     import datetime
-    sheet = str(sab_raw or "").strip()
-    if sheet and sheet.lower() not in _HISTORY_NONE_WORDS and _MO_DATE_RE.search(sheet):
-        return False, value
-    proc = next((p for p in (_mo_procedure(portal_raw, str(c).upper()) for c in codes) if p), None)
-    span = _MO_FREQ_SPAN_RE.match(str((proc or {}).get("frequency_limit") or "").strip())
+    meta = (portal_raw or {}).get("_mo_meta") or {}
+    verified = _mo_date(meta.get("verified_on"))
     dates = [(m.group(0), _mo_date(m.group(0))) for m in _MO_DATE_RE.finditer(str(value or ""))]
     dates = [(text, d) for text, d in dates if d]
-    if not span or not dates:
-        return False, value
+    later = bool(verified) and any(d > verified for _, d in dates)
+    if later:
+        dates = [(text, d) for text, d in dates if d <= verified]
 
-    meta = (portal_raw or {}).get("_mo_meta") or {}
-    today = _mo_date(meta.get("scraped_on")) or datetime.date.today()
+    def _as_of_verification():
+        return (True, ", ".join(text for text, _ in dates) or "—") if later else (False, value)
+
+    sheet = str(sab_raw or "").strip()
+    if sheet and sheet.lower() not in _HISTORY_NONE_WORDS and _MO_DATE_RE.search(sheet):
+        return _as_of_verification()
+    proc = next((p for p in (_mo_procedure(portal_raw, str(c).upper()) for c in codes) if p), None)
+    span = _MO_FREQ_SPAN_RE.match(str((proc or {}).get("frequency_limit") or "").strip())
+    if not span or not dates:
+        return _as_of_verification()
+
+    today = verified or _mo_date(meta.get("scraped_on")) or datetime.date.today()
     count, unit = int(span.group(1)), span.group(2).lower()
 
     def _months_back(n):
@@ -185,20 +198,15 @@ def _mo_prev_in_max(portal_raw: dict) -> str | None:
     """
     "Preventative Included in Yearly Max?"
 
-    The export's own figures decide it first: preventive services paid this
-    benefit year with nothing used from the maximum mean they do not count
-    (No); money used when only preventive services were paid means they do
-    (Yes). See `portals/delta_mo._mo_prev_in_max_evidence` — Umar Aamer's plan
-    reads MAXAdvantage "No" yet his preventive visits used none of it.
-
-    Otherwise the portal answers it as the MAXAdvantage option: where the plan
-    has it, exams, cleanings, x-rays and fluoride do not count toward the
-    annual maximum (No); where it does not, they do (Yes).
+    The team records the member's MAXAdvantage option as it stands: Yes where
+    the portal reads Yes, No where it reads No (11/10, team rule, Mahesh).
+    This replaced reading it from the year's paid claims and inverting the
+    option (11/02), which gave David Olea, Maryjoe Amaihe, Tammy Swank and
+    Avery Warren the wrong answer.
     """
     meta = (portal_raw or {}).get("_mo_meta") or {}
-    if meta.get("prev_in_max_evidence") in ("Yes", "No"):
-        return meta["prev_in_max_evidence"]
-    return {"Yes": "No", "No": "Yes"}.get(meta.get("is_max_advantage"))
+    answer = meta.get("is_max_advantage")
+    return answer if answer in ("Yes", "No") else None
 
 
 # A fee schedule naming Premier — "GA - DD GP Premier B", "… Prem …" — is

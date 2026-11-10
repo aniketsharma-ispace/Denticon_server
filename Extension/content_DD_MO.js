@@ -737,6 +737,8 @@
             }
         }
 
+        await ensureSubscriberKnown(state, nativeFetch, ctx, raw.general, warnings);
+
         const data = buildFinalOutput(state, ctx, raw, failed, warnings, run);
         run.resultData = data;
         postPageMessage("RESULT", { requestId, data });
@@ -746,6 +748,50 @@
             if (state.activeRun !== run || run.acknowledged) { clearInterval(poll); if (state.activeRun === run) state.activeRun = null; }
         }, 250);
         setTimeout(() => clearInterval(poll), 21000);
+    }
+
+    // A dependent's summary does not name the subscriber, and the sheet's Subscriber Name is the family
+    // member the portal lists as Self. Replay summary-general for the other members of this subscriber
+    // the page already used this session until the Self row is found, so family_members carries it.
+    async function ensureSubscriberKnown(state, nativeFetch, ctx, generalRows, warnings) {
+        const selected = selectedGeneralRow(Array.isArray(generalRows) ? generalRows : [], ctx.enrolleeId);
+        if (!selected || /^self$/i.test(String(selected.relationshipDescription || "").trim())) return;
+        const subscriberId = String(selected.subscriberId ?? ctx.subscriberId ?? "");
+        if (!subscriberId) return;
+        const isSelf = m => /^self$/i.test(String(m.relationship || "").trim()) && String(m.subscriberId ?? "") === subscriberId;
+        const hasSelf = () => [...state.directory.values()].some(isSelf);
+        if (hasSelf()) return;
+
+        const candidates = [];
+        const seen = new Set([String(ctx.enrolleeId)]);
+        const add = (enrolleeId, productId, memberSubscriberId) => {
+            if (enrolleeId == null || seen.has(String(enrolleeId))) return;
+            if (memberSubscriberId != null && String(memberSubscriberId) !== subscriberId) return;
+            const known = state.directory.get(String(enrolleeId));
+            if (known?.relationship && !isSelf(known)) return; // already known to be another dependent
+            seen.add(String(enrolleeId));
+            candidates.push({ enrolleeId, productId: productId ?? ctx.productId });
+        };
+        [...state.bodies].reverse().forEach(b => add(b.body.enrolleeId, b.body.productId, b.body.subscriberId));
+        [...state.directory.values()].reverse().forEach(m => add(m.enrolleeId, m.productId, m.subscriberId));
+        if (!candidates.length) {
+            warnings.push("Subscriber (Self) not seen in this session; open the subscriber once before crawling a dependent to capture the subscriber name.");
+            return;
+        }
+
+        setStatus("Looking up the subscriber…", "working", { state: "RUNNING" });
+        const url = `${state.benefitsBase}summary-general`;
+        for (const c of candidates.slice(0, 6)) {
+            try {
+                const resp = await postJson(state, nativeFetch, url, { enrolleeId: c.enrolleeId, productId: c.productId, subscriberId }, () => state.auth);
+                harvestMembers(state, resp);
+            } catch (error) {
+                warnings.push(`Subscriber lookup ${c.enrolleeId}: ${error.message}`);
+                if (error.authFailed) return;
+            }
+            if (hasSelf()) return;
+        }
+        warnings.push("Subscriber (Self) not found among the members seen in this session.");
     }
 
     async function fetchEndpoint(state, nativeFetch, ep, ctx, getAuth, warnings) {

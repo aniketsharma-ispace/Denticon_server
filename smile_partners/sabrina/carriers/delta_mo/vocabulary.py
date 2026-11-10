@@ -483,6 +483,9 @@ def _norm_text(v) -> str | None:
     # the portal's "30 Days" (When Is First Perio Maintenance Allowed After SRP).
     s = re.sub(r"(\d)([A-Z])", r"\1 \2", s)
     s = re.sub(r"\s+", " ", s).strip()
+    # "Not available on web", "… in web", "… in website" are one answer
+    # (David Olea's sheet, 11/10).
+    s = re.sub(r"\bNOT AVAILABLE (?:ON|IN) (?:THE )?WEB(?: ?SITE)?\b", "NOT AVAILABLE IN WEB", s)
     return s or None
 
 
