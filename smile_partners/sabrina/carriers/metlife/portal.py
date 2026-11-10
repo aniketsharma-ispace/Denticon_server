@@ -17,15 +17,41 @@ import re
 from .common import _UNLIMITED_MAX
 from .rules import _metlife_provider_network
 from .vocabulary import (_blank, _coalesce_keys, _norm_network, _num_cob, _num_money,
-                         _num_yesno)
+                         _num_pct, _num_yesno)
+
+
+# MetLife's answer for a code it will not price from the details given — seen
+# on D5899 (unspecified prosthodontic procedure) with no benefit level, age
+# "0-0" and a $0.00 fee. The team reads it as Not Covered (2026-11-10).
+_NO_COVERAGE_INFO_RE = re.compile(r"cannot\s+currently\s+provide\s+coverage\s+information",
+                                  re.IGNORECASE)
+
+
+def _no_coverage_info(proc) -> bool:
+    return isinstance(proc, dict) and bool(
+        _NO_COVERAGE_INFO_RE.search(str(proc.get("frequency_limit") or "")))
 
 
 def _portal_for_sheet(portal_raw: dict, sab_fields: dict) -> dict:
     """
-    The portal export as this sheet should read it. MetLife's export is read
-    as it arrives; a sheet-specific view of it would go here.
+    The portal export as this sheet should read it.
+
+    A procedure MetLife answers with "We cannot currently provide coverage
+    information on the details shared." is read as Not Covered: its frequency
+    becomes "Not Covered", which the per-code readers already take as a stated
+    0% benefit. Everything else is read as it arrives.
     """
-    return portal_raw
+    bc = (portal_raw or {}).get("benefit_coverage")
+    procs = bc.get("procedures") if isinstance(bc, dict) else None
+    if not isinstance(procs, list) or not any(_no_coverage_info(p) for p in procs):
+        return portal_raw
+    out = dict(portal_raw)
+    out["benefit_coverage"] = dict(bc)
+    out["benefit_coverage"]["procedures"] = [
+        dict(p, frequency_limit="Not Covered") if _no_coverage_info(p) else p
+        for p in procs
+    ]
+    return out
 
 
 def _breakdown_for_sheet(bd: dict, portal_norm: dict) -> dict:
@@ -478,22 +504,36 @@ def _portal_major_paid_on(bd: dict, portal_raw: dict, sab_raw=None) -> str | Non
     return None
 
 
+# MetLife states neither of the next two; both follow the team's convention for
+# MetLife sheets (2026-11-10).
+_PERIO_AFTER_SRP = "Next Day or Based on Patient Need"
+
+
+def _perio_after_srp_accepted(text) -> bool:
+    s = " ".join(re.sub(r"[^a-z]+", " ", str(text or "").lower()).split())
+    return "next day" in s or "patient need" in s
+
+
 def _portal_perio_after_srp(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
-    When the first perio maintenance is allowed after SRP. MetLife does not
-    state it.
+    When the first perio maintenance is allowed after SRP: either "Next day"
+    or "Based on patient need" is correct. A sheet giving either one is answered
+    in its own words, so it matches without a containment note; anything else
+    is compared against both, and a blank sheet is flagged.
     """
-    return None
+    if not _blank(sab_raw) and _perio_after_srp_accepted(sab_raw):
+        return str(sab_raw).strip()
+    return _PERIO_AFTER_SRP
 
 
 def _portal_d4341_quads(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
     D4341 number of quadrants — the figure Sabrina prints in D4341's Age Limit
-    column: the breakdown's count when it is a number ("Pre-D" and dashes are
-    not).
+    column. MetLife states no count, so it is 4 when D4341 is covered (a
+    benefit above 0%) and left blank when it is not covered or not reported.
     """
-    value = str(bd.get("d4341_number_of_quads") or "").strip()
-    return value if value.isdigit() else None
+    pct = _num_pct(_pct_from_procs(bd.get("procs") or {}, ("D4341",)))
+    return "4" if pct is not None and pct > 0 else None
 
 
 # Portal values that must be computed rather than read from one breakdown key.

@@ -980,6 +980,53 @@ check("metlife blank: so the audit is no longer 100%",
 check("metlife blank: a blank frequency against 'No Limitations' still agrees",
       _ami_rows["d0220__freq"]["status"], "match")
 
+# David Kritzer (MetLife, 2026-11-10) — three team conventions for MetLife sheets:
+#   · "We cannot currently provide coverage information on the details shared."
+#     (D5899, no benefit level) means Not Covered: frequency NC, 0%.
+#   · D4341 Quads is 4 when D4341 is covered, blank when it is not.
+#   · First perio maintenance after SRP: "Next day" or "Based on patient need".
+def _kritzer(d4341_level="80%", d4341_freq="1 TIME IN 24 MONTHS"):
+    return {"metlife_data": {"patient": {"name": "David Kritzer", "dob": "10/06/1965",
+                                         "relationship": "Subscriber"},
+                             "provisions": [_BENEFIT_PERIOD]},
+            "benefit_coverage": {"procedures": [
+                {"procedure_code": "D5899", "description": "UNSPEC. PROSTHODONTIC PROCEDURE",
+                 "frequency_limit": "We cannot currently provide coverage information on the details shared.",
+                 "age_limit": "0-0", "late_date_of_service": "—", "deductible": "N/A",
+                 "network_fee": "$0.00", "benefit_level": "N/A", "patient_responsibility": "0.00"},
+                {"procedure_code": "D4341", "description": "SCALING/ROOT PLANING - PER QUAD.",
+                 "frequency_limit": d4341_freq, "age_limit": "0-99",
+                 "late_date_of_service": "11/16/23", "benefit_level": d4341_level},
+            ]}}
+
+def _kritzer_rows(export, sheet):
+    audit = sc.compare_sabrina_to_portal({"fields": sheet, "benefit_rows": {}}, export)
+    return {r["key"]: r for s in audit["sections"] for r in s["rows"]}
+
+_kr = _kritzer_rows(_kritzer(), {"d5899": "0", "d5899__freq": "NC", "d4341": "80%",
+                                 "d4341__age": "4", "perio_maint_after_srp": "NEXT DAY"})
+check("metlife D5899: 'cannot currently provide coverage information' reads as Not Covered",
+      (_kr["d5899__freq"]["portal"], _kr["d5899__freq"]["status"]), ("Not Covered", "match"))
+check("metlife D5899: and as a 0% benefit",
+      (_kr["d5899"]["portal"], _kr["d5899"]["status"]), ("0%", "match"))
+check("metlife D4341 quads: covered -> 4",
+      (_kr["d4341__age"]["portal"], _kr["d4341__age"]["status"]), ("4", "match"))
+check("metlife SRP: 'NEXT DAY' is an accepted answer",
+      (_kr["perio_maint_after_srp"]["status"], _kr["perio_maint_after_srp"]["note"]), ("match", ""))
+check("metlife SRP: 'Based on Patient Need' is the other",
+      _kritzer_rows(_kritzer(), {"perio_maint_after_srp": "Based on Patient Need"})
+      ["perio_maint_after_srp"]["status"], "match")
+check("metlife SRP: any other answer is a mismatch",
+      _kritzer_rows(_kritzer(), {"perio_maint_after_srp": "2 Weeks"})
+      ["perio_maint_after_srp"]["status"], "mismatch")
+check("metlife SRP: left blank on the sheet is flagged",
+      _kritzer_rows(_kritzer(), {})["perio_maint_after_srp"]["status"], "mismatch")
+_kr_nc = _kritzer_rows(_kritzer("N/A", "*NOT COVERED"), {"d4341__age": "4"})
+check("metlife D4341 quads: not covered -> blank (no portal value)",
+      (_kr_nc["d4341__age"]["portal"], _kr_nc["d4341__age"]["status"]), (None, "not_in_portal"))
+check("metlife D4341 quads: not covered and blank on the sheet -> nothing to flag",
+      _kritzer_rows(_kritzer("N/A", "*NOT COVERED"), {})["d4341__age"]["status"], "not_stated")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  1g. Apt 91215 — one plan stating two rules
@@ -2384,8 +2431,10 @@ check("delta frequency: 'is not a benefit' is still not covered",
 # Only a Delta export gets these answers.
 check("major paid on: a non-Delta export is unchanged",
       _portal_major_paid_on({}, {"metlife_data": {}}), None)
-check("perio after SRP: a non-Delta export is unchanged",
-      _portal_perio_after_srp({}, {"metlife_data": {}}), None)
+# MetLife has its own fixed answer since 2026-11-10 (see the David Kritzer
+# checks) — never Delta's D4910-derived one.
+check("perio after SRP: a MetLife export gets MetLife's convention, not Delta's",
+      _portal_perio_after_srp({}, {"metlife_data": {}}), "Next Day or Based on Patient Need")
 
 # The period belongs to the limit that states it. The labial-veneer note names
 # twelve months and five years in exclusions that describe other procedures
