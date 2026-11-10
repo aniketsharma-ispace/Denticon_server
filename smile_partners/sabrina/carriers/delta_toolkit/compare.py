@@ -15,6 +15,7 @@ from .vocabulary import (
     _carrier_brand,
     _frequency_note,
     _history_dates,
+    _names_differ_only_in_spacing,
     _norm_id,
     _norm_name,
     _norm_network,
@@ -183,6 +184,8 @@ def _compare(kind: str, sab, por, ctx: dict | None = None) -> tuple[bool | None,
             return None, ""
         if a == b:
             return True, ""
+        if _names_differ_only_in_spacing(a, b):
+            return True, "same name, spaced differently"
         # One system holding only first+last while the other adds a middle name
         # is a formatting difference, not a data conflict.
         sa, sb = set(a), set(b)

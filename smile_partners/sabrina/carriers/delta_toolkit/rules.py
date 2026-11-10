@@ -9,7 +9,9 @@ call these; the generic field readers stay there. RULES.md lists the rules.
 from __future__ import annotations
 
 import re
-from .vocabulary import _blank, _norm_id, _norm_name, _norm_network, _num_agelimit, _num_date
+from .vocabulary import (
+    _blank, _names_differ_only_in_spacing, _norm_id, _norm_name, _norm_network, _num_agelimit, _num_date,
+)
 
 
 def _toolkit_eligibility(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
@@ -173,7 +175,10 @@ def _toolkit_identity_gate(sabrina_parsed: dict, portal_norm: dict) -> tuple[boo
 
     sab_name = _norm_name(fields.get("patient_name"))
     tool_name = _norm_name(subscriber.get("name"))
-    name_ok = bool(sab_name and tool_name and sab_name == tool_name)
+    name_ok = bool(sab_name and tool_name and (
+        sab_name == tool_name
+        # "Lynette LaPointe" vs "LYNETTE LA POINTE" (11/10): the same letters.
+        or _names_differ_only_in_spacing(sab_name, tool_name)))
     if not name_ok and sab_name and tool_name:
         # The sheet may hold a short form ("Jane Doe") of the name the plan
         # has on file ("Jane Marie Doe"). Accept it only when the Delta
@@ -205,7 +210,20 @@ def _toolkit_identity_gate(sabrina_parsed: dict, portal_norm: dict) -> tuple[boo
 
     tool_network = str(((portal_norm.get("metlife_data") or {}).get("plan_details") or {}).get("network") or "").strip()
     normalized_network = re.sub(r"\s+", " ", tool_network).casefold()
-    if normalized_network != "ppo dentist":
+    meta = portal_norm.get("_toolkit_meta") or {}
+    if meta.get("export_network"):
+        # Extension 1.53+ exports the one network picked before the crawl: it
+        # must be the network the sheet records (Premier fee schedule → Premier
+        # Dentist, In Network Out / UCR → Nonparticipating Dentist). Ty Keenum
+        # (11/10): a Premier sheet with a Premier export. Star 11/09.
+        expected = str(meta.get("requested_benefit_network") or "PPO Dentist")
+        if normalized_network != re.sub(r"\s+", " ", expected).casefold():
+            issues.append(
+                f"Toolkit network mismatch ({tool_network!r}); the sheet records {expected} "
+                f"benefits, so re-export choosing {expected}")
+    elif normalized_network != "ppo dentist":
+        # An older export keeps PPO Dentist as its own figures and every other
+        # network under `out_of_network`.
         issues.append(f"Toolkit network mismatch ({tool_network!r}); expected PPO Dentist")
 
     return not issues, issues

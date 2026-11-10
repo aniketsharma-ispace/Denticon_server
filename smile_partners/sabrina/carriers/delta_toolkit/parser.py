@@ -92,6 +92,19 @@ _NON_VALUES = _ALL_LABELS | _OTHER_SHEET_LABELS | {
 _STOP_LABELS = _ALL_LABELS | _OTHER_SHEET_LABELS
 
 
+# A label whose "#" is all that sets it apart from an ordinary word: "Group #"
+# normalizes to "group" and "SSN#" to "ssn". Matched without its "#", "Group #"
+# took the value "Group Management Services, Inc." for a label, and the sheet's
+# Group Name read blank (Ty Keenum, 11/10). Such a label matches only where the
+# "#" is printed.
+_spec_printed = [_f["label"] for _f in _SPEC if not _f.get("derived")] + [
+    _a for _f in _SPEC if not _f.get("derived") for _a in _f.get("aliases", ())]
+_HASH_ONLY_LABELS = {
+    _norm_label(_p) for _p in _spec_printed + ["SSN#"]
+    if "#" in _p and len(_norm_label(_p).split()) == 1
+} - {_norm_label(_p) for _p in _spec_printed if "#" not in _p}
+
+
 _LABELS_BY_FIRST: dict[str, list[str]] = {}
 for _lbl in _STOP_LABELS:
     if _lbl:
@@ -214,7 +227,10 @@ def _label_span(words: list[str], i: int, target: str) -> int:
     n_target_words = len(target.split())
     max_take = min(len(words) - i, n_target_words + 3)
     for take in range(max_take, 0, -1):
-        if _norm_label(" ".join(words[i:i + take])) == target:
+        printed = " ".join(words[i:i + take])
+        if _norm_label(printed) == target:
+            if target in _HASH_ONLY_LABELS and "#" not in printed:
+                continue
             return take
     return 0
 

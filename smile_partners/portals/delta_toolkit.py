@@ -66,7 +66,9 @@ _FREQUENCY_PHRASES: dict[str, tuple[str, ...]] = {
     "D2740": ("cast restorations", "crowns", "onlays"),
     "D2950": ("cast restorations", "cores", "substructures"),
     "D4355": ("full mouth debridement",),
-    "D4341": ("root planing and scaling",),
+    # Plans word it either way: "Root planing and scaling is payable …" or
+    # "Scaling and root planing procedures are payable …" (Bri'Onna Williams, 11/10).
+    "D4341": ("root planing and scaling", "scaling and root planing"),
     "D4910": ("periodontal prophylaxes", "periodontal maintenance"),
     "D5110": ("full and partial dentures", "dentures"),
     "D5212": ("full and partial dentures", "partial dentures"),
@@ -304,15 +306,17 @@ def _frequency_from_text(text: str) -> str | None:
     # "Limited to one per tooth per lifetime", "payable twice per lifetime":
     # a count tied to the lifetime, worded with any number, not only "once".
     # A digit counts only with "time(s)", so "$1,500 per lifetime" (a dollar
-    # maximum) is never read as a frequency.
+    # maximum) is never read as a frequency, or right after "limited to":
+    # "Limited to 1 per tooth, per lifetime" (Stephen Kennedy, 11/10), where a
+    # dollar amount would carry its "$".
     lifetime = re.search(
-        r"\b(?:(once|one|twice|two|three|four|five)|(\d+)\s+times?)\s+(?:times?\s+)?"
-        r"(?:per\s+(?:tooth|area|quadrant|arch|site)\s+)?"
+        r"\b(?:(once|one|twice|two|three|four|five)|(\d+)\s+times?|limited\s+to\s+(\d+))\s+(?:times?\s+)?"
+        r"(?:per\s+(?:tooth|area|quadrant|arch|site)\s*,?\s+)?"
         r"(?:per|in\s+a|in\s+the|during\s+(?:a|the))\s+lifetime\b",
         low,
     )
     if lifetime:
-        word = lifetime.group(1) or lifetime.group(2)
+        word = lifetime.group(1) or lifetime.group(2) or lifetime.group(3)
         count = int(word) if word.isdigit() else _WORD_COUNTS.get(word)
         if count:
             return f"{count}XLifetime"
@@ -350,8 +354,9 @@ def _frequency_from_text(text: str) -> str | None:
         tail,
     )
     if not month:
+        # "per tooth per 36 months", or "per 36 months" alone (11/10).
         month = re.search(
-            rf"per\s+(?:tooth|area|quadrant|quadrants)\s+per\s+{number}\s*(?:-| )?(?:consecutive\s+)?months?\b",
+            rf"per\s+(?:(?:tooth|area|quadrant|quadrants)\s+per\s+)?{number}\s*(?:-| )?(?:consecutive\s+)?(?:calendar\s+)?months?\b",
             tail,
         )
     if month:
@@ -365,8 +370,10 @@ def _frequency_from_text(text: str) -> str | None:
         tail,
     )
     if not year:
+        # "once per two calendar years for age 15 and older" (Stephen Kennedy,
+        # 11/10) is a two-year span, like "in any two years".
         year = re.search(
-            rf"per\s+(?:tooth|area|quadrant|quadrants)\s+per\s+{number}\s*(?:-| )?(?:consecutive\s+)?years?\b",
+            rf"per\s+(?:(?:tooth|area|quadrant|quadrants)\s+per\s+)?{number}\s*(?:-| )?(?:consecutive\s+)?(?:calendar\s+)?years?\b",
             tail,
         )
     if year:
@@ -1346,6 +1353,19 @@ _POSTERIOR_CROWNS_COVERED_RE = re.compile(
 )
 
 
+def _single_network_export(raw: dict[str, Any]) -> str:
+    """
+    The network an extension 1.53+ export holds alone, or "" for an older one.
+
+    From 1.53 (11/05) the extension asks PPO / Premier / Non-participating
+    before the crawl, records the pick as `network_choice`, and exports that
+    network's benefits only, named in `selected_network`. (Star 11/09.)
+    """
+    if not _text(raw.get("network_choice")):
+        return ""
+    return _text(raw.get("selected_network") or (raw.get("networks") or {}).get("selected"))
+
+
 def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = None) -> dict[str, Any]:
     """
     Translate the Toolkit extraction into the canonical Portal contract.
@@ -1368,7 +1388,15 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = N
     # figures, so it keeps the PPO ones and says so instead of going blank.
     requested_network = network
     network_note = ""
-    if network and not _network_figures_exported(raw, results):
+    # Extension 1.53+ exports one network's figures alone, as the lookups' own
+    # figures, with no `out_of_network` entries. When it is the sheet's network
+    # (Ty Keenum, 11/10: a Premier sheet, a Premier export) those figures are
+    # read directly. An export of another network is refused by the identity
+    # gate, which names the network to re-export.
+    export_network = _single_network_export(raw)
+    if network and export_network.casefold() == network.casefold():
+        network = None
+    elif network and not _network_figures_exported(raw, results):
         network = None
         network_note = (f"the sheet records {requested_network} benefits, but this export has no "
                         f"{requested_network} figures, so PPO Dentist figures were compared; "
@@ -1572,6 +1600,13 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = N
     oon_stated = bool(
         _OON_PARTICIPATION_RE.search(coverage_notes_text)
         and re.search(r"may be responsible for more than the percentage indicated", coverage_notes_text, re.IGNORECASE)
+    ) or any(
+        # [11/10] A plan whose network list names a non-participating network
+        # pays out of network, whatever the notes say (Bri'Onna Williams: "MN
+        # Non-NPF Non Par Dentist", with no non-participating note). Star 11/09.
+        re.search(r"\bnon[\s-]?par(?:ticipating)?\b", _text(name), re.IGNORECASE)
+        for key in ("offered_by_plan", "available_in_output")
+        for name in ((raw.get("networks") or {}).get(key) or [])
     )
 
     def _is_zero(value: Any) -> bool:
@@ -1625,7 +1660,8 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = N
             if not isinstance(config, dict):
                 continue
             networks = {str(x).strip().lower() for x in (config.get("networks") or [])}
-            if "ppo dentist" in networks:
+            # A 1.53+ export lists only its own network's configuration.
+            if (export_network or "PPO Dentist").lower() in networks:
                 ortho_age = _plan_ortho_age_cap(config)
                 break
     if not ortho_age and re.fullmatch(r"\d{1,3}", _text(ortho_info.get("ortho_age_limit_under"))):
@@ -1748,7 +1784,9 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = N
             "selected_network": _text(raw.get("selected_network")),
             # The network whose figures the per-code rows carry, and the one
             # the sheet asked for when the export could not supply it.
-            "benefit_network": network or "PPO Dentist",
+            "benefit_network": network or (requested_network if export_network else None) or "PPO Dentist",
+            # The network a 1.53+ export holds alone ("" for an older export).
+            "export_network": export_network,
             "requested_benefit_network": requested_network or "PPO Dentist",
             "benefit_network_note": network_note,
             "accumulators_unavailable": accumulators_unavailable,
