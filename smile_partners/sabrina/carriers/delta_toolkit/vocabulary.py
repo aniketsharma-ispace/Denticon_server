@@ -526,6 +526,26 @@ def _norm_name(v) -> tuple[str, ...] | None:
     return tuple(sorted(tokens)) or None
 
 
+def _names_differ_only_in_spacing(a, b) -> bool:
+    """
+    Whether two `_norm_name` token tuples name the same person with a part
+    spaced differently: "Lynette LaPointe" vs "LYNETTE LA POINTE" (11/10),
+    "De La Cruz" vs "DELACRUZ". The tokens the two share are set aside; the
+    rest of each side, joined in some order, must spell the same letters.
+    """
+    if not a or not b or a == b:
+        return False
+    from collections import Counter
+    from itertools import permutations
+
+    rest_a = list((Counter(a) - Counter(b)).elements())
+    rest_b = list((Counter(b) - Counter(a)).elements())
+    if not rest_a or not rest_b or len(rest_a) > 4 or len(rest_b) > 4:
+        return False
+    spelled_a = {"".join(p) for p in permutations(rest_a)}
+    return any("".join(p) in spelled_a for p in permutations(rest_b))
+
+
 def _addr_tokens(v) -> set[str] | None:
     """Address → token set, with the usual postal abbreviations unified."""
     if _blank(v):
