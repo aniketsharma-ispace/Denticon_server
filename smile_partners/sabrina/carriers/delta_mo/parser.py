@@ -552,7 +552,36 @@ def parse_sabrina_text(text: str) -> dict:
         "labels_not_found": missing_labels,
         "line_count": len(lines),
         "fee_schedule": fee_schedule,
+        # Not audited, but they decide how other rows are read (11/10 team rules):
+        # the portal is held to the day the sheet was verified, and a Member ID
+        # that is the SSN on file is accepted.
+        "verification_date": _verification_date(text),
+        "ssn": _sheet_ssn(lines),
     }
+
+
+_VERIFICATION_DATE_RE = re.compile(
+    r"verification\s+date\s*:?\s*(\d{1,2}/\d{1,2}/\d{2,4})", re.IGNORECASE)
+
+
+def _verification_date(text: str) -> str | None:
+    """The sheet's 'Verification Date: MM/DD/YYYY' footer, as MM/DD/YYYY."""
+    m = _VERIFICATION_DATE_RE.search(text or "")
+    return m.group(1) if m else None
+
+
+def _sheet_ssn(lines: list[str]) -> str | None:
+    """The digits in the cell after the sheet's 'SSN#' label."""
+    for i, line in enumerate(lines):
+        if _norm_label(line) != _norm_label("SSN#"):
+            continue
+        for nxt in lines[i + 1:i + 3]:
+            digits = re.sub(r"\D", "", nxt)
+            if len(digits) >= 6:
+                return digits
+            if nxt.strip():
+                return None
+    return None
 
 
 def parse_sabrina_pdf(pdf_bytes: bytes) -> dict:
