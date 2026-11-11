@@ -486,6 +486,9 @@ def _norm_text(v) -> str | None:
     # "Not available on web", "… in web", "… in website" are one answer
     # (David Olea's sheet, 11/10).
     s = re.sub(r"\bNOT AVAILABLE (?:ON|IN) (?:THE )?WEB(?: ?SITE)?\b", "NOT AVAILABLE IN WEB", s)
+    # The sheet's cell can clip the last word: "Not available in the" is the
+    # same answer (Corban Glackmeyer, NeShawn Austin, 11/11).
+    s = re.sub(r"^NOT AVAILABLE(?: (?:ON|IN)(?: THE)?)?$", "NOT AVAILABLE IN WEB", s)
     return s or None
 
 

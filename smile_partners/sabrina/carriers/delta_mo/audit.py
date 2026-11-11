@@ -8,6 +8,8 @@ mismatches-only list, and the counts.
 
 from __future__ import annotations
 
+import re
+
 from .spec import _CRITICAL_KEYS
 from .vocabulary import _blank_for, _blank_means_no_limit, _num_date
 from .parser import _MIN_MARKERS, parse_sabrina_pdf
@@ -60,6 +62,32 @@ _PAID_TO_DATE_KEYS = {"yearly_max_paid", "indiv_ded_paid", "family_ded_paid",
                       "ortho_max_paid", "ortho_ded_paid"}
 
 
+def _sheet_as_of(verified_on, appointment_on) -> str | None:
+    """
+    The day the sheet describes, as MM/DD/YYYY [11/10 + 11/11, team rule].
+
+    Its Verification Date, or the day before its Appointment Date when the
+    visit came first or on the same day. A portal service on the appointment
+    day is the visit itself, not history the sheet could have recorded
+    (Rylann Chandler: verified and seen 11/05; NeShawn Austin: seen 11/06,
+    sheet re-verified 11/09; Gaye Stewart-Tooson: verified and seen 11/03).
+    """
+    import datetime
+    from .rules import _mo_date
+    as_of = _mo_date(verified_on)
+    visit = _mo_date(appointment_on)
+    if visit:
+        before_visit = visit - datetime.timedelta(days=1)
+        if as_of is None or before_visit < as_of:
+            as_of = before_visit
+    return as_of.strftime("%m/%d/%Y") if as_of else None
+
+
+# A 9-digit Member ID is an SSN, which Delta Dental of Missouri accepts as an ID
+# but its portal never shows.
+_SSN_SHAPED_RE = re.compile(r"\d{9}")
+
+
 def _services_after(portal_norm, verified_on) -> list[str]:
     """Portal service dates later than the sheet's verification date, oldest first."""
     from .rules import _mo_date
@@ -77,7 +105,8 @@ def _services_after(portal_norm, verified_on) -> list[str]:
     return [later[d] for d in sorted(later)]
 
 
-def _team_rule_status(key, status, note, sab_raw, por_raw, sheet_ssn, verified_on, later_services):
+def _team_rule_status(key, status, note, sab_raw, por_raw, sheet_ssn, verified_on, later_services,
+                      relationship=""):
     """DD MO review rules [11/10, team rule] applied on top of the plain comparison."""
     import re
     from .vocabulary import _num_yesno
@@ -86,6 +115,19 @@ def _team_rule_status(key, status, note, sab_raw, por_raw, sheet_ssn, verified_o
     if key == "member_id" and status == STATUS_MISMATCH and sheet_ssn:
         if re.sub(r"\D", "", str(sab_raw or "")) == sheet_ssn:
             return STATUS_MATCH, f"the sheet's Member ID is the SSN on file; portal ID {str(por_raw).strip()}"
+
+    # Any other SSN-shaped Member ID (the subscriber's SSN on a dependent's
+    # sheet — Anna Hayes, 11/11) cannot be checked: the portal shows no SSNs.
+    if key == "member_id" and status == STATUS_MISMATCH:
+        if _SSN_SHAPED_RE.fullmatch(re.sub(r"\D", "", str(sab_raw or ""))):
+            return STATUS_NOT_COMPARABLE, (f"a 9-digit Member ID is an SSN, which the portal does not show; "
+                                           f"portal ID {str(por_raw).strip()}")
+
+    # The portal gives a dependent's subscriber no full date of birth, so the
+    # team leaves it unchecked [11/11, team rule, Mahesh].
+    if key == "subscriber_dob" and status == STATUS_NOT_IN_PORTAL and relationship not in ("", "self"):
+        return STATUS_NOT_STATED, ("the portal does not give a dependent's subscriber a full date of birth; "
+                                   "not checked (team rule)")
 
     # The portal answers crown downgrades from D2740's limitations, so a sheet
     # that calls it "not available" disagrees with the portal.
@@ -96,7 +138,7 @@ def _team_rule_status(key, status, note, sab_raw, por_raw, sheet_ssn, verified_o
     # Claims the portal paid after the sheet was verified move these amounts.
     if key in _PAID_TO_DATE_KEYS and status == STATUS_MISMATCH and later_services:
         shown = ", ".join(later_services[:4]) + ("…" if len(later_services) > 4 else "")
-        return STATUS_NOT_COMPARABLE, (f"the portal has services dated after the sheet was verified "
+        return STATUS_NOT_COMPARABLE, (f"the portal has services dated after the sheet's as-of day "
                                        f"({verified_on}): {shown}; amounts have moved since")
     return status, note
 
@@ -118,11 +160,14 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     # Derived readers work off the translated export, not the raw one.
     portal_norm = _portal_normalized(portal_raw)
     # The sheet is held to the day it was verified [11/10, team rule].
-    verified_on = sabrina_parsed.get("verification_date")
+    verified_on = _sheet_as_of(sabrina_parsed.get("verification_date"),
+                               sabrina_parsed.get("appointment_date"))
     if verified_on and isinstance(portal_norm, dict) and isinstance(portal_norm.get("_mo_meta"), dict):
         portal_norm = {**portal_norm, "_mo_meta": {**portal_norm["_mo_meta"], "verified_on": verified_on}}
     later_services = _services_after(portal_norm, verified_on)
     sheet_ssn = sabrina_parsed.get("ssn")
+    relationship = (str(((portal_norm.get("subscriber_info") or {}).get("relation")) or "").strip().lower()
+                    if isinstance(portal_norm, dict) else "")
     bd = _breakdown_for_sheet(bd, portal_norm)
     # A History cell that wraps onto a second line is read in full.
     sab_fields = _mo_wrapped_history(sab_fields, sabrina_parsed.get("benefit_rows"), portal_norm)
@@ -178,7 +223,7 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                 status = STATUS_MATCH if equal else STATUS_MISMATCH
 
         status, note = _team_rule_status(key, status, note, sab_raw, por_raw,
-                                         sheet_ssn, verified_on, later_services)
+                                         sheet_ssn, verified_on, later_services, relationship)
 
         row = {
             "key": key,
