@@ -139,8 +139,18 @@ def _reflow_wrapped(lines: list[str]) -> list[str]:
 
     Only a first piece that is NOT itself a complete label may absorb a
     follower, so two genuinely separate labels are never fused.
+
+    A label's closing "?" can wrap onto a line of its own ("When Is First
+    Perio Maintenance Allowed After SRP" / "?"). Left alone it reads as an
+    empty cell and ends the value hunt, so the answer below it is lost
+    (Emily McKinney, Tracy Williams, 11/11). It goes back onto its label.
     """
-    out = list(lines)
+    out: list[str] = []
+    for line in lines:
+        if out and re.fullmatch(r"[?:]+", line.strip()):
+            out[-1] = f"{out[-1]} {line.strip()}"
+        else:
+            out.append(line)
     for _ in range(3):                      # a cell can wrap more than once
         merged: list[str] = []
         i = 0
@@ -281,7 +291,24 @@ def _pick_cell(kind: str, cands: list[tuple[int, str]]) -> tuple[int, str] | Non
         joined = " ".join(c for _, c in cands).strip()
         return (cands[-1][0], joined) if joined else None
 
+    # "Not available in web" wraps after "in" — "Not available in" / "web" —
+    # and is one answer, not the first line of it (Mark Herndon's crowns, 11/11).
+    first_m, first = cands[0]
+    if _NOT_AVAILABLE_RE.match(first):
+        parts, last = [first], first_m
+        for m, cand in cands[1:]:
+            if not _NOT_AVAILABLE_TAIL_RE.match(cand):
+                break
+            parts.append(cand)
+            last = m
+        return last, " ".join(parts)
+
     return cands[0]
+
+
+_NOT_AVAILABLE_RE = re.compile(r"^not\s+available\b", re.IGNORECASE)
+_NOT_AVAILABLE_TAIL_RE = re.compile(
+    r"^(?:(?:in|on|the|web|website|site|portal)\b\s*)+$", re.IGNORECASE)
 
 
 def _classify_row_cells(cells: list[str]) -> dict[str, str | None]:
@@ -556,17 +583,28 @@ def parse_sabrina_text(text: str) -> dict:
         # the portal is held to the day the sheet was verified, and a Member ID
         # that is the SSN on file is accepted.
         "verification_date": _verification_date(text),
+        # The visit the sheet was prepared for [11/11]: a portal service on or
+        # after it is that visit, not history the sheet could have known.
+        "appointment_date": _appointment_date(text),
         "ssn": _sheet_ssn(lines),
     }
 
 
 _VERIFICATION_DATE_RE = re.compile(
     r"verification\s+date\s*:?\s*(\d{1,2}/\d{1,2}/\d{2,4})", re.IGNORECASE)
+_APPOINTMENT_DATE_RE = re.compile(
+    r"appointment\s+date\s*:?\s*(\d{1,2}/\d{1,2}/\d{2,4})", re.IGNORECASE)
 
 
 def _verification_date(text: str) -> str | None:
     """The sheet's 'Verification Date: MM/DD/YYYY' footer, as MM/DD/YYYY."""
     m = _VERIFICATION_DATE_RE.search(text or "")
+    return m.group(1) if m else None
+
+
+def _appointment_date(text: str) -> str | None:
+    """The date in the sheet's 'Appointment Date' cell ('11/05/2026 02:40 PM')."""
+    m = _APPOINTMENT_DATE_RE.search(text or "")
     return m.group(1) if m else None
 
 

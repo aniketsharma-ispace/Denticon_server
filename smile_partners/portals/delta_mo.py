@@ -380,12 +380,13 @@ def _normalize_dd_mo_portal(raw):
         if not row.get('listed') and code in _MO_ORTHO_CODES and has_ortho == 'Yes':
             # The plan covers orthodontics but the coverage table leaves the
             # codes out for this member (an adult past the plan's ortho age,
-            # Anna Hayes). The plan's ortho age still stands; its percentage
-            # is not on the page.
+            # Anna Hayes). The plan's ortho age still stands, and the member
+            # is covered at 0%, as for any code the table leaves out
+            # [11/11, user decision: Gaye Stewart-Tooson, Tammy Swank].
             procedures.append({
                 'procedure_code': code,
                 'description': '',
-                'benefit_level': '',
+                'benefit_level': '0%',
                 'frequency_limit': '',
                 'age_limit': ortho_age,
                 'late_date_of_service': _history(code),

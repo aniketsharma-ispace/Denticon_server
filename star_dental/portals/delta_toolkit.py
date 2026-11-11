@@ -532,7 +532,20 @@ def _derive_frequency(
 
     `Frequency not available` is intentional and is the only fallback for a
     successful code with no explicit applicable frequency sentence.
+
+    Two different frequencies stated for different age bands, in one sentence
+    ("twice … age 18 and under and once … age 19 and over") or in two
+    ("… once per calendar year age 14 and under." / "… once in any period of
+    24 consecutive months age 15 and over."), give the frequency of the band
+    with the higher ages, whatever the patient's age [11/11, team rule, ported
+    from Smile] (Genelle Caldwell's D0274: 1X24Months, not the first
+    sentence's 1X1Year).
     """
+    banded = _banded_frequencies(code, limitations)
+    if len({frequency for _, frequency, _ in banded}) > 1:
+        _band, frequency, sentence = max(banded, key=lambda b: (b[0][1], b[0][0]))
+        return frequency, sentence, _frequency_scope(sentence)
+
     for limitation in limitations:
         for sentence in _split_sentences(limitation):
             if not _phrase_applies(code, sentence):
@@ -549,7 +562,26 @@ def _derive_frequency(
     return "Frequency not available", None, None
 
 
-_AGE_LIMIT_RE = re.compile(r"age\s+(\d{1,3})\s+and\s+under|up\s+to\s+age\s+(\d{1,3})", re.IGNORECASE)
+def _banded_frequencies(
+    code: str, limitations: list[str]
+) -> list[tuple[tuple[int, int], str, str]]:
+    """Every (age band, frequency, sentence) the code's sentences state for an age band."""
+    found = []
+    for limitation in limitations:
+        for sentence in _split_sentences(limitation):
+            if not _phrase_applies(code, sentence):
+                continue
+            for clause in _AGE_CLAUSE_SPLIT_RE.split(sentence):
+                if not clause.strip():
+                    continue
+                band = _clause_age_band(clause)
+                frequency = _frequency_from_text(clause) if band else None
+                if band and frequency:
+                    found.append((band, frequency, sentence))
+    return found
+
+
+_AGE_LIMIT_RE =re.compile(r"age\s+(\d{1,3})\s+and\s+under|up\s+to\s+age\s+(\d{1,3})", re.IGNORECASE)
 
 
 def _derive_age(code: str, limitations: list[str]) -> tuple[str, str | None]:
