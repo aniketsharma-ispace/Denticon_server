@@ -89,6 +89,19 @@ _NON_VALUES = _ALL_LABELS | _OTHER_SHEET_LABELS | {
 _STOP_LABELS = _ALL_LABELS | _OTHER_SHEET_LABELS
 
 
+# A label whose "#" is all that sets it apart from an ordinary word: "Group #"
+# normalizes to "group" and "SSN#" to "ssn". Matched without its "#", "Group #"
+# took the value "Group Management Services, Inc." for a label, and the sheet's
+# Group Name read blank (DD Toolkit, Ty Keenum, 11/10). Such a label matches
+# only where the "#" is printed.
+_spec_printed = [_f["label"] for _f in _SPEC if not _f.get("derived")] + [
+    _a for _f in _SPEC if not _f.get("derived") for _a in _f.get("aliases", ())]
+_HASH_ONLY_LABELS = {
+    _norm_label(_p) for _p in _spec_printed + ["SSN#"]
+    if "#" in _p and len(_norm_label(_p).split()) == 1
+} - {_norm_label(_p) for _p in _spec_printed if "#" not in _p}
+
+
 _LABELS_BY_FIRST: dict[str, list[str]] = {}
 for _lbl in _STOP_LABELS:
     if _lbl:
@@ -218,7 +231,10 @@ def _label_span(words: list[str], i: int, target: str) -> int:
     n_target_words = len(target.split())
     max_take = min(len(words) - i, n_target_words + 3)
     for take in range(max_take, 0, -1):
-        if _norm_label(" ".join(words[i:i + take])) == target:
+        printed = " ".join(words[i:i + take])
+        if _norm_label(printed) == target:
+            if target in _HASH_ONLY_LABELS and "#" not in printed:
+                continue
             return take
     return 0
 
@@ -572,6 +588,12 @@ def parse_sabrina_text(text: str) -> dict:
     # sheet is read against. Kept beside the fields, not among them.
     fee_schedule, _ = _find_value(lines, {"key": "fee_schedule", "label": "Fee Schedule",
                                           "kind": "text"}, cursor)
+    # Compared as rows of their own and checked by the identity gate (ported
+    # from DD Toolkit, 11/11): "Relation to Subscriber" (Self / Spouse / Child /
+    # Dependent) and the sheet's title, "Insurance Plan Breakdown - Patient
+    # Eligible - Primary".
+    relationship, _ = _find_value(lines, {"key": "relationship", "label": "Relation to Subscriber",
+                                          "kind": "text"}, cursor)
 
     return {
         "fields": values,
@@ -587,7 +609,22 @@ def parse_sabrina_text(text: str) -> dict:
         # after it is that visit, not history the sheet could have known.
         "appointment_date": _appointment_date(text),
         "ssn": _sheet_ssn(lines),
+        "relationship": relationship,
+        "eligibility": _sheet_eligibility(text),
     }
+
+
+_SHEET_ELIGIBILITY_RE = re.compile(
+    r"Insurance\s+Plan\s+Breakdown\s*-\s*Patient\s+(Not\s+Eligible|Ineligible|Inactive|Eligible|Active)\b",
+    re.IGNORECASE)
+
+
+def _sheet_eligibility(text: str) -> str | None:
+    """Yes / No from the sheet's title ("… - Patient Eligible - Primary")."""
+    m = _SHEET_ELIGIBILITY_RE.search(text or "")
+    if not m:
+        return None
+    return "Yes" if m.group(1).lower() in ("eligible", "active") else "No"
 
 
 _VERIFICATION_DATE_RE = re.compile(

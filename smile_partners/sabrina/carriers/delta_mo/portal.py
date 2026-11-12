@@ -16,8 +16,9 @@ import re
 from .common import _UNLIMITED_MAX
 from .vocabulary import (_blank, _coalesce_keys, _norm_network, _num_cob, _num_money,
                          _num_yesno)
-from .rules import (_mo_code_override, _mo_export, _mo_major_paid_on,
-                    _mo_network_export, _mo_perio_after_srp, _mo_prev_in_max)
+from .rules import (_mo_code_override, _mo_eligibility, _mo_export, _mo_major_paid_on,
+                    _mo_network_export, _mo_perio_after_srp, _mo_prev_in_max,
+                    _mo_relationship)
 
 
 def _portal_for_sheet(portal_raw: dict, sab_fields: dict, fee_schedule=None) -> dict:
@@ -481,6 +482,8 @@ _DERIVED = {
     "_eff_date": _portal_eff_date,
     "_perio_after_srp": _portal_perio_after_srp,
     "_d4341_quads": _portal_d4341_quads,
+    "_eligibility": lambda bd, portal_raw, sab_raw=None: _mo_eligibility(portal_raw),
+    "_relationship": lambda bd, portal_raw, sab_raw=None: _mo_relationship(portal_raw),
 }
 
 

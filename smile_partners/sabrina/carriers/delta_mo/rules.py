@@ -214,6 +214,37 @@ def _mo_prev_in_max(portal_raw: dict) -> str | None:
 # stays with PPO, as on Delta Dental's own site.
 _MO_LITE_FEE_RE = re.compile(r"lite|prem\s*lt\b", re.IGNORECASE)
 _MO_PREMIER_FEE_RE = re.compile(r"\bprem", re.IGNORECASE)
+# The office's own fees, as an out-of-network office bills: "GA General UCR".
+_MO_UCR_FEE_RE = re.compile(r"\bUCR\b", re.IGNORECASE)
+
+_MO_NETWORK_NAMES = {"ppo": "PPO", "premier": "Premier", "oon": "Out of Network"}
+
+
+def _mo_sheet_network(sheet_in_network, fee_schedule=None) -> tuple[str, str, str]:
+    """
+    The network whose benefits the sheet records, why, and any contradiction
+    on the sheet itself (ported from DD Toolkit, 11/03–11/04 reviews):
+
+    1. A fee schedule naming Premier (not Premier Lite) → Premier, even where
+       In Network says Out; such a sheet contradicts itself.
+    2. In Network "Out", or a UCR fee schedule → out of network. A UCR fee
+       schedule on a sheet that says In is a contradiction too.
+    3. Anything else → PPO.
+    """
+    text = str(fee_schedule or "").strip()
+    in_network = _norm_network(sheet_in_network)
+    if _MO_PREMIER_FEE_RE.search(text) and not _MO_LITE_FEE_RE.search(text):
+        conflict = ("the sheet says In Network: Out, but its Fee Schedule names Premier"
+                    if in_network == "OUT" else "")
+        return "premier", f"sheet Fee Schedule: {text}", conflict
+    ucr = bool(_MO_UCR_FEE_RE.search(text))
+    if in_network == "OUT" or ucr:
+        reasons = (["sheet In Network: Out"] if in_network == "OUT" else []) + (
+            [f"sheet Fee Schedule: {text}"] if ucr else [])
+        conflict = ("the sheet says In Network: In, but its Fee Schedule is UCR"
+                    if ucr and in_network == "IN" else "")
+        return "oon", ", ".join(reasons), conflict
+    return "ppo", "", ""
 
 
 def _mo_network_export(portal_raw: dict, sheet_in_network, fee_schedule=None) -> dict:
@@ -221,17 +252,121 @@ def _mo_network_export(portal_raw: dict, sheet_in_network, fee_schedule=None) ->
     The export marked with the network the sheet records.
 
     Every coverage row states the PPO, Premier and out-of-network percentage
-    side by side. A sheet whose In Network reads "Out" is audited against the
-    out-of-network ones, an in-network sheet whose fee schedule names Premier
-    against Premier, and anything else against PPO.
+    side by side; `_mo_sheet_network` picks the column. The reason and any
+    contradiction ride along for the In Network row and the audit's legend.
     """
     if not isinstance(portal_raw, dict):
         return portal_raw
-    text = str(fee_schedule or "")
-    if _norm_network(sheet_in_network) == "OUT":
-        network = "oon"
-    elif _MO_PREMIER_FEE_RE.search(text) and not _MO_LITE_FEE_RE.search(text):
-        network = "premier"
-    else:
-        network = "ppo"
-    return {**portal_raw, "_mo_network": network}
+    network, reason, conflict = _mo_sheet_network(sheet_in_network, fee_schedule)
+    return {**portal_raw, "_mo_network": network,
+            "_mo_network_reason": reason, "_mo_network_conflict": conflict}
+
+
+def _mo_in_network_conflict(portal_raw: dict, sab_raw) -> tuple[str, str] | None:
+    """
+    (portal value, note) for the In Network row of a sheet that contradicts
+    itself; None otherwise. The benefits were compared under the network its
+    Fee Schedule names, so its In Network answer is flagged against it.
+    """
+    conflict = (portal_raw or {}).get("_mo_network_conflict")
+    if not conflict or _blank(sab_raw):
+        return None
+    network = (portal_raw or {}).get("_mo_network") or "ppo"
+    shown = "Out" if network == "oon" else "In"
+    return shown, f"{conflict}; benefits compared under {_MO_NETWORK_NAMES.get(network, network)}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  IDENTITY (ported from DD Toolkit, 11/11)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _mo_patient(portal_raw: dict) -> dict:
+    """The translated export's patient record."""
+    return (((portal_raw or {}).get("metlife_data") or {}).get("patient") or {})
+
+
+def _mo_eligibility(portal_raw: dict) -> str | None:
+    """The member record's Eligible Yes/No."""
+    if not _mo_export(portal_raw):
+        return None
+    answer = _mo_patient(portal_raw).get("eligibility")
+    return answer if answer in ("Yes", "No") else None
+
+
+def _mo_relationship(portal_raw: dict) -> str | None:
+    """The member record's relationship to the subscriber, as the sheet words it."""
+    if not _mo_export(portal_raw):
+        return None
+    raw = str(_mo_patient(portal_raw).get("relationship") or "").strip()
+    if not raw:
+        return None
+    return "Self" if raw.lower() == "subscriber" else raw.title()
+
+
+# Dependents the sheet may name either by their own relationship or as a
+# plain "Dependent".
+_MO_DEPENDENTS = {"spouse", "child", "dependent", "domestic partner", "partner", "student"}
+
+
+def _mo_relationship_agrees(sheet, portal) -> tuple[bool | None, str]:
+    """
+    Whether the sheet's Relation to Subscriber agrees with the portal's.
+
+    The same word agrees. The sheet's "Dependent" covers any member who is not
+    the subscriber (Anna Hayes is the subscriber's spouse; Tia Hoehne his
+    child), and a portal "Dependent" any relationship but Self. Self against
+    a dependent, or Spouse against Child, disagree.
+    """
+    a, b = str(sheet or "").strip().lower(), str(portal or "").strip().lower()
+    if not a or not b:
+        return None, ""
+    if a == b:
+        return True, ""
+    if "dependent" in (a, b) and {a, b} <= _MO_DEPENDENTS:
+        return True, "a dependent either way"
+    if a in _MO_DEPENDENTS | {"self"} and b in _MO_DEPENDENTS | {"self"}:
+        return False, ""
+    return None, ""
+
+
+def _mo_identity_gate(sabrina_parsed: dict, portal_raw: dict) -> tuple[bool, list[str]]:
+    """
+    Whether the sheet and the export are the same member, before anything else
+    is compared (ported from DD Toolkit).
+
+    Patient name, date of birth and group number must be stated on both sides
+    and agree. The portal must state eligibility, and where the sheet's title
+    states it too ("Patient Eligible"), the two must agree. Names agree as the
+    Patient Name row has them agree (an extra given name, initials, spacing
+    and apostrophes aside). The date of birth on the portal has its year
+    filled in from the member's age on the day the portal was read.
+
+    There is no network check: the export states the PPO, Premier and
+    out-of-network figures side by side, and the sheet picks among them.
+    """
+    from .compare import _compare
+    from .vocabulary import _norm_id, _num_date
+
+    issues: list[str] = []
+    fields = sabrina_parsed.get("fields") or {}
+    patient = _mo_patient(portal_raw)
+    group = ((((portal_raw or {}).get("metlife_data") or {}).get("plan_details") or {})
+             .get("group_number"))
+
+    sab_name, por_name = fields.get("patient_name"), patient.get("name")
+    if _blank(sab_name) or _blank(por_name) or _compare("name", sab_name, por_name)[0] is not True:
+        issues.append(f"patient name mismatch ({sab_name!r} vs {por_name!r})")
+
+    sab_dob, por_dob = _num_date(fields.get("patient_dob")), _num_date(patient.get("dob"))
+    if not sab_dob or not por_dob or sab_dob != por_dob:
+        issues.append(f"DOB mismatch ({fields.get('patient_dob')!r} vs {patient.get('dob')!r})")
+
+    sab_elig, por_elig = sabrina_parsed.get("eligibility"), _mo_eligibility(portal_raw)
+    if not por_elig or (sab_elig and sab_elig != por_elig):
+        issues.append(f"eligibility mismatch ({sab_elig!r} vs {por_elig!r})")
+
+    sab_group, por_group = _norm_id(fields.get("group_number")), _norm_id(group)
+    if not sab_group or not por_group or sab_group != por_group:
+        issues.append(f"group number mismatch ({fields.get('group_number')!r} vs {group!r})")
+
+    return not issues, issues

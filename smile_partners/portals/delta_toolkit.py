@@ -985,6 +985,10 @@ def _service_dates_text(value: Any) -> str | None:
 _ROUTINE_ROW_ALSO_COVERS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
     (re.compile(r"(?:oral\s+)?exams?", re.IGNORECASE), ("D0120", "D0140", "D0150")),
     (re.compile(r"bitewings?(?:\s+x-?rays?)?", re.IGNORECASE), ("D0272", "D0274")),
+    # 11/12 review (Max Entrekin): the one "Fluoride" row, looked up as D1208,
+    # is the history of both fluoride codes, so D1206 takes its dates too.
+    (re.compile(r"(?:topical\s+)?fluorides?(?:\s+(?:varnish|treatments?))?", re.IGNORECASE),
+     ("D1206", "D1208")),
 )
 
 

@@ -1240,7 +1240,9 @@ function renderSabrina(result) {
     // A failed Toolkit identity/network gate leaves every row not comparable:
     // say so instead of a green "no mismatches" verdict.
     const blockedIssues = result.diagnostics?.toolkit?.identity_valid === false
-        ? (result.diagnostics.toolkit.identity_issues || []) : null;
+        ? (result.diagnostics.toolkit.identity_issues || [])
+        : result.diagnostics?.identity?.valid === false   // DD MO identity gate
+        ? (result.diagnostics.identity.issues || []) : null;
     const mismBlock = blockedIssues
         ? `<div class="sab-blocked">⚠ Comparison blocked — nothing was compared. Identity/network validation failed: ${escHtml(blockedIssues.join(', ') || 'unknown reason')}</div>`
         : mism.length

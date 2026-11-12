@@ -312,7 +312,23 @@ def _toolkit_srp_quads_per_day(bd: dict, portal_raw: dict, sab_raw=None) -> str 
         count = int(raw_count) if raw_count.isdigit() else word_counts.get(raw_count)
         if count is not None:
             caps.add(str(count))
-    return next(iter(caps)) if len(caps) == 1 else None
+    if caps:
+        return next(iter(caps)) if len(caps) == 1 else None
+    # 11/12 review (Max Entrekin): with no stated cap, the sheet's quadrant count
+    # defaults to 2 when the Toolkit shows D4341 covered, and is left blank when
+    # it is not covered (or D4341 was not looked up).
+    return "2" if _toolkit_d4341_covered(bd) else None
+
+
+def _toolkit_d4341_not_covered(bd: dict) -> bool:
+    proc = (bd.get("procs") or {}).get("D4341") or {}
+    return (str(proc.get("benefit_level") or "").strip().lower() in ("not covered", "0%", "0")
+            or str(proc.get("toolkit_status") or "").strip().upper() == "NOT COVERED")
+
+
+def _toolkit_d4341_covered(bd: dict) -> bool:
+    proc = (bd.get("procs") or {}).get("D4341") or {}
+    return bool(str(proc.get("benefit_level") or "").strip()) and not _toolkit_d4341_not_covered(bd)
 
 
 _POST_OP_RE = re.compile(r"(\d+)[\s-]*day\s+post[\s-]*operative\s+period", re.IGNORECASE)

@@ -15,6 +15,7 @@ from .vocabulary import (
     _carrier_brand,
     _frequency_note,
     _history_dates,
+    _names_differ_only_in_spacing,
     _norm_id,
     _norm_name,
     _norm_network,
@@ -188,6 +189,8 @@ def _compare(kind: str, sab, por, ctx: dict | None = None) -> tuple[bool | None,
         sa, sb = set(a), set(b)
         if sa and sb and (sa <= sb or sb <= sa):
             return True, "name subset; one system stores an extra given name"
+        if _names_differ_only_in_spacing(a, b):
+            return True, "same name, spaced differently"
         return False, ""
 
     if kind == "address":

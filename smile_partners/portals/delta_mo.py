@@ -495,7 +495,8 @@ def _normalize_dd_mo_portal(raw):
             'relation': relationship or 'Self',
         },
         'metlife_data': {
-            'patient': {'name': name, 'dob': dob, 'relationship': relationship},
+            'patient': {'name': name, 'dob': dob, 'relationship': relationship,
+                        'eligibility': _mo_yes_no(member.get('eligible'))},
             'plan_details': {
                 'start_date': str(member.get('effective_date') or ''),
                 'end_date': _blank_present_end_date(member.get('termination_date')),
