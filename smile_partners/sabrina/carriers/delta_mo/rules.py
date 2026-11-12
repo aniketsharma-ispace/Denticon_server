@@ -129,12 +129,28 @@ def _mo_history_in_window(value, portal_raw: dict, codes: tuple, sab_raw=None):
     sheet = str(sab_raw or "").strip()
     if sheet and sheet.lower() not in _HISTORY_NONE_WORDS and _MO_DATE_RE.search(sheet):
         return _as_of_verification()
-    proc = next((p for p in (_mo_procedure(portal_raw, str(c).upper()) for c in codes) if p), None)
-    span = _MO_FREQ_SPAN_RE.match(str((proc or {}).get("frequency_limit") or "").strip())
-    if not span or not dates:
+    start = _mo_window_start(portal_raw, codes)
+    if not start or not dates:
         return _as_of_verification()
 
-    today = verified or _mo_date(meta.get("scraped_on")) or datetime.date.today()
+    kept = [text for text, d in dates if d >= start]
+    return True, (", ".join(kept) if kept else "—")
+
+
+def _mo_window_start(portal_raw: dict, codes: tuple):
+    """
+    The first day of the code's frequency window, measured back from the
+    sheet's as-of day (see `_mo_history_in_window`); None where the code states
+    no windowed frequency (a lifetime limit, none, NC).
+    """
+    import datetime
+    meta = (portal_raw or {}).get("_mo_meta") or {}
+    proc = next((p for p in (_mo_procedure(portal_raw, str(c).upper()) for c in codes) if p), None)
+    span = _MO_FREQ_SPAN_RE.match(str((proc or {}).get("frequency_limit") or "").strip())
+    if not span:
+        return None
+
+    today = _mo_date(meta.get("verified_on")) or _mo_date(meta.get("scraped_on")) or datetime.date.today()
     count, unit = int(span.group(1)), span.group(2).lower()
 
     def _months_back(n):
@@ -153,9 +169,38 @@ def _mo_history_in_window(value, portal_raw: dict, codes: tuple, sab_raw=None):
         start = _months_back(count)
     else:
         start = today - datetime.timedelta(days=count)
+    return start
 
-    kept = [text for text, d in dates if d >= start]
-    return True, (", ".join(kept) if kept else "—")
+
+def _mo_history_skipped(sab_raw, por_raw, portal_raw: dict, codes: tuple) -> list[str]:
+    """
+    Portal visits a sheet that lists dates should have listed but left out
+    [11/12, Koushik: Oladele Famakinwa D1208].
+
+    `por_raw` is the portal's history as of the sheet's day (see
+    `_mo_history_in_window`), pairs included. The sheet records the latest
+    visits, so it leaves one out where the portal has a visit after the latest
+    date it lists (Oladele: 10/10/2025 against the portal's 05/01/2026), or,
+    where it lists several dates, a visit inside the frequency window it does
+    not list (Tammy Swank's D1110: 10/19/2026 and 10/07/2025 against 10/19/2026
+    and 04/15/2026 this year). A sheet listing one date records the last visit
+    only, which is right (Tia Hoehne's D1208, 11/10). Older visits it does not
+    list are fine.
+    """
+    if not _mo_export(portal_raw):
+        return []
+    sheet = {d for d in (_mo_date(m.group(0)) for m in _MO_DATE_RE.finditer(str(sab_raw or ""))) if d}
+    portal = {}
+    for m in _MO_DATE_RE.finditer(str(por_raw or "")):
+        d = _mo_date(m.group(0))
+        if d:
+            portal[d] = m.group(0)
+    if not sheet or not portal:
+        return []
+    latest = max(sheet)
+    start = _mo_window_start(portal_raw, codes) if len(sheet) > 1 else None
+    skipped = [d for d in portal if d not in sheet and (d > latest or (start and d >= start))]
+    return [portal[d] for d in sorted(skipped, reverse=True)]
 
 
 def _mo_major_paid_on(portal_raw: dict) -> str | None:
