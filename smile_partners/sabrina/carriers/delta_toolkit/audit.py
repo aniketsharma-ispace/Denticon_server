@@ -27,6 +27,7 @@ from .rules import (
     _pdf_ortho_coverage,
     _pdf_relationship,
     _toolkit_benefit_network,
+    _toolkit_d4341_not_covered,
     _toolkit_identity_gate,
     _toolkit_not_covered_age_agrees,
 )
@@ -277,11 +278,19 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                 note = ("This export carries only the PPO maximums and deductibles; re-export with "
                         f"extension 1.45+ to compare the {toolkit_meta.get('benefit_network')} figures.")
             elif por_blank and not sab_blank and field.get("portal") == "_toolkit_srp_quads_per_day":
-                # Few Toolkit plans state a same-day quadrant cap. Its absence is
-                # no evidence against the sheet, and must not turn a D4341 whose
-                # percentage, frequency and history agree into "not comparable".
-                status = STATUS_NOT_IN_PORTAL
-                note = "the Toolkit states no same-day quadrant cap for D4341"
+                # 11/12 review: a covered D4341 reads 2 quads (rules.py); the
+                # portal side is blank only where D4341 is not covered, when the
+                # sheet should leave Quads blank too, or was not looked up.
+                if _toolkit_d4341_not_covered(bd):
+                    if str(sab_raw).strip().casefold() in ("0", "00", "nc", "n/c", "not covered"):
+                        status = STATUS_MATCH
+                        note = "D4341 is not covered; both sides state no quadrants"
+                    else:
+                        status = STATUS_MISMATCH
+                        note = "D4341 is not covered, so its Quads cell is left blank"
+                else:
+                    status = STATUS_NOT_IN_PORTAL
+                    note = "the Toolkit export has no D4341 benefit to default its quadrants from"
             elif por_blank and not sab_blank:
                 # Toolkit missing data is an evidence gap, not a negative answer.
                 status = STATUS_NOT_COMPARABLE

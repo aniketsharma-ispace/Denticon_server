@@ -17,7 +17,8 @@ from .spec import _SPEC
 from .compare import _compare
 from .portal import (_breakdown_for_sheet, _portal_breakdown, _portal_for_sheet,
                      _portal_normalized, _portal_value)
-from .rules import _mo_wrapped_history
+from .rules import (_MO_NETWORK_NAMES, _mo_identity_gate, _mo_in_network_conflict,
+                    _mo_relationship_agrees, _mo_wrapped_history)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -105,8 +106,14 @@ def _services_after(portal_norm, verified_on) -> list[str]:
     return [later[d] for d in sorted(later)]
 
 
+def _says_not_on_website(value) -> bool:
+    """A sheet answer of "Not available in/on (the) web/website" or a clipped "Not available in"."""
+    return bool(re.fullmatch(r"\s*not\s+available(?:\s+(?:in|on))?(?:\s+the)?(?:\s+(?:web\s*site|web|portal))?\s*",
+                             str(value or ""), re.IGNORECASE))
+
+
 def _team_rule_status(key, status, note, sab_raw, por_raw, sheet_ssn, verified_on, later_services,
-                      relationship=""):
+                      relationship="", kind=""):
     """DD MO review rules [11/10, team rule] applied on top of the plain comparison."""
     import re
     from .vocabulary import _num_yesno
@@ -129,11 +136,15 @@ def _team_rule_status(key, status, note, sab_raw, por_raw, sheet_ssn, verified_o
         return STATUS_NOT_STATED, ("the portal does not give a dependent's subscriber a full date of birth; "
                                    "not checked (team rule)")
 
-    # The portal answers crown downgrades from D2740's limitations, so a sheet
-    # that calls it "not available" disagrees with the portal.
-    if (key == "porcelain_posterior_downgrade" and status == STATUS_NOT_COMPARABLE
-            and _num_yesno(por_raw) is not None):
-        return STATUS_MISMATCH, "the portal answers this from D2740's limitations (none stated = No)"
+    # A sheet that calls a Yes/No question "not available" on the website
+    # disagrees with a portal that answers it (ported from DD Toolkit, 11/11;
+    # crowns since 11/10: the portal answers them from D2740's limitations,
+    # none stated = No).
+    if (kind == "yesno" and status == STATUS_NOT_COMPARABLE and _num_yesno(por_raw) is not None
+            and (key == "porcelain_posterior_downgrade" or _says_not_on_website(sab_raw))):
+        if key == "porcelain_posterior_downgrade":
+            return STATUS_MISMATCH, "the portal answers this from D2740's limitations (none stated = No)"
+        return STATUS_MISMATCH, "the sheet says this is not available on the website, but the portal states it"
 
     # Claims the portal paid after the sheet was verified move these amounts.
     if key in _PAID_TO_DATE_KEYS and status == STATUS_MISMATCH and later_services:
@@ -177,6 +188,10 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
     # is right to within a day or two of the appointment.
     ctx = {"age": _age_from_dob(sab_fields.get("patient_dob"))}
 
+    # Same member on both sides, or nothing is compared (ported from DD
+    # Toolkit, 11/11).
+    identity_ok, identity_issues = _mo_identity_gate(sabrina_parsed, portal_norm)
+
     sections: dict[str, list] = {}
     rows: list[dict] = []
 
@@ -187,8 +202,15 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             field.setdefault("group", key)
             field.setdefault("group_label", field["label"])
             field.setdefault("aspect", "pct")
-        sab_raw = sab_fields.get(key)
+        sab_raw = (sabrina_parsed.get(field["sheet_source"]) if field.get("sheet_source")
+                   else sab_fields.get(key))
         por_raw = _portal_value(field, bd, portal_norm, sab_raw)
+        # A sheet that contradicts itself (Premier fee schedule + Out, UCR + In):
+        # its In Network answer is flagged against the network compared.
+        in_network_conflict = (_mo_in_network_conflict(portal_raw, sab_raw)
+                               if key == "in_network" else None)
+        if in_network_conflict:
+            por_raw = in_network_conflict[0]
 
         sab_blank = _blank_for(field["kind"], sab_raw)
         por_blank = _blank_for(field["kind"], por_raw)
@@ -213,8 +235,13 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
         elif field.get("uncomparable"):
             status = STATUS_NOT_COMPARABLE
             note = field["uncomparable"]
+        elif in_network_conflict:
+            status, note = STATUS_MISMATCH, in_network_conflict[1]
         else:
-            equal, cmp_note = _compare(field["kind"], sab_raw, por_raw, ctx)
+            if key == "relationship":
+                equal, cmp_note = _mo_relationship_agrees(sab_raw, por_raw)
+            else:
+                equal, cmp_note = _compare(field["kind"], sab_raw, por_raw, ctx)
             note = cmp_note
             if equal is None:
                 status = STATUS_NOT_COMPARABLE
@@ -223,7 +250,12 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                 status = STATUS_MATCH if equal else STATUS_MISMATCH
 
         status, note = _team_rule_status(key, status, note, sab_raw, por_raw,
-                                         sheet_ssn, verified_on, later_services, relationship)
+                                         sheet_ssn, verified_on, later_services, relationship,
+                                         field["kind"])
+        if not identity_ok:
+            # The safety gate applies to every row.
+            status = STATUS_NOT_COMPARABLE
+            note = "Identity validation failed: " + ", ".join(identity_issues)
 
         row = {
             "key": key,
@@ -285,6 +317,13 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
             # Delta only: the provider network the per-code rows were read under.
             "portal_network": ((portal_raw or {}).get("tabs") or {}).get("benefits_search_network")
                               if isinstance((portal_raw or {}).get("tabs"), dict) else None,
+            # Same member on both sides; the UI shows a blocked banner when not.
+            "identity": {"valid": identity_ok, "issues": identity_issues},
+            # The network whose percentages were compared, and what chose it.
+            "benefit_network": _MO_NETWORK_NAMES.get((portal_raw or {}).get("_mo_network") or "ppo"),
+            "benefit_network_reason": "; ".join(x for x in (
+                (portal_raw or {}).get("_mo_network_reason"),
+                (portal_raw or {}).get("_mo_network_conflict")) if x),
         },
     }
 

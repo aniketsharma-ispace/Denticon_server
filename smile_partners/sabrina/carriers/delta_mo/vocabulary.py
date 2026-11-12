@@ -525,13 +525,37 @@ def _norm_name(v) -> tuple[str, ...] | None:
     Name → sorted significant tokens, so 'LAST, FIRST' (Sabrina/Denticon style)
     and 'First Last' (portal style) compare equal. Middle initials and
     generational suffixes are dropped: they differ between systems constantly
-    and are never the point of an audit.
+    and are never the point of an audit. An apostrophe joins rather than
+    splits: O'Callaghan is OCALLAGHAN, and a split would drop the "O" as if it
+    were an initial (ported from DD Toolkit).
     """
     if _blank(v):
         return None
-    s = re.sub(r"[^A-Z ,]", " ", str(v).upper()).replace(",", " ")
+    s = re.sub(r"['‘’`]", "", str(v).upper())
+    s = re.sub(r"[^A-Z ,]", " ", s).replace(",", " ")
     tokens = [t for t in s.split() if len(t) > 1 and t not in _NAME_SUFFIXES]
     return tuple(sorted(tokens)) or None
+
+
+def _names_differ_only_in_spacing(a, b) -> bool:
+    """
+    Whether two `_norm_name` token tuples name the same person with a part
+    spaced differently: "Lynette LaPointe" vs "LYNETTE LA POINTE", "De La
+    Cruz" vs "DELACRUZ" (ported from DD Toolkit, 11/10). The tokens the two
+    share are set aside; the rest of each side, joined in some order, must
+    spell the same letters.
+    """
+    if not a or not b or a == b:
+        return False
+    from collections import Counter
+    from itertools import permutations
+
+    rest_a = list((Counter(a) - Counter(b)).elements())
+    rest_b = list((Counter(b) - Counter(a)).elements())
+    if not rest_a or not rest_b or len(rest_a) > 4 or len(rest_b) > 4:
+        return False
+    spelled_a = {"".join(p) for p in permutations(rest_a)}
+    return any("".join(p) in spelled_a for p in permutations(rest_b))
 
 
 def _addr_tokens(v) -> set[str] | None:

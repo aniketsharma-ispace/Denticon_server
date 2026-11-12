@@ -58,9 +58,19 @@ _SPEC: list[dict] = [
      "after": "Patient Name"},
     {"key": "member_id",       "label": "Member ID#",      "kind": "id",   "section": "Patient / Subscriber", "portal": "member_id",
      "aliases": ["Member ID", "Member Id #", "Subscriber ID", "Member/Subscriber ID"]},
+    # Relationship and Eligibility are ported from DD Toolkit (11/11). The
+    # parser reads them apart from the label hunt (`sheet_source` names the
+    # parse result's key), so they are flagged `derived` and stay out of the
+    # sheet's label count. Relationship sits where Sabrina prints "Relation to
+    # Subscriber"; Eligibility comes from the sheet's title and closes the
+    # section.
+    {"key": "relationship",    "label": "Relationship",    "kind": "text", "section": "Patient / Subscriber",
+     "portal": "_relationship", "derived": True, "sheet_source": "relationship"},
     {"key": "subscriber_name", "label": "Subscriber Name", "kind": "name", "section": "Patient / Subscriber", "portal": "subscriber_name"},
     {"key": "subscriber_dob",  "label": "Date of Birth",   "kind": "date", "section": "Patient / Subscriber", "portal": "subscriber_dob",
      "after": "Subscriber Name"},
+    {"key": "eligibility",     "label": "Eligibility",     "kind": "yesno", "section": "Patient / Subscriber",
+     "portal": "_eligibility", "derived": True, "sheet_source": "eligibility"},
 
     # ── Insurance ────────────────────────────────────────────────────────────
     # Compared on the CARRIER, not the whole string: the sheet names the plan
