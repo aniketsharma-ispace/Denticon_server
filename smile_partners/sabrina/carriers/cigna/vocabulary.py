@@ -217,7 +217,7 @@ _FREQ_WORD_COUNTS = {
 _FREQ_PROSE_RE = re.compile(
     r"^(?:(\d+)|once|twice|thrice|one|two|three|four|five|six|seven|eight|nine|ten)"
     r"\s*(?:times?)?\s*(?:in|per|every)\s*(\d*)\s*"
-    r"(?:calendar\s*|contract\s*|plan\s*|benefit\s*|consecutive\s*|"
+    r"(?:calendar\s*|policy\s*|contract\s*|plan\s*|benefit\s*|consecutive\s*|"
     r"rolling\s*|successive\s*)*(year|month|week|day)s?",
     re.IGNORECASE)
 
