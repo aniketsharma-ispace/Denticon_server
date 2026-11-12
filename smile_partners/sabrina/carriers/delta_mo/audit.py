@@ -18,7 +18,7 @@ from .compare import _compare
 from .portal import (_breakdown_for_sheet, _portal_breakdown, _portal_for_sheet,
                      _portal_normalized, _portal_value)
 from .rules import (_MO_NETWORK_NAMES, _mo_identity_gate, _mo_in_network_conflict,
-                    _mo_relationship_agrees, _mo_wrapped_history)
+                    _mo_history_skipped, _mo_relationship_agrees, _mo_wrapped_history)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -248,6 +248,13 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                 note = note or "values are not in a comparable form"
             else:
                 status = STATUS_MATCH if equal else STATUS_MISMATCH
+            src = field.get("portal")
+            if (status == STATUS_MATCH and field["kind"] == "history" and isinstance(src, tuple)
+                    and src[:2] == ("codefield", "late_date_of_service")):
+                skipped = _mo_history_skipped(sab_raw, por_raw, portal_norm, src[2:])
+                if skipped:
+                    status = STATUS_MISMATCH
+                    note = f"the sheet leaves out the portal's {', '.join(skipped)}"
 
         status, note = _team_rule_status(key, status, note, sab_raw, por_raw,
                                          sheet_ssn, verified_on, later_services, relationship,

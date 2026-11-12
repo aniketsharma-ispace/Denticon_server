@@ -323,6 +323,12 @@ def _pick_cell(kind: str, cands: list[tuple[int, str]]) -> tuple[int, str] | Non
 
 
 _NOT_AVAILABLE_RE = re.compile(r"^not\s+available\b", re.IGNORECASE)
+# Words the sheet writes in the Age Limit column: NC (not covered, Ortho Coverage on a
+# plan without orthodontics) and NAL (no age limit). [11/12]
+_AGE_WORDS = {"NC", "NAL"}
+# A History cell ending in a date continues onto the next line when the next cell is a
+# date too, comma or not ("10/19/2026" / "10/07/2025", Tammy Swank). [11/12]
+_HIST_ENDS_IN_DATE_RE = re.compile(r"\d{1,2}/\d{1,2}/\d{2,4}\s*$")
 _NOT_AVAILABLE_TAIL_RE = re.compile(
     r"^(?:(?:in|on|the|web|website|site|portal)\b\s*)+$", re.IGNORECASE)
 
@@ -337,14 +343,16 @@ def _classify_row_cells(cells: list[str]) -> dict[str, str | None]:
 
         Frequency   before the percentage, matching the frequency vocabulary
         Percentage  the first cell that reads as a percentage
-        Age Limit   a bare 1-3 digit number after the percentage
+        Age Limit   a bare 1-3 digit number after the percentage, or NC / NAL
+                    before the History cell
         History     a date, or "NH", after the percentage
 
     A cell after the percentage that is none of these (the Coverage column, page
     furniture) is ignored rather than guessed at.
 
     A History cell listing several dates wraps after a comma — "06/10/2026,"
-    then "01/29/2026". `history` stays the first line, as it always has been;
+    then "01/29/2026" — or after a date with no comma at all ("10/19/2026" then
+    "10/07/2025"). `history` stays the first line, as it always has been;
     the whole list is kept beside it as `history_wrapped`, which the Delta
     Dental of Missouri audit reads (see `rules._mo_wrapped_history`).
     """
@@ -359,10 +367,12 @@ def _classify_row_cells(cells: list[str]) -> dict[str, str | None]:
             continue
         if hist is None and (_num_date(s) is not None or s.lower() in _HISTORY_NONE):
             hist = s
-        elif (hist is not None and (wrapped or hist).endswith(",")
-              and _num_date(s) is not None):
-            wrapped = f"{wrapped or hist} {s}"
-        elif age is None and re.fullmatch(r"\d{1,3}", s):
+        elif (hist is not None and _num_date(s) is not None
+              and ((wrapped or hist).rstrip().endswith(",")
+                   or _HIST_ENDS_IN_DATE_RE.search(wrapped or hist))):
+            wrapped = f"{(wrapped or hist).rstrip()} {s}"
+        elif age is None and (re.fullmatch(r"\d{1,3}", s)
+                              or (hist is None and s.upper() in _AGE_WORDS)):
             age = s
     return {"frequency": freq, "percentage": pct, "age_limit": age, "history": hist,
             "history_wrapped": wrapped}

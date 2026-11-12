@@ -380,6 +380,12 @@ def _num_agelimit(v) -> int | None:
         return 99
     if "no age limit" in s.lower() or "none" in s.lower():
         return 99
+    # The sheet's Age Limit words [11/12]: NAL is no age limit; NC (a code the plan
+    # does not cover) has no age it is covered to, the 0 the portal side reads.
+    if s.upper() == "NAL":
+        return 99
+    if s.upper() == "NC":
+        return 0
     return None
 
 
