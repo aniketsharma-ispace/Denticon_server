@@ -109,14 +109,14 @@ _UNDER_AGE_RE = re.compile(r'\bunder\s+(?:age\s+)?(\d{1,3})(?:\s+years?\s+of\s+a
 
 def _age_limit(lines):
     """
-    The age limit the sheet records for the code. "Under N" is the last age
-    still covered, N - 1 (team rule, 11/09): "Under 19 Years Of Age" → 0-18.
-    "Age 18 And Older" → 18-99.
+    The age limit the sheet records for the code, as the single number the
+    sheet prints. "Under N" is the last age still covered, N - 1 (team rule,
+    11/09): "Under 19 Years Of Age" → 18. "Age 18 And Older" → 18-99.
 
     A limitation can name more than one age, per tooth:
     "Under 11 Years Of Age ~ Permanent 1st Molars ~ Under 16 Years Of Age ~
     Permanent 2nd Molars". The highest one is the code's age limit (team
-    rule, 11/05; the rule the other carriers follow too), so that is 0-15.
+    rule, 11/05; the rule the other carriers follow too), so that is 15.
     """
     highest = None
     for line in lines:
@@ -124,7 +124,7 @@ def _age_limit(lines):
             age = int(m.group(1))
             highest = age if highest is None else max(highest, age)
     if highest is not None:
-        return f'0-{max(highest - 1, 0)}'
+        return str(max(highest - 1, 0))
     for line in lines:
         band = _age_band(line)
         if band:
@@ -218,6 +218,8 @@ def _amount(number):
 
 
 _UNLIMITED = 99999.0
+_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+           'August', 'September', 'October', 'November', 'December']
 
 
 def _parse_dm_row(row):
@@ -252,7 +254,7 @@ def _plan_amounts(raw, network):
     network does not apply.
     """
     out = {'annual_max': None, 'ortho_max': None, 'indiv_ded': None,
-           'family_ded': None, 'calendar_year': False}
+           'family_ded': None, 'calendar_year': False, 'year_start_month': None}
     annual_candidates = []
     for row in raw.get('deductibles_and_maximums') or []:
         if not isinstance(row, dict):
@@ -263,6 +265,10 @@ def _plan_amounts(raw, network):
             continue
         if 'calendar year' in period:
             out['calendar_year'] = True
+        # "Per Contract Year 03/01 - 02/28": the plan year starts in March.
+        m = re.search(r'\byear\s+(\d{2})/\d{2}\s*-', period)
+        if m and out['year_start_month'] is None and 1 <= int(m.group(1)) <= 12:
+            out['year_start_month'] = int(m.group(1))
         related = [t for t in tags if 'related' in t]
         if 'deductible' in benefit and not related:
             value = 0.0 if amount is None else amount
@@ -415,7 +421,24 @@ def _cob(raw):
     return ''
 
 
-def _ortho_policy(record):
+def _ortho_row_fits(desc, relationship):
+    """
+    Whether a "Canceled Enrollment Benefits Cease" row is the patient's. A
+    plan can list one per member type (TRICARE: "Dependent ~ Age 21 And
+    Older" and "Student, Spouse, Selected Reserve … ~ Age 23 And Older").
+    """
+    low = desc.lower()
+    rel = (relationship or '').lower()
+    if rel in ('spouse', 'husband', 'wife', 'domestic partner'):
+        return 'spouse' in low
+    if rel in ('self', 'subscriber', 'member'):
+        return 'service member' in low or 'members to any age' in low or 'all members' in low
+    if rel in ('child', 'dependent', 'son', 'daughter', 'stepchild'):
+        return 'dependent' in low and 'student' not in low
+    return False
+
+
+def _ortho_policy(record, relationship=''):
     """
     (age limit, payment timing) from D8080's Additional Policy Details
     (team rule, 11/05):
@@ -423,26 +446,32 @@ def _ortho_policy(record):
     - Age: the "Canceled Enrollment Benefits Cease" row.
       "Dependent ~ Age 19 And Older ~ Ortho related" → 19;
       "All Members To Any Age ~ Ortho related" → 99 (no age limit).
+      With one row per member type, the patient's (by relationship), else
+      the first (11/10: Jessica, a spouse, is 23, not the dependents' 21).
     - Timing: the "Reimbursement Method" row. Quarterly or monthly payments
       win over the lump sum UCCI allows for small amounts
       ("25% Initial Pay ~ Quarterly Payments ~ Lump Sum $1,000 Or Less" →
       Quarterly); a plain "Lump Sum" is the sheet's One Time.
     """
     age, timing = '', ''
-    for row in (record or {}).get('policy_details') or []:
-        if not isinstance(row, dict):
-            continue
+    rows = [r for r in (record or {}).get('policy_details') or [] if isinstance(r, dict)]
+    cease = [clean(r.get('description')) for r in rows
+             if 'canceled enrollment' in clean(r.get('type')).lower()
+             and 'ortho' in clean(r.get('description')).lower()]
+    chosen = next((d for d in cease if _ortho_row_fits(d, relationship)), cease[0] if cease else '')
+    if chosen:
+        low = chosen.lower()
+        m = re.search(r'age\s+(\d{1,3})\s+and\s+older', low)
+        if m:
+            age = m.group(1)
+        elif re.search(r'to\s+any\s+age', low):
+            age = '99'
+    for row in rows:
         kind = clean(row.get('type')).lower()
         desc = clean(row.get('description'))
         low = desc.lower()
         if 'ortho' not in low:
             continue
-        if 'canceled enrollment' in kind and not age:
-            m = re.search(r'age\s+(\d{1,3})\s+and\s+older', low)
-            if m:
-                age = m.group(1)
-            elif re.search(r'to\s+any\s+age', low):
-                age = '99'
         if 'reimbursement method' in kind and not timing:
             if 'quarterly' in low:
                 timing = 'Quarterly'
@@ -500,15 +529,23 @@ def _own_group_codes(code, record, line):
     return codes
 
 
-def _history(record, allowed):
+def _history(record, allowed, full_history=()):
     """
     The dates in the lookup's service history of the codes that share this
     code's own frequency, newest first (team rule, 11/05). The lookup lists
     every related procedure that decides eligibility; only the own frequency
     group counts: D0150 takes D0120's exams (both 2 Per 12 Months), but a
     sealant does not take the fillings on the same teeth. No date is NH.
+
+    The lookup's own list leaves out older visits (Jessica, 11/10: D0274 on
+    04/22/2024 is in the full service history but not on D0274's page), so
+    the same codes are also read from the patient's full service history.
     """
     dates = []
+    for row in full_history or ():
+        if isinstance(row, dict) and clean(row.get('procedure_code')).upper() in allowed \
+                and re.match(r'\d{2}/\d{2}/\d{4}$', clean(row.get('start'))):
+            dates.append(clean(row.get('start')))
     for row in record.get('history') or []:
         if not isinstance(row, dict):
             continue
@@ -524,11 +561,38 @@ def _history(record, allowed):
 _AGE_EXCLUDED_RE = re.compile(r'no\s+coverage\s+due\s+to\s+age', re.IGNORECASE)
 
 
-def _ucci_procedure(code, record, age):
+_ALL_OTHER_GRADES_RE = re.compile(r'\ball\s+other\s+pay\s+grades?\b', re.IGNORECASE)
+
+
+def _pick_variant(record):
+    """
+    (details, chosen from several rows?) for the code. Plans for military
+    members list some codes once per pay-grade group, e.g. D3310:
+        "Pay Grades E1 thru E4 | 1 Per Tooth ~ Per Lifetime"   70%
+        "All Other Pay Grades | 1 Per Tooth ~ Per Lifetime"    60%
+    The extension keeps every row under `variants`; the sheet takes the
+    "All Other Pay Grades" one (team rule, 11/10). Without such a row, the
+    row Lookup opened.
+    """
+    details = record.get('details')
+    variants = [v.get('details') for v in record.get('variants') or []
+                if isinstance(v, dict) and isinstance(v.get('details'), dict)]
+    for candidate in variants:
+        lines = candidate.get('limitations') or []
+        if isinstance(lines, str):
+            lines = [lines]
+        if any(_ALL_OTHER_GRADES_RE.search(clean(line)) for line in lines):
+            return candidate, True
+    return details, False
+
+
+def _ucci_procedure(code, record, age, full_history=()):
     """One `procedures` record in the contract's procedure shape."""
     if record.get('error') or not isinstance(record.get('details'), dict):
         return None
-    details = record['details']
+    details, from_variant = _pick_variant(record)
+    if from_variant:
+        record = dict(record, details=details)
     lines = _limitations(record)
     covered = clean(details.get('covered')).lower()
     # A code the plan does not cover at all can print one "Not Covered" cell
@@ -572,8 +636,8 @@ def _ucci_procedure(code, record, age):
         'benefit_level': pct,
         # No age clause on a covered code is no age limit, the sheet's 99
         # (D1206 / D1208 on Kelly's plan, 11/05).
-        'age_limit': _age_limit(lines) or ('0-99' if covered == 'yes' else ''),
-        'late_date_of_service': _history(record, allowed),
+        'age_limit': _age_limit(lines) or ('99' if covered == 'yes' else ''),
+        'late_date_of_service': _history(record, allowed, full_history),
         'number_of_quads': '',
         '_ucci_frequency_basis': why,
         '_ucci_age_excluded': age_excluded,
@@ -581,6 +645,7 @@ def _ucci_procedure(code, record, age):
         '_ucci_applies_to_maximum': clean(details.get('applies_to_maximum')),
         '_ucci_limitations': lines,
         '_ucci_history_codes': sorted(allowed),
+        '_ucci_pay_grade_row': from_variant,
     }
 
 
@@ -621,7 +686,7 @@ def _normalize_ucci_portal(raw):
     sub_age = _subscriber_age(info, raw.get('scraped_at'))
     procedures = []
     for code, record in records.items():
-        proc = _ucci_procedure(code, record, sub_age)
+        proc = _ucci_procedure(code, record, sub_age, raw.get('full_service_history') or ())
         if proc:
             procedures.append(proc)
     procs = {p['procedure_code']: p for p in procedures}
@@ -640,7 +705,7 @@ def _normalize_ucci_portal(raw):
         # has been (Riley Butler, 11/05: no card, sheet 0).
         ortho_used = 0.0
 
-    ortho_age, ortho_timing = _ortho_policy(records.get('D8080'))
+    ortho_age, ortho_timing = _ortho_policy(records.get('D8080'), clean(info.get('relationship')))
 
     def applies(code):
         return _yes_no((procs.get(code) or {}).get('_ucci_applies_to_deductible'))
@@ -699,7 +764,8 @@ def _normalize_ucci_portal(raw):
         'network_status': clean(info.get('network_status')),
         'patient_age': age,
         'subscriber_age': sub_age,
-        'plan_year_start': 'January' if amounts['calendar_year'] else '',
+        'plan_year_start': ('January' if amounts['calendar_year'] else
+                            _MONTHS[amounts['year_start_month'] - 1] if amounts['year_start_month'] else ''),
         'missing_tooth': _missing_tooth(raw),
         'waiting_period': _waiting_period(raw),
         'cob': _cob(raw),
@@ -728,6 +794,7 @@ def _normalize_ucci_portal(raw):
         'failed_codes': sorted(code for code, r in records.items()
                                if r.get('error') or not isinstance(r.get('details'), dict)),
         'age_excluded_codes': sorted(code for code, p in procs.items() if p['_ucci_age_excluded']),
+        'pay_grade_codes': sorted(code for code, p in procs.items() if p['_ucci_pay_grade_row']),
         'frequency_basis': {code: p['_ucci_frequency_basis'] for code, p in procs.items()
                             if p['_ucci_frequency_basis']},
         'scrape_duration_ms': raw.get('scrape_duration_ms'),
