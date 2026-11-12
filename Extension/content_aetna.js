@@ -27,7 +27,11 @@ function _getCrawlState() {
     }
 }
 
+// A crawl with no progress for this long is treated as abandoned.
+const CRAWL_IDLE_LIMIT_MS = 2 * 60 * 1000;
+
 function _saveCrawlState(state) {
+    if (state && state.running) state.last_step_at = Date.now();
     sessionStorage.setItem(CLAIMCONNECT_CRAWL_KEY, JSON.stringify(state || {}));
 }
 
@@ -334,6 +338,20 @@ function _subscriberStep(state, nextStage) {
     return state.subscriber_steps <= SUBSCRIBER_MAX_STEPS;
 }
 
+// After each detour click the next page should open within this time. If it
+// does not (an error shown on the same page, nothing happening), the crawl
+// stops and downloads the dependent's JSON. When the next page does open,
+// this page and its timer are gone, so the timer only fires when stuck.
+const SUBSCRIBER_STEP_TIMEOUT_MS = 15000;
+
+function _armSubscriberStepTimeout(stage, reason) {
+    var wait = window.__aetnaStepTimeoutMs || SUBSCRIBER_STEP_TIMEOUT_MS;
+    setTimeout(function() {
+        var state = _getCrawlState();
+        if (state.running && state.stage === stage) _giveUpOnSubscriberDob(reason);
+    }, wait);
+}
+
 function _giveUpOnSubscriberDob(reason) {
     var state = _getCrawlState();
     console.warn("[Aetna] Subscriber DOB not captured: " + reason);
@@ -366,6 +384,7 @@ async function continueAetnaCrawl() {
             if (!self) { _giveUpOnSubscriberDob("no Self row on the results page"); return; }
             if (!_subscriberStep(back, "sub_pick")) { _giveUpOnSubscriberDob("too many steps"); return; }
             self._link.click();
+            _armSubscriberStepTimeout("sub_pick", "the subscriber's page did not open");
             return;
         }
 
@@ -396,7 +415,8 @@ async function continueAetnaCrawl() {
             // Dependent's details page: go back to the results.
             var vp = _getCrawlState();
             if (!_subscriberStep(vp, "sub_back_to_results")) { _giveUpOnSubscriberDob("too many steps"); return; }
-            if (!_clickByText("Back to Search Results")) _giveUpOnSubscriberDob("Back to Search Results not found");
+            if (!_clickByText("Back to Search Results")) { _giveUpOnSubscriberDob("Back to Search Results not found"); return; }
+            _armSubscriberStepTimeout("sub_back_to_results", "the search results did not open");
             return;
         }
 
@@ -406,7 +426,8 @@ async function continueAetnaCrawl() {
             if (!_subscriberStep(sp, "sub_view_benefits")) { _giveUpOnSubscriberDob("too many steps"); return; }
             _selectGeneralBenefits();
             await _sleep(300);
-            if (!_clickByText("View Benefits")) _giveUpOnSubscriberDob("View Benefits not found");
+            if (!_clickByText("View Benefits")) { _giveUpOnSubscriberDob("View Benefits not found"); return; }
+            _armSubscriberStepTimeout("sub_view_benefits", "the subscriber's benefits page could not be opened");
             return;
         }
 
@@ -446,13 +467,23 @@ async function continueAetnaCrawl() {
                 bs.pending_payload = data;
                 bs.subscriber_steps = 0;
                 _subscriberStep(bs, "sub_view_patient");
-                if (!_clickByText("View Patient")) _giveUpOnSubscriberDob("View Patient not found");
+                if (!_clickByText("View Patient")) { _giveUpOnSubscriberDob("View Patient not found"); return; }
+                _armSubscriberStepTimeout("sub_view_patient", "the patient page did not open");
                 return;
             }
             _finishCrawl(data);
             return;
         }
 
+        var lost = _getCrawlState();
+        if (String(lost.stage || "").indexOf("sub_") === 0) {
+            _giveUpOnSubscriberDob("the subscriber's page did not open as expected");
+            return;
+        }
+        if (lost.running) {
+            console.warn("[Aetna] Crawl stopped: not a ClaimConnect crawl page.");
+            _clearCrawlState();
+        }
         throw new Error("This is not a supported ClaimConnect crawl page");
     } finally {
         // Navigation normally destroys this page. Resetting also allows a
@@ -836,9 +867,42 @@ window.__aetnaDownload = function() {
 window.__claimConnectCrawl = window.__aetnaDownload;
 window.__claimConnectProcedureCodes = PROCEDURE_CODES.slice();
 
+// Stop a crawl that should not continue: the page was reloaded by the user,
+// or the crawl has made no progress for CRAWL_IDLE_LIMIT_MS. A dependent's
+// JSON held for the subscriber detour is downloaded so it is not lost.
+function _stopCrawl(reason) {
+    var state = _getCrawlState();
+    if (!state.running) return;
+    console.warn("[Aetna] Crawl stopped: " + reason);
+    if (state.pending_payload) {
+        state.pending_payload.subscriber_dob_note = "not captured: " + reason;
+        _finishCrawl(state.pending_payload);
+    } else {
+        _clearCrawlState();
+    }
+}
+
+function _pageWasReloaded() {
+    try {
+        var nav = performance.getEntriesByType && performance.getEntriesByType("navigation")[0];
+        if (nav) return nav.type === "reload";
+        return performance.navigation && performance.navigation.type === 1;
+    } catch (e) {
+        return false;
+    }
+}
+
 // Continue automatically after Wicket navigates to the next crawl page.
 setTimeout(function() {
     var state = _getCrawlState();
+    if (state.running && _pageWasReloaded()) {
+        _stopCrawl("the page was reloaded");
+        return;
+    }
+    if (state.running && state.last_step_at && Date.now() - state.last_step_at > CRAWL_IDLE_LIMIT_MS) {
+        _stopCrawl("no progress for 2 minutes");
+        return;
+    }
     // Keep going on every crawl page; on the results page only when the
     // crawl came back there to fetch the subscriber's DOB.
     if (state.running && (!_isEligibilityResultsPage() || state.stage === "sub_back_to_results")) {

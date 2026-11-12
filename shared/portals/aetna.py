@@ -254,6 +254,33 @@ def _aetna_repair_amount_row(item):
     return item
 
 
+def _aetna_fill_remaining_from_call_rows(rows):
+    """
+    Aetna sometimes prints a row's Remaining on a separate row under it:
+
+        DENTAL                       Individual  $1,500.00             Calendar Year
+        PLEASE CALL FOR BNFT LIMITS  Individual              $0.00
+
+    The "PLEASE CALL ..." row has no Amount; its Remaining belongs to the row
+    just above it (here DENTAL: $0.00 left, so $1,500 used). A row with a
+    blank Remaining and no such row under it stays blank (e.g. an
+    Orthodontics lifetime maximum with nothing used).
+    """
+    out = [dict(r) if isinstance(r, dict) else r for r in (rows or [])]
+    for i, row in enumerate(out):
+        if not isinstance(row, dict) or i == 0:
+            continue
+        if 'please call' not in str(row.get('type') or '').lower():
+            continue
+        if str(row.get('amount') or '').strip() or not str(row.get('remaining') or '').strip():
+            continue
+        above = out[i - 1]
+        if (isinstance(above, dict) and str(above.get('amount') or '').strip()
+                and not str(above.get('remaining') or '').strip()):
+            above['remaining'] = row.get('remaining')
+    return out
+
+
 def _aetna_annual_maximum(maximums):
     """
     The plan's yearly maximum. Most plans call the row "DENTAL"; some call it
@@ -465,8 +492,10 @@ def _normalize_aetna_portal(raw):
     )
     dates = raw.get('dates') if isinstance(raw.get('dates'), dict) else {}
     remarks = raw.get('plan_level_remarks') or []
-    maximums = [_aetna_repair_amount_row(r) for r in raw.get('maximums') or []]
-    deductibles = [_aetna_repair_amount_row(r) for r in raw.get('deductibles') or []]
+    maximums = _aetna_fill_remaining_from_call_rows(
+        [_aetna_repair_amount_row(r) for r in raw.get('maximums') or []])
+    deductibles = _aetna_fill_remaining_from_call_rows(
+        [_aetna_repair_amount_row(r) for r in raw.get('deductibles') or []])
 
     patient_name = (
         selected.get('name')
