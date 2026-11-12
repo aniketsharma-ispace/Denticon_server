@@ -1213,9 +1213,9 @@ function parsePolicyDetails(doc) {
 
 // --- one lookup ----------------------------------------------------------
 
-async function expandRelatedProcedures(panelDoc) {
+async function expandRelatedProcedures(panelDoc, useCache = true) {
   let root = panelDoc.querySelector("#proc-related-procedures");
-  if (!root) return [];
+  if (!root) return { groups: [], root: null };
 
   // Groups like "1 Per 5 Years ~ Per Same Group" (100+ codes) show up on many
   // lookups. Expand each one once per scrape and reuse it after that.
@@ -1224,7 +1224,7 @@ async function expandRelatedProcedures(panelDoc) {
   const needMore = new Set();
   for (const { idx, group, hasMore } of initial) {
     if (!hasMore) continue;
-    const cached = relatedGroupCache.get(groupKey(group));
+    const cached = useCache ? relatedGroupCache.get(groupKey(group)) : null;
     if (cached) fromCache.set(idx, cached);
     else needMore.add(idx);
   }
@@ -1250,7 +1250,7 @@ async function expandRelatedProcedures(panelDoc) {
     root = next;
   }
 
-  return parseRelatedGroupsIndexed(root).map(({ idx, group, hasMore }) => {
+  const groups = parseRelatedGroupsIndexed(root).map(({ idx, group, hasMore }) => {
     if (fromCache.has(idx)) return { ...group, codes: fromCache.get(idx) };
     const before = initial.find((x) => x.idx === idx);
     if (before && needMore.has(idx) && !hasMore) {
@@ -1258,6 +1258,59 @@ async function expandRelatedProcedures(panelDoc) {
     }
     return group;
   });
+  return { groups, root };
+}
+
+// Some plans (military pay grades) list a code once per pay-grade group:
+//   D7140  Yes  $92.78  70%  Pay Grades E1 thru E4 | More...
+//   D7140  Yes  $92.78  60%  All Other Pay Grades | More...
+// Lookup opens only the first row, and a code without related procedures
+// offers no way to the others. The page's own benefit tables hold every row
+// (Search By only shows/hides them), so they are read straight from the page
+// once, while it shows the benefits view. Choosing the row is the server's
+// job (portals/ucci.py).
+let ucciBenefitRows = {};
+
+function readBenefitTableRows() {
+  const rows = {};
+  document.querySelectorAll("tr").forEach((tr) => {
+    const cells = [...tr.cells];
+    if (cells.length < 8) return; // "Not Covered" rows span the columns
+    const code = clean(cells[0].textContent);
+    if (!/^D\d{4}$/.test(code)) return;
+    const limitations = clean(cells[5].textContent)
+      .replace(/\|?\s*More\.{2,3}\s*$/i, "")
+      .split("|")
+      .map(clean)
+      .filter(Boolean);
+    (rows[code] ||= []).push({
+      covered: clean(cells[2].textContent),
+      allowance: clean(cells[3].textContent),
+      coverage_or_copay: clean(cells[4].textContent),
+      limitations,
+      applies_to_deductible: clean(cells[6].textContent),
+      applies_to_maximum: clean(cells[7].textContent),
+    });
+  });
+  return rows;
+}
+
+// Every row of a code listed more than once. The table cuts the limitation
+// short ("| More..."), so each row keeps its own pay-grade line and takes
+// the rest (the frequency) from the code's lookup.
+function variantsFromTable(code, lookupDetails) {
+  const rows = ucciBenefitRows[code] || [];
+  if (rows.length < 2) return null;
+  const isGrade = (line) => /pay\s+grade/i.test(line);
+  const shared = (lookupDetails?.limitations || []).filter((line) => !isGrade(line));
+  return rows.map((row) => ({
+    source: "benefit_table",
+    details: {
+      ...row,
+      coverage_lines: [row.coverage_or_copay],
+      limitations: [...row.limitations.filter(isGrade), ...shared],
+    },
+  }));
 }
 
 async function lookupProcedure(code, lastDoc, light = false) {
@@ -1300,13 +1353,20 @@ async function lookupProcedure(code, lastDoc, light = false) {
   const own = history.filter((h) => h.procedure_code === code).map((h) => h.date);
   const shared = history.filter((h) => h.procedure_code !== code).map((h) => h.date);
 
+  const details = parseProcedureDetails(doc);
+  const { groups: related_groups, root: relatedRoot } = await expandRelatedProcedures(doc);
+  // Codes with one row per pay grade: every row is in the page's benefit
+  // tables (read once at the start), so no extra requests are needed.
+  const variants = variantsFromTable(code, details);
+
   return {
     doc,
     data: {
       procedure_code: code,
       procedure_name: title.replace(/^D\d{4}:\s*/, ""),
-      details: parseProcedureDetails(doc),
-      related_groups: await expandRelatedProcedures(doc),
+      details,
+      ...(variants ? { variants } : {}),
+      related_groups,
       history,
       own_dates: sortDatesNewestFirst([...new Set(own)]),
       shared_dates: sortDatesNewestFirst([...new Set(shared)]),
@@ -1393,6 +1453,26 @@ function showUcciStatus(text, state = "running") {
   if (state !== "running") box._hideTimer = setTimeout(() => box.remove(), 10000);
 }
 
+// The page sections (Deductibles and Maximums, Coordination) only exist on
+// the benefits view. If the user left the page on a procedure they looked up
+// themselves, go back first (11/10: Jessica's scrape came back without them).
+async function ensureBenefitsView() {
+  const visibleBack = () =>
+    [...document.querySelectorAll("a, button")].find(
+      (el) => /back to benefits view/i.test(el.textContent || "") && el.offsetParent !== null
+    );
+  const back = visibleBack();
+  if (!back) return;
+  showUcciStatus("returning to the benefits view...");
+  back.click();
+  const start = Date.now();
+  while (Date.now() - start < 10000) {
+    await sleep(250);
+    if (!visibleBack() && /Deductibles and Maximums/i.test(document.body.innerText || "")) return;
+  }
+  console.warn("[UCCI] Benefits view did not come back after 10 s");
+}
+
 async function runUcciAudit() {
   const root = document.documentElement;
   if (root.dataset.ucciScrapeRunning === "1") {
@@ -1416,6 +1496,9 @@ async function runUcciAuditInner() {
   console.log("=== UCCI SCRAPE STARTED ===");
   const startedAt = performance.now();
   showUcciStatus("started, reading patient info...");
+  await ensureBenefitsView();
+  ucciBenefitRows = readBenefitTableRows();
+  console.log(`[UCCI] Benefit table rows read for ${Object.keys(ucciBenefitRows).length} codes`);
 
   const auditData = {
     source: "UCCI",
