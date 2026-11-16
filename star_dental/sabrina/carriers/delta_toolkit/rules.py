@@ -114,6 +114,140 @@ def _toolkit_subscriber_age_limit(bd: dict, portal_raw: dict, sab_raw=None) -> s
     return None
 
 
+# ── Ortho age limits read alike [11/16] ─────────────────────────────────────
+# The Toolkit's ortho config states the birthday that ends coverage ("Birth
+# Day" rule, max age 19), where the plan text and the sheet state the last
+# covered age ("covered for age 18 and under" → 18). A subscriber max age of
+# 19 or less means adult ortho is not covered, which the sheet writes as 0.
+
+_ADULT_AGE = 19
+
+
+def _ortho_age_rule(portal_raw: dict, key: str) -> str:
+    """The config's age rule for the row's member type ("Birth Day", …)."""
+    configs = _toolkit_raw_section(portal_raw, "ortho_information", "orthoAgeLimitConfig")
+    if not isinstance(configs, list):
+        return ""
+    field = "subscriberRule" if key == "subscriber_age_limit" else "minorRule"
+    selected = str((portal_raw.get("_toolkit_meta") or {}).get("selected_network") or "").strip().casefold()
+    for config in configs:
+        if not isinstance(config, dict):
+            continue
+        networks = {str(x).strip().casefold() for x in (config.get("networks") or [])}
+        if networks and selected and selected not in networks:
+            continue
+        return str(config.get(field) or "")
+    return ""
+
+
+def _toolkit_ortho_age_agrees(key: str, sab_raw, por_raw, portal_raw: dict) -> str | None:
+    """
+    Why a sheet ortho age that differs from the config's still agrees with it,
+    or None. Subscriber 0 against a max age of 19 or less: adult ortho is not
+    covered. Sheet N-1 against a "Birth Day" config age N: the same limit,
+    stated as the last covered age (Leonard Pojednic, Matthew Frauenshuh).
+    """
+    if key not in ("subscriber_age_limit", "dependent_age_limit"):
+        return None
+    sab, por = str(sab_raw or "").strip(), str(por_raw or "").strip()
+    if not (sab.isdigit() and por.isdigit()):
+        return None
+    sab_age, por_age = int(sab), int(por)
+    if key == "subscriber_age_limit" and sab_age == 0 and 0 < por_age <= _ADULT_AGE:
+        return (f"the plan covers ortho only until age {por_age}, so adults are not covered; "
+                "the sheet records 0")
+    if sab_age == por_age - 1 and "birth" in _ortho_age_rule(portal_raw, key).casefold():
+        return (f"the Toolkit's age {por_age} is the birthday coverage ends; "
+                f"the sheet records the last covered age, {sab_age}")
+    return None
+
+
+# ── Claims after the sheet was verified [11/16] ──────────────────────────────
+# A Toolkit export made days after the Sabrina sheet can carry claims for the
+# appointment itself or later visits. Those dates (and the amounts they paid)
+# could not be on the sheet. A claim dated on the verification day counts as
+# later: it is not processed yet when the sheet is verified (Lisa Rawlinson,
+# verified 10/12 19:15, exam paid for 10/12).
+
+_VERIFICATION_DATE_RES = (
+    re.compile(r"Verification\s+Date\s*:?\s*(\d{1,2}/\d{1,2}/\d{4})", re.IGNORECASE),
+    re.compile(r"information\s+available\s+on\s+(\d{1,2}/\d{1,2}/\d{4})", re.IGNORECASE),
+    re.compile(r"Appointment\s+Date\s*\|?\s*(\d{1,2}/\d{1,2}/\d{4})", re.IGNORECASE),
+)
+_DATE_RE = re.compile(r"\d{1,2}/\d{1,2}/\d{4}")
+
+
+def _pdf_verification_date(text: str) -> str | None:
+    """
+    The date the sheet's benefits were verified (MM/DD/YYYY): the embedded
+    Delta page's Verification Date, else the appointment date (a sheet
+    verified by ticket fax has no Delta page).
+    """
+    for pattern in _VERIFICATION_DATE_RES:
+        match = pattern.search(text or "")
+        if match:
+            return _num_date(match.group(1))
+    return None
+
+
+def _date_key(value: str) -> tuple[int, int, int]:
+    month, day, year = (int(x) for x in value.split("/"))
+    return year, month, day
+
+
+def _toolkit_claims_since(portal_raw: dict, cutoff: str | None) -> list[str]:
+    """
+    Service dates in the export on or after `cutoff`, newest first: the
+    routine-procedure rows' serviceDates and every code lookup's
+    utilization_history. Takes the export or its normalized form.
+    """
+    if not cutoff or not isinstance(portal_raw, dict):
+        return []
+    export = portal_raw.get("_raw_export") if isinstance(portal_raw.get("_raw_export"), dict) else portal_raw
+    found: set[str] = set()
+    routine = ((export.get("routine_procedures") or {}).get("rows")) or []
+    results = (((export.get("coverages") or {}).get("procedure_code_search") or {}).get("results")) or []
+    for row in [*routine, *results]:
+        if not isinstance(row, dict):
+            continue
+        for value in [*(row.get("serviceDates") or []), *(row.get("utilization_history") or [])]:
+            for raw_date in _DATE_RE.findall(str(value)):
+                date = _num_date(raw_date)
+                if date and _date_key(date) >= _date_key(cutoff):
+                    found.add(date)
+    return sorted(found, key=_date_key, reverse=True)
+
+
+def _history_before(value, cutoff: str | None, keep=()) -> tuple[str, list[str]]:
+    """
+    A portal history cell without the dates on or after `cutoff`: the dates
+    left ("NH" when none is), and the dates dropped. A date in `keep` (the
+    sheet lists it) is never dropped.
+    """
+    text = str(value or "").strip()
+    dates = [_num_date(d) for d in _DATE_RE.findall(text)]
+    dates = [d for d in dates if d]
+    if not cutoff or not dates:
+        return text, []
+    keep = {_num_date(d) for d in keep} - {None}
+    late = {d for d in dates if _date_key(d) >= _date_key(cutoff) and d not in keep}
+    kept = [d for d in dates if d not in late]
+    dropped = [d for d in dates if d in late]
+    if not dropped:
+        return text, []
+    return (", ".join(kept) if kept else "NH"), dropped
+
+
+# ── Group Name spaced differently [11/16] ───────────────────────────────────
+
+def _same_text_ignoring_spaces(a, b) -> bool:
+    """The same letters and digits once spaces and punctuation are ignored:
+    "Smith Hosp itality , LLC" vs "Smith Hospitality, LLC"."""
+    left = re.sub(r"[^A-Z0-9]", "", str(a or "").upper())
+    right = re.sub(r"[^A-Z0-9]", "", str(b or "").upper())
+    return bool(left) and left == right
+
+
 _SRP_SENTENCE_RE = re.compile(
     r"\bD4341\b|scaling\s+and\s+root\s+plan(?:ing|ning)|root\s+plan(?:ing|ning)\s+and\s+scaling",
     re.IGNORECASE,

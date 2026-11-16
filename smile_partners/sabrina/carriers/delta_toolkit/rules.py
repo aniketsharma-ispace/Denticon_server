@@ -167,6 +167,14 @@ def _toolkit_benefit_network(fields: dict) -> tuple[str | None, str, str]:
     return None, "", ""
 
 
+def _same_text_ignoring_spaces(a, b) -> bool:
+    """The same letters and digits once spaces and punctuation are ignored:
+    "Smith Hosp itality , LLC" vs "Smith Hospitality, LLC" [11/16, as Star]."""
+    left = re.sub(r"[^A-Z0-9]", "", str(a or "").upper())
+    right = re.sub(r"[^A-Z0-9]", "", str(b or "").upper())
+    return bool(left) and left == right
+
+
 def _toolkit_identity_gate(sabrina_parsed: dict, portal_norm: dict) -> tuple[bool, list[str]]:
     """Validate identity/network before any Toolkit benefit comparison."""
     issues: list[str] = []

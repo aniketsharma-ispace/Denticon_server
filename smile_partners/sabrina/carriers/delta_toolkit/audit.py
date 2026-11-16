@@ -26,6 +26,7 @@ from .rules import (
     _pdf_major_payment_timing,
     _pdf_ortho_coverage,
     _pdf_relationship,
+    _same_text_ignoring_spaces,
     _toolkit_benefit_network,
     _toolkit_d4341_not_covered,
     _toolkit_identity_gate,
@@ -241,6 +242,14 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                 note = note or "values are not in a comparable form"
             else:
                 status = STATUS_MATCH if equal else STATUS_MISMATCH
+            if (
+                portal_norm.get("_toolkit")
+                and status == STATUS_MISMATCH
+                and key == "group_name"
+                and _same_text_ignoring_spaces(sab_raw, por_raw)
+            ):
+                # [11/16, as Star] Group Name spaced differently.
+                status, note = STATUS_MATCH, "same name, spaced differently"
 
         # Toolkit data has a hard retrieval failure signal.  A failed CDT lookup
         # is data-unavailable, never a benefit mismatch.
