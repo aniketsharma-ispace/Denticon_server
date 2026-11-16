@@ -8,6 +8,8 @@ mismatches-only list, and the counts.
 
 from __future__ import annotations
 
+import re
+
 from .spec import _CRITICAL_KEYS
 from .vocabulary import _blank_for, _blank_means_no_limit, _num_date, _num_history
 from .parser import _MIN_MARKERS, parse_sabrina_pdf, parse_sabrina_text
@@ -27,6 +29,11 @@ from .rules import (
     _pdf_ortho_payment_timing,
     _pdf_relationship,
     _pdf_srp_quads_per_day,
+    _pdf_verification_date,
+    _history_before,
+    _same_text_ignoring_spaces,
+    _toolkit_claims_since,
+    _toolkit_ortho_age_agrees,
     _toolkit_benefit_network,
     _toolkit_code_looked_up,
     _toolkit_eligibility,
@@ -54,6 +61,11 @@ _NETWORK_AMOUNT_KEYS = {
     "yearly_max", "yearly_max_paid", "indiv_ded", "indiv_ded_paid",
     "family_ded", "family_ded_paid", "ortho_max", "ortho_max_paid",
     "ortho_ded", "ortho_ded_paid",
+}
+
+# Amounts paid or met to date, which move with every claim [11/16].
+_PAID_TO_DATE_KEYS = {
+    "yearly_max_paid", "indiv_ded_paid", "family_ded_paid", "ortho_max_paid", "ortho_ded_paid",
 }
 
 
@@ -119,6 +131,14 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
         "toolkit": bool(portal_norm.get("_toolkit")),
     }
 
+    # [11/16] Claims the export holds from on or after the day the sheet was
+    # verified (the appointment's own claim, later visits) could not be on the
+    # sheet. Only when there are any are history dates and paid-to-date
+    # amounts read as of the verification date.
+    verified_on = (_pdf_verification_date(sabrina_parsed.get("text", ""))
+                   if portal_norm.get("_toolkit") else None)
+    late_claims = _toolkit_claims_since(portal_norm, verified_on)
+
     sections: dict[str, list] = {}
     rows: list[dict] = []
 
@@ -174,6 +194,15 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                     "Value sourced from the embedded Delta benefit printout; "
                     "the Toolkit JSON does not contain this same-day SRP cap."
                 )
+
+        late_note = ""
+        if late_claims and field["kind"] == "history" and not _blank_for("history", por_raw):
+            sheet_dates = [] if _blank_for("history", sab_raw) else re.findall(r"\d{1,2}/\d{1,2}/\d{4}", str(sab_raw))
+            kept, dropped = _history_before(por_raw, verified_on, keep=sheet_dates)
+            if dropped:
+                por_raw = kept
+                late_note = (f"portal dates on or after the sheet's verification date {verified_on} "
+                             f"ignored: {', '.join(dropped)}")
 
         sab_blank = _blank_for(field["kind"], sab_raw)
         por_blank = _blank_for(field["kind"], por_raw)
@@ -253,6 +282,20 @@ def compare_sabrina_to_portal(sabrina_parsed: dict, portal_raw: dict) -> dict:
                 note = note or "values are not in a comparable form"
             else:
                 status = STATUS_MATCH if equal else STATUS_MISMATCH
+
+        if portal_norm.get("_toolkit") and status == STATUS_MISMATCH:
+            # [11/16] Rules that read two differently stated values as one.
+            ortho_age_note = _toolkit_ortho_age_agrees(key, sab_raw, por_raw, portal_norm)
+            if ortho_age_note:
+                status, note = STATUS_MATCH, ortho_age_note
+            elif key == "group_name" and _same_text_ignoring_spaces(sab_raw, por_raw):
+                status, note = STATUS_MATCH, "same name, spaced differently"
+            elif key in _PAID_TO_DATE_KEYS and late_claims:
+                status = STATUS_NOT_COMPARABLE
+                note = (f"the export has claims dated on or after the sheet's verification date "
+                        f"{verified_on} ({', '.join(late_claims)}); the sheet cannot show what they paid")
+        if late_note:
+            note = f"{late_note}; {note}" if note else late_note
 
         # Toolkit data has a hard retrieval failure signal.  A failed CDT lookup
         # is data-unavailable, never a benefit mismatch.
