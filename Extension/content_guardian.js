@@ -1311,6 +1311,10 @@
         let activeSearch = null;
         let cdtClickMode = null;
         let cdtSearchStopped = false;
+        // Why the searches stopped early (Guardian down / no click), and the
+        // last failed search call.
+        let cdtStopReason = null;
+        let cdtOutage = null;
 
         function patientKeyFromResult(result) {
             return [
@@ -1328,6 +1332,13 @@
 
             if (msg.type === "API_RESPONSE") {
                 handleApiResponse(msg);
+                return;
+            }
+
+            if (msg.type === "API_ERROR") {
+                if (/\/cdt\//i.test(String(msg.url || ""))) {
+                    cdtOutage = { at: Date.now(), reason: `Guardian's code search failed (HTTP ${msg.status || "error"})` };
+                }
                 return;
             }
 
@@ -1544,6 +1555,19 @@
             await sleep(300);
         }
 
+        // Guardian's own "down for an update" notices: the banner over the
+        // code search ("We're updating our system right now. Please refresh
+        // the page or come back later.") and "The site is currently
+        // unavailable". While one shows, searching only adds failed calls.
+        const GUARDIAN_OUTAGE_RE = /updating our system|refresh the page or come back later|site is currently unavailable/i;
+
+        function guardianOutageText() {
+            const el = findTextElement(GUARDIAN_OUTAGE_RE);
+            if (!el) return "";
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 ? normalizeEvidenceText(el.innerText || el.textContent) : "";
+        }
+
         function isLoadingVisible() {
             const el = findTextElement(/please wait while your request is being processed/i);
             if (!el) return false;
@@ -1625,6 +1649,9 @@
             while (Date.now() < deadline && !cdtSearchStopped) {
                 const captured = cdtCaptures.get(code);
                 if (captured && captured.at >= search.startedAt) return captured;
+                if (cdtOutage && cdtOutage.at >= search.startedAt) return { outage: cdtOutage.reason };
+                const notice = guardianOutageText();
+                if (notice) return { outage: `Guardian says: "${notice.replace(/[.\s]+$/, "")}"` };
                 if (isLoadingVisible()) {
                     sawLoading = true;
                     await sleep(300);
@@ -1701,11 +1728,14 @@
             button?.addEventListener("click", onClick, true);
             activeSearch = search;
             try {
+                const notice = guardianOutageText();
+                if (notice) return { outage: `Guardian says: "${notice.replace(/[.\s]+$/, "")}"` };
                 showCdtPanel(`Guardian CDT search: ${label}…`);
                 await typeCdtDigits(input, code.slice(1));
                 if (cdtClickMode !== "manual" && button) {
                     button.click();
                     const capture = await waitForCdtResult(code, search, beforeText, CDT_AUTO_WAIT_MS);
+                    if (capture?.outage) return { outage: capture.outage };
                     if (capture) {
                         cdtClickMode = "auto";
                         return { capture };
@@ -1716,6 +1746,7 @@
                     "Guardian only accepts a real click there.");
                 if (button) button.style.outline = "3px solid #e8a33d";
                 const capture = await waitForCdtResult(code, search, beforeText, CDT_MANUAL_WAIT_MS);
+                if (capture?.outage) return { outage: capture.outage };
                 if (capture) return { capture };
                 // Nobody clicked: stop asking for the rest, so the JSON still
                 // downloads (those codes read "not on portal"; Crawl asks again).
@@ -1834,7 +1865,8 @@
                 const extra = missing.filter((code) => CDT_EXTRA_SEARCH_CODES.includes(code));
                 return `[+] Guardian data + ${ALL_CODES.length} procedure-code records. JSON downloaded.` +
                     (required.length ? ` Not searched (will read "not on portal"): ${required.join(", ")}.` : "") +
-                    (extra.length ? ` Not searched (main page used): ${extra.join(", ")}.` : "");
+                    (extra.length ? ` Not searched (main page used): ${extra.join(", ")}.` : "") +
+                    (missing.length && cdtStopReason ? ` Searches stopped: ${cdtStopReason}. Crawl again later.` : "");
             }
             if (sweepState === "failed") {
                 return `[!] Guardian crawl paused. ${failureReason || "Retry the crawl."}`;
@@ -1923,15 +1955,26 @@
 
             // The codes the main page cannot answer, one search each.
             cdtSearchStopped = false;
+            cdtStopReason = null;
+            cdtOutage = null;
             for (let i = 0; i < pendingSearches.length; i++) {
                 const code = pendingSearches[i];
                 let outcome;
                 try {
                     outcome = cdtSearchStopped
-                        ? { error: "not searched (an earlier search got no click)" }
+                        ? { error: `not searched (${cdtStopReason || "an earlier search got no click"})` }
                         : await searchCdtCode(code, i + 1, pendingSearches.length);
                 } catch (err) {
                     outcome = { error: `search failed (${String(err)})` };
+                }
+                if (outcome.outage) {
+                    // Guardian is down or updating: stop here, record nothing
+                    // for this code, and let a later Crawl search it again.
+                    cdtSearchStopped = true;
+                    cdtStopReason = outcome.outage;
+                    outcome = { error: outcome.outage };
+                } else if (!cdtStopReason && /no click on Search/.test(outcome.error || "")) {
+                    cdtStopReason = "no click on Search within 3 minutes";
                 }
                 if (outcome.capture) {
                     applyCdtCapture(code, outcome.capture);
@@ -1951,7 +1994,13 @@
                 await persist();
                 broadcastStatus();
             }
-            hideCdtPanel();
+            if (cdtOutage || (cdtStopReason && /^Guardian/.test(cdtStopReason))) {
+                showCdtPanel(`${cdtStopReason || cdtOutage.reason}. The remaining CDT searches were stopped and the ` +
+                    "JSON saved without them. Refresh the page and click Crawl again once Guardian is back.");
+                setTimeout(hideCdtPanel, 20000);
+            } else {
+                hideCdtPanel();
+            }
 
             await persistQueue;
             const unresolved = ALL_CODES.filter((code) =>
@@ -2077,10 +2126,27 @@
             } catch (_) {}
         };
 
+        // A Guardian API call that failed — Guardian's "We're updating our
+        // system right now" notice comes with one — is reported, so a running
+        // code search stops instead of asking for more clicks.
+        const postApiError = (url, status) => {
+            try {
+                window.postMessage({ source: PAGE_SOURCE, type: "API_ERROR", url: String(url), status: Number(status) || 0 },
+                    window.location.origin);
+            } catch (_) {}
+        };
+
         if (nativeFetch) {
             globalThis.fetch = async function guardianFetch(input, init) {
                 const url = (typeof Request !== "undefined" && input instanceof Request) ? input.url : String(input);
-                const response = await nativeFetch(input, init);
+                let response;
+                try {
+                    response = await nativeFetch(input, init);
+                } catch (err) {
+                    if (isGuardianApi(url)) postApiError(url, 0);
+                    throw err;
+                }
+                if (isGuardianApi(url) && !response.ok) postApiError(url, response.status);
                 if (isTarget(url, VOB_PATH)) {
                     try { response.clone().json().then(handleVobJson).catch(() => {}); } catch (_) {}
                 } else if (isGuardianApi(url)) {
@@ -2109,10 +2175,12 @@
                     });
                 } else if (url && isGuardianApi(url)) {
                     this.addEventListener("load", () => {
+                        if (this.status >= 400) postApiError(url, this.status);
                         try {
                             handleApiJson(url, body, JSON.parse(this.responseText), this.status >= 200 && this.status < 300);
                         } catch (_) {}
                     });
+                    this.addEventListener("error", () => postApiError(url, 0));
                 }
                 return originalSend.call(this, body);
             };
