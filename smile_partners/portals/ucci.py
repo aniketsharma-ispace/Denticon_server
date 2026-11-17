@@ -421,21 +421,16 @@ def _cob(raw):
     return ''
 
 
-def _ortho_row_fits(desc, relationship):
+def _ortho_row_fits(desc, relationship=''):
     """
-    Whether a "Canceled Enrollment Benefits Cease" row is the patient's. A
-    plan can list one per member type (TRICARE: "Dependent ~ Age 21 And
-    Older" and "Student, Spouse, Selected Reserve … ~ Age 23 And Older").
+    Whether a "Canceled Enrollment Benefits Cease" row is the one the sheet
+    uses when the plan lists more than one: the row naming Student / Spouse /
+    service members ("Student, Spouse, Selected Reserve & Irr Service Members
+    ~ Age 23 And Older"), not the "Dependent ~ Age 21" one, whatever the
+    patient's relationship (team rule, 11/17).
     """
     low = desc.lower()
-    rel = (relationship or '').lower()
-    if rel in ('spouse', 'husband', 'wife', 'domestic partner'):
-        return 'spouse' in low
-    if rel in ('self', 'subscriber', 'member'):
-        return 'service member' in low or 'members to any age' in low or 'all members' in low
-    if rel in ('child', 'dependent', 'son', 'daughter', 'stepchild'):
-        return 'dependent' in low and 'student' not in low
-    return False
+    return bool(re.search(r'\bstudent\b|\bspouse\b|service\s+member', low))
 
 
 def _ortho_policy(record, relationship=''):
