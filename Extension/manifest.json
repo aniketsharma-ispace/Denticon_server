@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "Insurance Auditor Pro",
-    "version": "1.57",
+    "version": "1.58",
     "permissions": [
         "storage",
         "activeTab",
@@ -33,7 +33,12 @@
         "https://www.dnoaconnect.com/*",
         "https://www4.deltadentalwi.com/*",
         "https://www.dentalofficetoolkit.com/dot-ui/member-benefits/*",
-        "https://providers.deltadentalmo.com/*"
+        "https://providers.deltadentalmo.com/*",
+        "https://sabrinaai.ispace.com/*",
+        "https://*.ispace.com/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "http://10.30.10.67/*"
     ],
     "action": {
         "default_popup": "popup.html"
@@ -41,10 +46,21 @@
     "background": {
         "service_worker": "content_cigna.js",
         "scripts": [
+            "iap_sabrina_bridge.js",
             "content_cigna.js"
         ]
     },
     "content_scripts": [
+        {
+            "matches": [
+                "https://sabrinaai.ispace.com/*",
+                "https://*.ispace.com/*"
+            ],
+            "js": [
+                "content_sabrina.js"
+            ],
+            "run_at": "document_idle"
+        },
         {
             "matches": [
                 "*://*.denticon.com/*",
@@ -60,6 +76,7 @@
                 "https://dentalprovider.metlife.com/*"
             ],
             "js": [
+                "iap_scrape_delivery.js",
                 "content_metlife.js"
             ],
             "all_frames": true,
@@ -81,6 +98,7 @@
                 "https://cignaforhcp.cigna.com/*"
             ],
             "js": [
+                "iap_scrape_delivery.js",
                 "content_cigna.js"
             ],
             "run_at": "document_start",
@@ -102,6 +120,7 @@
                 "*://www.guardiananytime.com/*"
             ],
             "js": [
+                "iap_scrape_delivery.js",
                 "content_guardian.js"
             ],
             "all_frames": true,
@@ -124,6 +143,7 @@
             ],
             "js": [
                 "toolkit_requirements.generated.js",
+                "iap_scrape_delivery.js",
                 "content_DD_INS.js"
             ],
             "all_frames": true
@@ -144,6 +164,7 @@
                 "https://claimconnect.dentalxchange.com/*"
             ],
             "js": [
+                "iap_scrape_delivery.js",
                 "content_aetna.js"
             ],
             "all_frames": true
@@ -174,6 +195,7 @@
                 "https://www.unitedconcordia.com/*"
             ],
             "js": [
+                "iap_scrape_delivery.js",
                 "content_ucci.js"
             ],
             "all_frames": true
@@ -223,6 +245,7 @@
             ],
             "js": [
                 "toolkit_requirements.generated.js",
+                "iap_scrape_delivery.js",
                 "content_DD_Toolkit.js"
             ],
             "run_at": "document_start",
@@ -243,6 +266,7 @@
                 "https://providers.deltadentalmo.com/*"
             ],
             "js": [
+                "iap_scrape_delivery.js",
                 "content_DD_MO.js"
             ],
             "run_at": "document_start",

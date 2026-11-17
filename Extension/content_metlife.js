@@ -1089,9 +1089,15 @@
     // DOWNLOAD HELPER
     // ══════════════════════════════════════════════════════════════════════════
 
-    function downloadAuditJSON() {
+    function downloadAuditJSON(iapDirect, given) {
         chrome.storage.local.get("audit_context", (res) => {
-            const data = res.audit_context || {};
+            const data = given || res.audit_context || {};
+            // Sabrina prefill: send to the server; this download becomes the
+            // note's Download JSON button (or the fallback if it can't be sent).
+            if (!iapDirect && typeof window.iapDeliverScrape === "function") {
+                window.iapDeliverScrape(data, d => downloadAuditJSON(true, d));
+                return;
+            }
             const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");

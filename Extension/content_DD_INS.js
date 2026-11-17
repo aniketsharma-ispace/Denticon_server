@@ -1113,7 +1113,13 @@
         return result;
     }
 
-    function triggerDeltaDentalDownload(auditData) {
+    function triggerDeltaDentalDownload(auditData, iapDirect) {
+        // Sabrina prefill: send to the server; this download becomes the
+        // note's Download JSON button (or the fallback if it can't be sent).
+        if (!iapDirect && typeof window.iapDeliverScrape === "function") {
+            window.iapDeliverScrape(auditData, d => triggerDeltaDentalDownload(d, true));
+            return;
+        }
         const sanitize = (s) => (s || "").trim().replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "").toLowerCase();
         const patient = sanitize(
             auditData.primary_patient?.name ||

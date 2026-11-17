@@ -24,7 +24,10 @@ from .rules import (
     _aetna_oon_benefits,
     _aetna_ortho_age,
     _aetna_portal_for_sheet,
+    _aetna_standard_answer,
+    _aetna_code_not_covered,
 )
+from shared.portals.aetna import _aetna_row
 
 
 def _portal_for_sheet(portal_raw: dict, sab_fields: dict) -> dict:
@@ -465,9 +468,15 @@ def _portal_perio_after_srp(bd: dict, portal_raw: dict, sab_raw=None) -> str | N
 def _portal_d4341_quads(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """
     D4341 number of quadrants — the figure Sabrina prints in D4341's Age Limit
-    column: the breakdown's count when it is a number ("Pre-D" and dashes are
-    not).
+    column. Aetna: always 4 (Aetna standard value) when the page lists D4341
+    and does not mark it Not Covered. Otherwise the breakdown's count when it
+    is a number ("Pre-D" and dashes are not).
     """
+    standard = _aetna_standard_answer(portal_raw, "d4341_quads")
+    if standard:
+        if not _aetna_row(portal_raw, "D4341") or _aetna_code_not_covered(portal_raw, "D4341"):
+            return None
+        return standard
     value = str(bd.get("d4341_number_of_quads") or "").strip()
     return value if value.isdigit() else None
 
@@ -514,4 +523,4 @@ def _portal_value_from_spec(field: dict, bd: dict, portal_raw: dict, sab_raw=Non
     if isinstance(src, str) and src in _DERIVED:
         return _DERIVED[src](bd, portal_raw, sab_raw)
     val = bd.get(src) if isinstance(src, str) else None
-    return None if _blank(val) else str(val)
+    return None if _blank(val) else str(val)

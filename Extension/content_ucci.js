@@ -971,7 +971,13 @@ async function scrapeCoordinationAndOtherBenefits() {
 // DOWNLOAD
 // �"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"��"�
 
-function triggerUcciDownload(auditData) {
+function triggerUcciDownload(auditData, iapDirect) {
+  // Sabrina prefill: send to the server; this download becomes the note's
+  // Download JSON button (or the fallback if it can't be sent).
+  if (!iapDirect && typeof window.iapDeliverScrape === "function") {
+    window.iapDeliverScrape(auditData, d => triggerUcciDownload(d, true));
+    return;
+  }
   const sanitize = (s) =>
     (s || "").trim().replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "").toLowerCase();
 
@@ -1578,4 +1584,4 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       });
     return true;
   }
-});
+});

@@ -35,6 +35,9 @@ Material/
 secrets/
 *authenticator*.txt
 
+# ── Patient data: portal scrapes waiting for the Sabrina Fill Form (never commit) ─
+data/
+
 # ── Patient data: Toolkit JSONs and Sabrina PDFs used by the tests (never commit) ─
 tests/fixtures/
 tests/test_star_toolkit.py

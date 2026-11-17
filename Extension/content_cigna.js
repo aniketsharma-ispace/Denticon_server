@@ -1,4 +1,9 @@
 if (typeof document === "undefined" || globalThis.location?.protocol === "moz-extension:") {
+    // Sabrina prefill bridge (server calls for the Fill Form). Chrome's service
+    // worker imports it here; Firefox loads it from manifest.background.scripts.
+    if (typeof importScripts === "function") {
+        try { importScripts("iap_sabrina_bridge.js"); } catch (e) { console.error("[IAP] Sabrina bridge not loaded:", e); }
+    }
     // Service-worker half of this same file. Cigna API calls must originate from
     // the extension to use host permissions and avoid page CORS restrictions.
     const CIGNA_ORIGIN = "https://p-chcp.digitaledge.cigna.com";
@@ -2625,9 +2630,15 @@ setTimeout(runCignaLoop, 4000);
 // AUTO-DOWNLOAD + MESSAGE LISTENER
 // ══════════════════════════════════════════════════════════════════════════
 
-function autoDownloadJSON(data) {
+function autoDownloadJSON(data, iapDirect) {
     try {
         validateProcedureResultIntegrity(data?.procedures?.results);
+        // Sabrina prefill: send to the server; this download becomes the
+        // note's Download JSON button (or the fallback if it can't be sent).
+        if (!iapDirect && typeof window.iapDeliverScrape === "function") {
+            window.iapDeliverScrape(data, d => autoDownloadJSON(d, true));
+            return;
+        }
         const json  = JSON.stringify(data, null, 2);
         const blob  = new Blob([json], { type: 'application/json' });
         const url   = URL.createObjectURL(blob);
