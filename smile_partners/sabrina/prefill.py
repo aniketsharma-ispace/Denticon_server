@@ -424,15 +424,17 @@ def build_prefill(portal_raw: dict, network: str) -> dict:
 
     Raises ValueError (→ HTTP 422) for an unsupported portal or no network.
     """
-    # A scrape taken for one network (Cigna) brings its own IN OR OON.
+    # A scrape taken for one network (Cigna; Delta Dental and the Toolkit with
+    # the network picked before the crawl) brings its own IN OR OON.
     scraped = scrape_network(portal_raw)
     picked = _NETWORKS.get(str(network or "").strip().lower())
     if scraped:
         if picked and picked != scraped:
+            words = {"In": "in-network", "Out": "out-of-network"}
             raise ValueError(
-                f"This portal scrape was taken for {scraped}-of-network benefits, but IN OR OON "
+                f"This portal scrape was taken for {words[scraped]} benefits only, but IN OR OON "
                 f"on the form says {picked}. Change IN OR OON to {scraped}, or scrape the portal "
-                f"again with the {picked}-network option picked.")
+                f"again with an {words[picked]} option picked.")
         network = scraped
     carrier, values, spec = portal_values(portal_raw, network)
     by_key = {f["key"]: f for f in spec}
@@ -539,8 +541,13 @@ def _met_flags(values: dict) -> list[dict]:
 
 def member_key(portal_raw: dict) -> tuple[str | None, str | None]:
     """(member ID, patient DOB) the portal states, for matching a stored scrape to a form."""
+    from shared.scrape_store import norm_dob
     try:
         _carrier, values, _spec = portal_values(portal_raw, "In")
     except ValueError:
         return None, None
-    return values.get("member_id"), _date(values.get("patient_dob") or "") or values.get("patient_dob")
+    # norm_dob, not _date: a DOB is in the past, so '02/03/90' is 1990, not 2090.
+    # The DOB now decides between family members on one member ID, so the
+    # century must be right.
+    dob = values.get("patient_dob")
+    return values.get("member_id"), norm_dob(dob) or dob
