@@ -74,10 +74,15 @@
     // user picks one of the three networks the Member Benefits page has tabs
     // for. Only that network's benefits are scraped and exported; the other
     // networks' buckets are dropped wherever the Toolkit returns them.
+    // `aliases` are other names the Toolkit uses for the same network: Medicare
+    // Advantage plans name the out-of-network bucket "Non-PPO Dentist" (with
+    // alternateName "Nonparticipating Dentist"), while their faxback PDF says
+    // "Nonparticipating Dentist".
     const NETWORK_CHOICES = Object.freeze([
-        Object.freeze({ key: "ppo", name: "PPO Dentist", label: "PPO" }),
-        Object.freeze({ key: "premier", name: "Premier Dentist", label: "Premier" }),
-        Object.freeze({ key: "oon", name: "Nonparticipating Dentist", label: "Non-participating" })
+        Object.freeze({ key: "ppo", name: "PPO Dentist", label: "PPO", aliases: Object.freeze([]) }),
+        Object.freeze({ key: "premier", name: "Premier Dentist", label: "Premier", aliases: Object.freeze([]) }),
+        Object.freeze({ key: "oon", name: "Nonparticipating Dentist", label: "Non-participating",
+            aliases: Object.freeze(["Non-PPO Dentist", "Non-participating Dentist"]) })
     ]);
     // Set by startCrawl from the user's pick; the extraction reads it throughout.
     let selectedNetwork = null;
@@ -6024,9 +6029,21 @@
         return NETWORK_CHOICES.find(item => item.name === selectedNetwork) || null;
     }
 
+    // Every name the Toolkit may use for the network called `name`.
+    function networkNameVariants(name) {
+        const wanted = cleanText(name).toLowerCase();
+        const choice = NETWORK_CHOICES.find(item =>
+            [item.name, ...item.aliases].some(variant => variant.toLowerCase() === wanted));
+        return choice ? [choice.name, ...choice.aliases] : [cleanText(name)];
+    }
+
+    // True for a network name, or a {name, alternateName} network object, that
+    // is the picked network under any of its names.
     function isSelectedNetworkName(name) {
-        const text = typeof name === "string" ? name : name?.name;
-        return Boolean(selectedNetwork) && cleanText(text).toLowerCase() === selectedNetwork.toLowerCase();
+        if (!selectedNetwork) return false;
+        const texts = typeof name === "string" ? [name] : [name?.name, name?.alternateName];
+        const variants = networkNameVariants(selectedNetwork).map(variant => variant.toLowerCase());
+        return texts.some(text => variants.includes(cleanText(text).toLowerCase()));
     }
 
     // The networks the member's plan offers, as the Member Benefits response names them.
@@ -6036,15 +6053,16 @@
 
     // Opens the Member Benefits tab named `name` ("PPO Dentist", "Premier
     // Dentist", "Nonparticipating Dentist"). The tab is found by its exact
-    // label, tab-like elements first. Not finding it is not fatal: the page
+    // label or one of the network's aliases ("Non-PPO Dentist"), tab-like
+    // elements first. Not finding it is not fatal: the page
     // figures are checked against the API before use (displayedAccumulatorsAgree).
     async function showNetworkTab(name) {
         try {
-            const wanted = cleanText(name).toLowerCase();
+            const wanted = networkNameVariants(name).map(variant => variant.toLowerCase());
             const scope = document.querySelector("app-memberdetails-benefits") || document;
             const target = ["[role='tab']", "button", "a", "li", "span", "div"]
                 .map(selector => [...scope.querySelectorAll(selector)].find(element =>
-                    cleanText(element.textContent || "").toLowerCase() === wanted))
+                    wanted.includes(cleanText(element.textContent || "").toLowerCase())))
                 .find(Boolean);
             if (!target) {
                 console.warn(`Delta Toolkit: no "${name}" tab was found on the page.`);
