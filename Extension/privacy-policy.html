@@ -34,7 +34,7 @@
 <body>
 
     <h1>Privacy Policy</h1>
-    <p class="last-updated">Last updated: November 2, 2026</p>
+    <p class="last-updated">Last updated: November 18, 2026</p>
 
     <p>This Privacy Policy describes how <strong>Insurance Auditor Pro</strong> ("the Extension") handles information. The Extension is distributed for Google Chrome and Mozilla Firefox. By using the Extension, you agree to the practices described in this policy.</p>
 
@@ -69,7 +69,8 @@
     </ul>
 
     <h2>4. Data Sharing &amp; Transmission</h2>
-    <p>The Extension sends network requests to the insurance portals listed in Section 6, and only to the portal the user is actively working in. These requests carry the user's own existing signed-in session, and are the same requests the portal's own web interface makes. They are used to retrieve benefit details for the patient the user is already viewing.</p>
+    <p>The Extension sends network requests to the insurance portals listed in Section 6, and only to the portal the user is actively working in. These requests carry the user's own existing signed-in session, and are the same requests the portal's own web interface makes. They are used to retrieve benefit details for the patient the user is already viewing.</p>
+
     <p>When a scrape finishes, the Extension also sends the benefit data it collected to the <strong>Insurance Auditor server</strong>, so that the Sabrina Fill Form can be completed from it. This server is operated by the user's own organisation and its address is configurable in the Extension's Sabrina panel (by default a machine on the organisation's own network). The data sent is the benefit information for the patient just looked up, including the patient's name, date of birth and member identifier. It is not sent anywhere else.</p>
     <p>The Extension does <strong>NOT</strong>:</p>
     <ul>
@@ -108,9 +109,9 @@
             <td>Saves the completed audit as a JSON file to the user's own device under a specific filename, and checks that the file finished saving so the Extension can report success. It is used only for files the Extension itself generates, at the user's request, and is not used to read or modify the user's existing downloads.</td>
         </tr>
     </table>
-    <p>Host permissions are limited to the portals listed in Section 6 and are required for the Extension's content scripts to read insurance data from those portals.</p>
+    <p>Host permissions are limited to the sites listed in Section 6. They are required for the Extension's content scripts to read insurance data from the portals, and to reach the user's own organisation's Insurance Auditor server.</p>
 
-    <h2>6. Supported Portals</h2>
+    <h2>6. Sites the Extension Operates On</h2>
     <p>The Extension operates only on the following dental practice-management and insurance portals:</p>
     <ul>
         <li><strong>Denticon / PlanetDDS</strong> — denticon.com, planetdds.com</li>
@@ -123,6 +124,11 @@
         <li><strong>United Concordia</strong> — unitedconcordia.com</li>
         <li><strong>DentaQuest</strong> — providers.dentaquest.com</li>
         <li><strong>DNOA Connect</strong> — dnoaconnect.com</li>
+    </ul>
+    <p>It also operates on the following sites belonging to the user's own organisation. These are not insurance portals and no patient data is read from them:</p>
+    <ul>
+        <li><strong>Sabrina</strong> — sabrinaai.ispace.com, and other hosts under ispace.com. The Extension adds a panel to this page so the Fill Form can be completed from a scrape already collected.</li>
+        <li><strong>Insurance Auditor server</strong> — the address configured in the Extension's Sabrina panel. By default this is a machine on the organisation's own network (10.30.10.67); localhost and 127.0.0.1 are also permitted so the server may be run on the same machine as the browser. Finished scrapes are sent to this address as described in Section 4. The Extension contacts no other server.</li>
     </ul>
 
     <h2>7. Intended Users &amp; Children's Privacy</h2>
