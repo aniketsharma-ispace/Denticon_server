@@ -152,6 +152,7 @@ The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolki
 
 ## Shared Toolkit rules
 
+- **Non-PPO Dentist is the Non-participating network [11/18, extension 1.58]:** Medicare Advantage PPO plans (Robert McDonald, 11/18) name their out-of-network bucket “Non-PPO Dentist” in the Toolkit API (`alternateName` “Nonparticipating Dentist”); the faxback PDF calls it “Nonparticipating Dentist”. A Non-participating crawl accepts either name (and “Non-participating Dentist”), and the export still names the pick “Nonparticipating Dentist” in `selected_network`. Before 1.58 the crawl stopped with “This plan has no Nonparticipating Dentist network (it offers PPO Dentist, Premier Dentist, Non-PPO Dentist)”. PPO never matches “Non-PPO Dentist”.
 - **Member ID:** read from memberAlternateId (the Toolkit's “Member Alternate ID”). A lone “N”, “N/A” or blank counts as absent. **[11/02]** Smile now reads it too; before, the Smile portal side was always blank.
 - **Max vs deductible:** both rows share category “General”, so the max and ortho max require type == maximum. **[11/03]** Smile now does this too: Lisa Rawlinson's export lists the General deductible first, and it used to be read as a $50 annual maximum.
 - **In Network [10/23]:**
