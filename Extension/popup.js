@@ -499,18 +499,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     const deliveryCarrier = isAetna ? 'aetna' : isCigna ? 'cigna' : isGuardian ? 'guardian'
         : isMetLife ? 'metlife' : isUCCI ? 'ucci' : isDeltaINS ? 'delta_ins'
         : isDeltaMO ? 'delta_mo' : isDeltaToolkit ? 'delta_toolkit' : null;
-    const delivered = deliveryCarrier
-        ? ((await chrome.storage.local.get('iapScrapes')).iapScrapes || {})[deliveryCarrier]
-        : null;
     if (deliveryCarrier) btnDownload.textContent = 'Download JSON';
 
-    btnDownload.onclick = () => {
+    btnDownload.onclick = async () => {
         if (deliveryCarrier) {
+            // Read the last scrape now, not when the popup opened: Guardian,
+            // Toolkit and DD MO keep the popup open through the crawl, and the
+            // scrape that just finished must be the one saved.
+            const delivered = ((await chrome.storage.local.get('iapScrapes')).iapScrapes || {})[deliveryCarrier];
             if (!delivered?.data) {
                 status.textContent = 'No scrape yet for this portal. Click Crawl first; the JSON can be downloaded here once it finishes.';
                 return;
             }
-            downloadObject(delivered.data, delivered.filename || `${deliveryCarrier}_${Date.now()}.json`, false);
+            const filename = delivered.filename || `${deliveryCarrier}_${Date.now()}.json`;
+            try {
+                await downloadObject(delivered.data, filename, false);
+            } catch (err) {
+                status.textContent = `Download failed: ${err?.message || err}`;
+                return;
+            }
+            // Say whose scrape it was: it is this portal's last one, which is
+            // another patient's if this patient has not been crawled yet.
+            const at = delivered.at
+                ? new Date(delivered.at).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                : 'unknown time';
+            status.textContent = `Downloaded ${filename} (scraped ${at}).`;
             return;
         }
 

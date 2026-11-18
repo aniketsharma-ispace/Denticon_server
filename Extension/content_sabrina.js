@@ -38,10 +38,17 @@
     firstByEnding([q, ...(QUESTION_ALIASES[q] || [])].map(x => `_${x}_covered`));
   const pageVal = n => (byName(n)?.value || "").trim();
   const normId = s => String(s || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  // A DOB as MM/DD/YYYY. A DOB is in the past, so '02/03/90' is 1990 (the same
+  // rule as the server's scrape_store.norm_dob).
   const normDate = s => {
-    const m = String(s || "").trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    const text = String(s || "").trim();
+    const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (iso) return `${iso[2]}/${iso[3]}/${iso[1]}`;
+    const m = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
     if (!m) return "";
-    const y = m[3].length === 2 ? "20" + m[3] : m[3];
+    const y = m[3].length === 2
+      ? (+m[3] <= new Date().getFullYear() % 100 ? "20" : "19") + m[3]
+      : m[3];
     return `${m[1].padStart(2, "0")}/${m[2].padStart(2, "0")}/${y}`;
   };
   // The Fill Form page itself, whether or not its sections are open yet.
@@ -443,8 +450,10 @@
 
   // ── is the last scrape this patient? ──────────────────────────────────────
   // The panel fills only from the scrape this browser made last, and only when
-  // that scrape is the patient on this form: same member ID, or (a portal that
-  // words the ID differently) the same DOB.
+  // that scrape is the patient on this form. When the form and the scrape both
+  // state a DOB, the DOB decides: family members often share the subscriber's
+  // member ID (Delta, Cigna, MetLife), and a portal may word the ID differently.
+  // Without both DOBs, the member ID decides.
   let lastScrape = null, scrapeLoaded = false, matchState = null;
 
   function showLastScrape(last) {
@@ -463,8 +472,9 @@
     const formMember = normId(pageVal("demographic.memberId"));
     const formDob = normDate(pageVal("demographic.patientDOB"));
     if (!formMember && !formDob) return "unknown";   // Demographic closed: checked again on Fill
+    const scrapeDob = normDate(lastScrape.dob);
+    if (formDob && scrapeDob) return formDob === scrapeDob ? "match" : "other";
     if (formMember && normId(lastScrape.member_id) === formMember) return "match";
-    if (formDob && lastScrape.dob && normDate(lastScrape.dob) === formDob) return "match";
     return "other";
   }
 
@@ -475,6 +485,13 @@
   }
 
   function otherPatientText() {
+    const formMember = pageVal("demographic.memberId");
+    const formDob = normDate(pageVal("demographic.patientDOB"));
+    if (formMember && normId(formMember) === normId(lastScrape.member_id) && formDob && lastScrape.dob) {
+      return `Your last portal scrape is for member ${lastScrape.member_id} born ${lastScrape.dob}, ` +
+             `but this form's patient was born ${formDob}: another family member on the same ` +
+             `member ID. Run the extension on this patient's portal page first.`;
+    }
     return `Your last portal scrape is for ${scrapeWho(lastScrape)}, not this patient ` +
            `(${pageVal("demographic.memberId") || "this form"}). Run the extension on this patient's ` +
            `portal page first.`;
@@ -572,13 +589,21 @@
     if (!r.ok) return say(r.error, "err");
     const prefill = r.prefill;
 
-    // Patient check: both member ID and DOB differing means another patient.
+    // Patient check. A DOB that differs is another patient even when the
+    // member ID agrees (family members share it); a member ID that differs
+    // needs the DOB to agree.
     const c = prefill.checks || {};
     const memberSame = !c.member_id || normId(c.member_id) === normId(memberId);
-    const dobSame = !c.patient_dob || !dob || normDate(c.patient_dob) === dob;
-    if (!memberSame && !dobSame) {
+    const portalDob = normDate(c.patient_dob);
+    const dobKnown = !!(portalDob && dob);
+    const dobSame = dobKnown && portalDob === dob;
+    if ((dobKnown && !dobSame) || (!memberSame && !dobSame)) {
+      const family = memberSame && dobKnown
+        ? ` (born ${dob}): another family member on the same member ID. Scrape this patient on the portal first.`
+        : ".";
       return say(`Stopped: the portal data is for ${c.patient_name || "another patient"} ` +
-                 `(member ${c.member_id}, DOB ${c.patient_dob}), not this form's patient.`, "err");
+                 `(member ${c.member_id || "not stated"}, DOB ${c.patient_dob || "not stated"}), ` +
+                 `not this form's patient${family}`, "err");
     }
 
     // The scrape's own network (Cigna): set IN OR OON before anything else,

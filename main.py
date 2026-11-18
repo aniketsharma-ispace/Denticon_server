@@ -481,8 +481,8 @@ def get_prefill(client: str, member_id: str, network: str = "", dob: Optional[st
     could be hours old and was not what the user just looked at.
 
     404 when there is nothing to fill from, 409 when the user's own last scrape
-    is for someone else, 422 when the network is missing or the scrape cannot
-    be read.
+    is for someone else (including a family member on the same member ID with
+    another DOB), 422 when the network is missing or the scrape cannot be read.
     """
     key, prefill = _prefill_module(client)
     scrape = None
@@ -492,24 +492,32 @@ def get_prefill(client: str, member_id: str, network: str = "", dob: Optional[st
             status_code=404,
             detail="No portal scrape from this browser to fill from. Run the extension "
                    "on the carrier portal for this patient first.")
+    family_member = False
     if own:
         # A portal with no member ID (Guardian, some Toolkit and MetLife
         # exports) is matched on the DOB alone: two blanks are not a match.
         same_member = bool(own["member_id"]) and own["member_id"] == scrape_store.norm_member(member_id)
         form_dob = scrape_store.norm_dob(dob)
-        same_dob = bool(form_dob and own["dob"] and own["dob"] == form_dob)
-        if same_member or same_dob:
+        dob_known = bool(form_dob and own["dob"])
+        same_dob = dob_known and own["dob"] == form_dob
+        # Family members often share the subscriber's member ID (Delta, Cigna,
+        # MetLife): when the form and the scrape both state a DOB, it decides.
+        family_member = same_member and dob_known and not same_dob
+        if same_dob or (same_member and not dob_known):
             # A member ID worded differently (SSN vs W-number) is allowed when
             # the DOB agrees; the extension still shows the patient check.
             scrape = own
     if not scrape and not only_own:
         scrape = scrape_store.find_pending(key, member_id, dob)
     if not scrape and own:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Your last portal scrape is for member {own['member_id']} "
-                   f"(DOB {own['dob'] or 'not stated'}), not this patient. Scrape this "
-                   f"patient on the portal first.")
+        detail = (f"Your last portal scrape is for member {own['member_id']} "
+                  f"(DOB {own['dob'] or 'not stated'}), not this patient.")
+        if family_member:
+            detail = (f"Your last portal scrape is for member {own['member_id']} born "
+                      f"{own['dob']}, but this form's patient was born {form_dob}: another "
+                      f"family member on the same member ID.")
+        raise HTTPException(status_code=409,
+                            detail=detail + " Scrape this patient on the portal first.")
     if not scrape:
         raise HTTPException(
             status_code=404,

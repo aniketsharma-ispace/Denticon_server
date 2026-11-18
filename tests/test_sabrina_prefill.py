@@ -191,6 +191,64 @@ check("frequency wordings",
       ["1X6Month", "4X1Year", "NC", "No Frequency", "2X1Year"])
 check("Aetna still needs the pick", build_prefill(EXPORT, "In")["network_from_scrape"], False)
 
+print("── DELTA DENTAL / TOOLKIT: NETWORK FROM THE SCRAPE ──")
+# Both pick the network in the extension's pop-up before the crawl and scrape
+# that network only: PPO and Premier are In, Out of Network is Out. A pick on
+# the form against it is refused, as for Cigna, instead of filling the scraped
+# network's figures under the other one.
+from smile_partners.sabrina.prefill import scrape_network                # noqa: E402
+
+
+def _refused(export, network):
+    try:
+        build_prefill(export, network)
+        return "accepted"
+    except ValueError as e:
+        return "refused" if "only" in str(e) else f"other error: {e}"
+
+
+def _dd(selected):
+    return {"source": "Delta Dental", "primary_patient": {"name": "X", "plan": "Delta Dental PPO"},
+            "tabs": {"benefits_search": [], "benefits_search_network": "",
+                     "benefits_search_selected": selected}}
+
+
+check("Delta Dental: PPO / Premier → In, Out of Network → Out, no pick → none",
+      [scrape_network(_dd(s)) for s in ("ppo", "premier", "oon", "")], ["In", "In", "Out", None])
+r_dd = build_prefill(_dd("oon"), "")
+check("Delta Dental OON needs no pick → Out",
+      (r_dd["carrier"], r_dd["network"], r_dd["network_from_scrape"]), ("delta_dental", "Out", True))
+check("Delta Dental: In picked on a PPO scrape is fine", build_prefill(_dd("ppo"), "In")["network"], "In")
+check("Delta Dental: Out picked on a Premier scrape is refused", _refused(_dd("premier"), "Out"), "refused")
+check("Delta Dental: In picked on an OON scrape is refused", _refused(_dd("oon"), "In"), "refused")
+check("Delta Dental before the pop-up still takes the pick",
+      build_prefill(_dd(""), "Out")["network_from_scrape"], False)
+
+exec(_src[_src.index("def _tk_result"):_src.index("_tk = _tk_export()")], _ns)
+
+
+def _tk(choice, name):
+    export = _ns["_tk_export"]()
+    if choice:
+        export["network_choice"] = choice
+    export["selected_network"] = name
+    return export
+
+
+check("Toolkit: PPO / Premier → In, Nonparticipating / Non-PPO → Out",
+      [scrape_network(_tk(c, n)) for c, n in (("ppo", "PPO Dentist"), ("premier", "Premier Dentist"),
+                                               ("oon", "Nonparticipating Dentist"),
+                                               ("oon", "Non-PPO Dentist"))],
+      ["In", "In", "Out", "Out"])
+r_tk = build_prefill(_tk("oon", "Nonparticipating Dentist"), "")
+check("Toolkit Nonparticipating needs no pick → Out",
+      (r_tk["carrier"], r_tk["network"], r_tk["network_from_scrape"]), ("delta_toolkit", "Out", True))
+check("Toolkit: Out picked on a PPO scrape is refused", _refused(_tk("ppo", "PPO Dentist"), "Out"), "refused")
+check("Toolkit: In picked on a Nonparticipating scrape is refused",
+      _refused(_tk("oon", "Nonparticipating Dentist"), "In"), "refused")
+check("Toolkit before the pop-up (no network_choice) still takes the pick",
+      scrape_network(_tk(None, "PPO Dentist")), None)
+
 print("── SCRAPE STORE ──")
 sid = scrape_store.save("smile_partners", "aetna", "w000-111 222", "2/3/1990", EXPORT)
 check("found by member ID, any format",
@@ -236,6 +294,31 @@ for block in ("patient", "patient_information"):
     nothing[block]["date_of_birth"] = ""
 check("no member ID and no DOB is refused",
       api.post("/api/scrapes", json={"client": "smile_partners", "portal_data": nothing}).status_code, 422)
+
+print("── ENDPOINTS: FAMILY MEMBERS ON ONE MEMBER ID ──")
+# Delta, Cigna and MetLife often give a whole family the subscriber's member
+# ID: when the form and the scrape both state a DOB, the DOB decides.
+saved = api.post("/api/scrapes", json={"client": "smile_partners", "portal_data": EXPORT})
+sid3 = saved.json().get("id")
+own = lambda **q: api.get("/api/prefill", params=dict(client="smile_partners", network="In",
+                                                       scrape_id=sid3, only_own="true", **q))
+check("same member ID and DOB fills", own(member_id="W000111222", dob="02/03/1990").status_code, 200)
+child = own(member_id="W000111222", dob="03/14/2012")
+check("same member ID, another DOB is refused (a family member)", child.status_code, 409)
+check("the refusal names the family member case",
+      "family member" in str(child.json().get("detail")), True)
+check("same member ID, no DOB on the form still fills",
+      own(member_id="W000111222", dob="").status_code, 200)
+check("member ID worded differently, same DOB still fills",
+      own(member_id="123-45-6789", dob="2/3/1990").status_code, 200)
+check("not the user's own scrape: same member ID, another DOB finds nothing",
+      api.get("/api/prefill", params=dict(client="smile_partners", network="In",
+                                          member_id="W000111222", dob="03/14/2012")).status_code, 404)
+two_digit = copy.deepcopy(EXPORT)
+for block in ("patient", "patient_information"):
+    two_digit[block]["date_of_birth"] = "02/03/90"
+check("a 2-digit portal DOB is stored in the right century",
+      member_key(two_digit)[1], "02/03/1990")
 
 print(f"\n{'all passed' if not _failed else f'{_failed} failed'}")
 sys.exit(1 if _failed else 0)
