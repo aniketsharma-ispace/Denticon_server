@@ -380,6 +380,7 @@
       <div class="box">
         <div class="head" id="head"><b>Insurance Auditor · Fill from portal</b><span id="caret">▾</span></div>
         <div class="body">
+          <div class="row"><span class="muted">Client</span><span id="client">—</span></div>
           <div class="row"><span class="muted">Patient</span><span id="patient">—</span></div>
           <div class="row"><span class="muted">Portal scrape</span><span id="scrape">—</span></div>
           <div class="row"><span class="muted">IN OR OON</span><span id="network">—</span></div>
@@ -574,7 +575,16 @@
 
     setButtons(false);
     say("Fetching portal data…");
-    const r = await send({ type: "IAP_GET_PREFILL", member_id: memberId, dob, network });
+    // Whose Fill Form this is: Sabrina keeps the client picked at the top of
+    // the app in sessionStorage ("26" = Smile Partners). Read on every click,
+    // since one user can switch clients.
+    let sabrinaClient = "";
+    try { sabrinaClient = sessionStorage.getItem("selectedClient") || ""; } catch (_) { /* blocked */ }
+    if (!sabrinaClient) {
+      setButtons(true);
+      return say("Cannot tell which client this Fill Form is for. Pick the client in Sabrina (or reload the page) and try again.", "err");
+    }
+    const r = await send({ type: "IAP_GET_PREFILL", sabrina_client: sabrinaClient, member_id: memberId, dob, network });
     setButtons(true);
     if (!r.ok && !network && /Choose In or Out/i.test(r.error || "")) {
       // This scrape holds both networks (Aetna, …): the user picks.
@@ -649,6 +659,27 @@
   const onSabrina = () => /sabrina/i.test(location.hostname);
   let wasOnForm = null;
 
+  // Whose Fill Form this is (Sabrina's selectedClient), shown on the panel.
+  // Read every second: one user can switch clients without reloading.
+  let clientShown = null;
+  function showClient() {
+    let id = "";
+    try { id = sessionStorage.getItem("selectedClient") || ""; } catch (_) { /* blocked */ }
+    if (id === clientShown) return;
+    clientShown = id;
+    const el = ui.$("client");
+    el.style.color = "";
+    if (!id) { el.textContent = "not picked in Sabrina"; el.style.color = "#b42318"; return; }
+    el.textContent = "#" + id;
+    send({ type: "IAP_GET_CLIENT", sabrina_client: id }).then(r => {
+      if (clientShown !== id) return;               // switched again meanwhile
+      if (!r.ok) return;                            // server down: the id is all we can show
+      const c = r.client;
+      el.textContent = c.ready ? c.name : `${c.name} · not set up yet`;
+      el.style.color = c.ready ? "" : "#b54708";
+    });
+  }
+
   function refresh() {
     if (!onSabrina()) return;
     const onForm = onFillForm();
@@ -661,6 +692,7 @@
     }
     if (!host) buildPanel();
     host.style.display = "";
+    showClient();
     if (onForm !== wasOnForm) {
       wasOnForm = onForm;
       pendingFill = false;

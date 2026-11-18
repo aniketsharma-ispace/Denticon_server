@@ -113,6 +113,9 @@ CLIENTS = {
         "system":   "Sabrina",
         "package":  "smile_partners",
         "hint":     "Portal export + Sabrina breakdown PDF",
+        # Sabrina's own id for this client (sessionStorage "selectedClient"
+        # on any Sabrina page): how the Fill Form panel says whose form it is.
+        "sabrina_client_id": "26",
         # sabrina_prefill: its Fill Form's field names are mapped in
         # smile_partners/sabrina/prefill.py. Other Sabrina clients get it once
         # their own form is mapped.
@@ -123,6 +126,7 @@ CLIENTS = {
         "system":   "Sabrina",
         "package":  "star_dental",
         "hint":     "Portal export + Sabrina breakdown PDF",
+        "sabrina_client_id": "19",
         "supports": {"sabrina_audit", "parse_pdf"},
     },
     "jefferson": {
@@ -130,6 +134,7 @@ CLIENTS = {
         "system":   "Sabrina",
         "package":  "jefferson",
         "hint":     "Portal export + Sabrina breakdown PDF",
+        "sabrina_client_id": "11",
         "supports": {"sabrina_audit", "parse_pdf"},
     },
     "park_dental": {
@@ -137,9 +142,34 @@ CLIENTS = {
         "system":   "Sabrina",
         "package":  "park_dental",
         "hint":     "Portal export + Sabrina breakdown PDF",
+        "sabrina_client_id": "27",
         "supports": {"sabrina_audit", "parse_pdf"},
     },
 }
+
+# Every client in Sabrina, by Sabrina's own id (sessionStorage "selectedClient"
+# on any Sabrina page). Only those with a "sabrina_client_id" in CLIENTS above
+# have a folder here; the rest are named so the panel can say whose form it is.
+SABRINA_CLIENTS = {
+    "2":  "Absolute Dental",
+    "3":  "Kidscare Dental",
+    "7":  "Affinity",
+    "10": "Plum Dental",
+    "11": "Jefferson Dental & Orthodontics",
+    "12": "Marquee Dental",
+    "15": "Beacon Dental",
+    "16": "Pearl Street Dental Partners",
+    "17": "Riccobene Brush and Floss",
+    "18": "Dentologie",
+    "19": "Star Dental",
+    "20": "Chord SDP",
+    "21": "Henritze Dental Group",
+    "23": "Eastern Dental",
+    "24": "Willis Dentistry",
+    "26": "Smile Partners",
+    "27": "Park Place Dental",
+}
+
 
 # What each capability is called in an error the user will read.
 _CAPABILITY_NAMES = {
@@ -423,8 +453,8 @@ async def sabrina_compare_endpoint(
 # (`<client>/sabrina/prefill.py`), so every audit rule applies to the fill too.
 
 class ScrapeRequest(BaseModel):
-    client:      str
     portal_data: dict
+    client:      str = ""       # not needed: a scrape is the same whoever the client is
 
 class PrefillRequest(BaseModel):
     client:      str
@@ -434,8 +464,63 @@ class PrefillRequest(BaseModel):
 
 def _prefill_module(client):
     """(key, the client's prefill module), refusing a client without one."""
+    known = str(client or "").strip().lower()
+    if known in CLIENTS and "sabrina_prefill" not in CLIENTS[known]["supports"]:
+        ready = ", ".join(s["label"] for s in CLIENTS.values() if "sabrina_prefill" in s["supports"])
+        name = SABRINA_CLIENTS.get(CLIENTS[known].get("sabrina_client_id", ""), CLIENTS[known]["label"])
+        raise HTTPException(
+            status_code=400,
+            detail=f"Fill from portal is not set up for {name} yet (ready: {ready}).")
     key, spec = resolve_client(client, "sabrina_prefill")
     return key, client_module(spec, "sabrina.prefill")
+
+
+def client_for_sabrina_id(sabrina_client) -> str:
+    """
+    Our client key for Sabrina's client id (sessionStorage "selectedClient" on
+    the Fill Form, e.g. "26" = Smile Partners). One Sabrina user can switch
+    between clients, so the panel sends it with every fill.
+    """
+    cid = str(sabrina_client or "").strip()
+    for key, spec in CLIENTS.items():
+        if spec.get("sabrina_client_id") == cid:
+            return key
+    name = SABRINA_CLIENTS.get(cid, f"Sabrina client {cid or '(none)'}")
+    raise HTTPException(
+        status_code=400,
+        detail=f"Fill from portal is not set up for {name} yet.")
+
+
+def sabrina_client_info(sabrina_client) -> dict:
+    """Whose Fill Form a Sabrina client id is, and whether it can be filled."""
+    cid = str(sabrina_client or "").strip()
+    key = next((k for k, s in CLIENTS.items() if s.get("sabrina_client_id") == cid), None)
+    ready = bool(key) and "sabrina_prefill" in CLIENTS[key]["supports"]
+    return {"id": cid, "name": SABRINA_CLIENTS.get(cid) or (CLIENTS[key]["label"] if key else f"Client {cid}"),
+            "client": key, "ready": ready, "known": cid in SABRINA_CLIENTS or bool(key)}
+
+
+# Scrapes are stored without a client: a portal's JSON is the same whoever the
+# patient's client is, and the payer portal cannot tell us anyway. The client
+# is decided when the Fill Form asks (its Sabrina client id).
+_SCRAPE_SCOPE = ""
+
+
+def _read_scrape(portal_data):
+    """(carrier, member_id, dob) by the first client whose rules read this portal."""
+    last_error = "No client has Sabrina Fill Form rules yet."
+    for key, spec in CLIENTS.items():
+        if "sabrina_prefill" not in spec["supports"]:
+            continue
+        prefill = client_module(spec, "sabrina.prefill")
+        try:
+            carrier, _values, _spec = prefill.portal_values(portal_data, "In")
+        except ValueError as e:
+            last_error = str(e)
+            continue
+        member_id, dob = prefill.member_key(portal_data)
+        return carrier, member_id, dob
+    raise HTTPException(status_code=422, detail=last_error)
 
 
 @app.post("/api/scrapes")
@@ -448,25 +533,21 @@ def save_scrape(req: ScrapeRequest):
     Some portals give no usable member ID (Guardian has none, the Toolkit not
     always, MetLife masks it); those are matched on the DOB.
     """
-    key, prefill = _prefill_module(req.client)
-    try:
-        carrier, _values, _spec = prefill.portal_values(req.portal_data, "In")
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    member_id, dob = prefill.member_key(req.portal_data)
+    carrier, member_id, dob = _read_scrape(req.portal_data)
     if not member_id and not dob:
         raise HTTPException(
             status_code=422,
             detail="This portal export states neither a member ID nor a DOB, so it cannot be "
                    "matched to a Fill Form.")
-    scrape_id = scrape_store.save(key, carrier, member_id, dob, req.portal_data)
-    return {"id": scrape_id, "client": key, "carrier": carrier,
+    scrape_id = scrape_store.save(_SCRAPE_SCOPE, carrier, member_id, dob, req.portal_data)
+    return {"id": scrape_id, "carrier": carrier,
             "member_id": scrape_store.norm_member(member_id), "dob": dob}
 
 
 @app.get("/api/prefill")
-def get_prefill(client: str, member_id: str, network: str = "", dob: Optional[str] = None,
-                scrape_id: Optional[int] = None, only_own: bool = False):
+def get_prefill(member_id: str, network: str = "", dob: Optional[str] = None,
+                scrape_id: Optional[int] = None, only_own: bool = False,
+                sabrina_client: Optional[str] = None, client: Optional[str] = None):
     """
     What to fill on the Fill Form for this member and network.
 
@@ -476,6 +557,10 @@ def get_prefill(client: str, member_id: str, network: str = "", dob: Optional[st
     user's extension made last: used first, when it is for the same member, so
     a portal that words the member ID differently still finds it.
 
+    `sabrina_client` is Sabrina's client id on that Fill Form ("26" = Smile
+    Partners): it picks the client folder whose rules fill the form. (`client`,
+    our own key, does the same for testing from /docs.)
+
     `only_own` (what the extension sends): fill from that scrape or not at all —
     never from an older scrape of the same member left on the server, which
     could be hours old and was not what the user just looked at.
@@ -484,9 +569,11 @@ def get_prefill(client: str, member_id: str, network: str = "", dob: Optional[st
     is for someone else (including a family member on the same member ID with
     another DOB), 422 when the network is missing or the scrape cannot be read.
     """
+    if sabrina_client:
+        client = client_for_sabrina_id(sabrina_client)
     key, prefill = _prefill_module(client)
     scrape = None
-    own = scrape_store.get_pending(key, scrape_id) if scrape_id else None
+    own = scrape_store.get_pending(_SCRAPE_SCOPE, scrape_id) if scrape_id else None
     if only_own and not own:
         raise HTTPException(
             status_code=404,
@@ -508,7 +595,7 @@ def get_prefill(client: str, member_id: str, network: str = "", dob: Optional[st
             # the DOB agrees; the extension still shows the patient check.
             scrape = own
     if not scrape and not only_own:
-        scrape = scrape_store.find_pending(key, member_id, dob)
+        scrape = scrape_store.find_pending(_SCRAPE_SCOPE, member_id, dob)
     if not scrape and own:
         detail = (f"Your last portal scrape is for member {own['member_id']} "
                   f"(DOB {own['dob'] or 'not stated'}), not this patient.")
@@ -529,6 +616,12 @@ def get_prefill(client: str, member_id: str, network: str = "", dob: Optional[st
         raise HTTPException(status_code=422, detail=str(e))
     result.update({"client": key, "scrape_id": scrape["id"], "scraped_at": scrape["scraped_at"]})
     return result
+
+
+@app.get("/api/sabrina-client")
+def get_sabrina_client(id: str):
+    """For the panel: the client's name and whether Fill from portal is set up for it."""
+    return sabrina_client_info(id)
 
 
 @app.post("/api/scrapes/{scrape_id}/used")

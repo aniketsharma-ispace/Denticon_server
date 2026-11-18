@@ -23,7 +23,8 @@
 //
 // Messages (chrome.runtime.sendMessage({ type, ... })):
 //   SCRAPE_DONE       { carrier, data }                → { ok, scrape }
-//   IAP_GET_PREFILL   { member_id, dob, network }      → { ok, prefill }
+//   IAP_GET_PREFILL   { sabrina_client, member_id, dob, network } → { ok, prefill }
+//   IAP_GET_CLIENT    { sabrina_client }               → { ok, client: { id, name, ready } }
 //   IAP_MARK_USED     { scrape_id }                    → { ok }
 //   IAP_GET_SETTINGS  {}                               → { ok, settings, lastScrape }
 //   IAP_SET_SETTINGS  { settings }                     → { ok, settings }
@@ -36,7 +37,6 @@
 
   const DEFAULTS = {
     serverUrl: "http://10.30.10.67:8000",   // the shared server; change in the Sabrina panel's Settings
-    client: "smile_partners",
   };
 
   async function settings() {
@@ -104,12 +104,13 @@
       kept[carrier] = { data: msg.data, filename: fileName(carrier, msg.data), at: Date.now() };
       await chrome.storage.local.set({ iapScrapes: kept });
 
-      const s = await settings();
+      // No client here: the portal can't say whose patient this is, and the JSON
+      // is the same either way. The Fill Form decides (its Sabrina client id).
       let scrape;
       try {
         scrape = await call("/api/scrapes", {
           method: "POST",
-          body: JSON.stringify({ client: s.client, portal_data: msg.data }),
+          body: JSON.stringify({ portal_data: msg.data }),
         });
       } catch (e) {
         await notify(sender, `Scrape finished but was NOT sent to the server: ${e.message} ` +
@@ -126,10 +127,11 @@
     },
 
     async IAP_GET_PREFILL(msg) {
-      const s = await settings();
       const last = (await chrome.storage.local.get(["iapLastScrape"])).iapLastScrape;
       const q = new URLSearchParams({
-        client: s.client,
+        // Sabrina's client id on that Fill Form ("26" = Smile Partners): the
+        // server fills with that client's rules.
+        sabrina_client: msg.sabrina_client || "",
         member_id: msg.member_id || "",
         network: msg.network || "",
       });
@@ -139,6 +141,12 @@
       q.set("only_own", "true");
       const prefill = await call("/api/prefill?" + q.toString());
       return { prefill };
+    },
+
+    // The client's name for the panel, and whether it can be filled yet.
+    async IAP_GET_CLIENT(msg) {
+      const client = await call("/api/sabrina-client?" + new URLSearchParams({ id: msg.sabrina_client || "" }));
+      return { client };
     },
 
     async IAP_MARK_USED(msg) {

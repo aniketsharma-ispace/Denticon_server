@@ -278,22 +278,45 @@ api = TestClient(main.app)
 no_id = copy.deepcopy(EXPORT)
 for block in ("patient", "patient_information"):
     no_id[block]["member_id_or_ssn"] = ""
-saved = api.post("/api/scrapes", json={"client": "smile_partners", "portal_data": no_id})
+saved = api.post("/api/scrapes", json={"portal_data": no_id})
 check("scrape with only a DOB is kept", (saved.status_code, saved.json().get("dob")), (200, "02/03/1990"))
 sid2 = saved.json().get("id")
-ask = lambda **q: api.get("/api/prefill", params=dict(client="smile_partners", network="In",
-                                                       scrape_id=sid2, only_own="true", **q))
+ask = lambda **q: api.get("/api/prefill", params={"sabrina_client": "26", "network": "In",
+                                                   "scrape_id": sid2, "only_own": "true", **q})
 check("fills the form with the same DOB", ask(member_id="123456789", dob="02/03/1990").status_code, 200)
 check("refused for another DOB", ask(member_id="123456789", dob="05/05/1980").status_code, 409)
 check("blank member IDs are not a match", ask(member_id="", dob="05/05/1980").status_code, 409)
 check("Aetna with no pick asks for it (422)",
-      api.get("/api/prefill", params=dict(client="smile_partners", member_id="x", dob="02/03/1990",
+      api.get("/api/prefill", params=dict(sabrina_client="26", member_id="x", dob="02/03/1990",
                                           scrape_id=sid2, only_own="true")).status_code, 422)
 nothing = copy.deepcopy(no_id)
 for block in ("patient", "patient_information"):
     nothing[block]["date_of_birth"] = ""
 check("no member ID and no DOB is refused",
-      api.post("/api/scrapes", json={"client": "smile_partners", "portal_data": nothing}).status_code, 422)
+      api.post("/api/scrapes", json={"portal_data": nothing}).status_code, 422)
+
+print("── WHICH CLIENT: SABRINA'S selectedClient ──")
+filled = ask(member_id="123456789", dob="02/03/1990")
+check("Sabrina client 26 fills with Smile Partners' rules", filled.json().get("client"), "smile_partners")
+star = ask(member_id="123456789", dob="02/03/1990", sabrina_client="19")
+check("Star Dental (19): not set up yet, says so",
+      (star.status_code, "not set up for Star Dental" in star.json().get("detail", "")), (400, True))
+other = ask(member_id="123456789", dob="02/03/1990", sabrina_client="2")
+check("a Sabrina client we have no folder for (2) is refused",
+      (other.status_code, "not set up" in other.json().get("detail", "")), (400, True))
+check("no client at all is refused", ask(member_id="123456789", dob="02/03/1990", sabrina_client="").status_code, 400)
+check("Absolute Dental (2) named in the refusal", "Absolute Dental" in other.json().get("detail", ""), True)
+info = lambda cid: api.get("/api/sabrina-client", params={"id": cid}).json()
+check("panel: 26 → Smile Partners, ready",
+      (info("26")["name"], info("26")["ready"], info("26")["client"]), ("Smile Partners", True, "smile_partners"))
+check("panel: 19 → Star Dental, has a folder, not ready",
+      (info("19")["name"], info("19")["ready"], info("19")["client"]), ("Star Dental", False, "star_dental"))
+check("panel: 3 → Kidscare Dental, no folder",
+      (info("3")["name"], info("3")["ready"], info("3")["client"]), ("Kidscare Dental", False, None))
+check("panel: an id Sabrina hasn't told us about", (info("99")["known"], info("99")["ready"]), (False, False))
+check("every Sabrina client in CLIENTS has its id",
+      sorted(s.get("sabrina_client_id", "") for k, s in main.CLIENTS.items() if s["system"] == "Sabrina"),
+      ["11", "19", "26", "27"])
 
 print("── ENDPOINTS: FAMILY MEMBERS ON ONE MEMBER ID ──")
 # Delta, Cigna and MetLife often give a whole family the subscriber's member
