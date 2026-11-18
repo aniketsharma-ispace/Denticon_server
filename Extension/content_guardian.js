@@ -2030,10 +2030,11 @@
                     }
 
                     if (sweepState === "done" && !request.force && !cdtMissing().length) {
-                        // Already built for this patient: Crawl again just
-                        // downloads the same JSON again. With a code search
-                        // still missing, Crawl offers those searches again.
-                        downloadExport();
+                        // Already built for this patient: Crawl again hands the
+                        // same JSON to the server again, exactly as a fresh sweep
+                        // does. With a code search still missing, Crawl offers
+                        // those searches again.
+                        chrome.runtime.sendMessage({ type: "SCRAPE_DONE", carrier: "guardian", data: buildExport() });
                         sendResponse({ started: false, ready: true, status: sweepStatusText() });
                         return;
                     }

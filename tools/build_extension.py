@@ -46,7 +46,10 @@ GECKO_SETTINGS = {
         "id": "insurance-auditor-pro@ispace.com",
         "strict_min_version": "121.0",
         "update_url": "https://github.com/aniketsharma-ispace/insurance-auditor-pro-mozilla/releases/latest/download/updates.json",
-        "data_collection_permissions": {"required": ["none"]},
+        # 1.59 began sending finished scrapes to the Insurance Auditor server
+        # (scrape_delivery.js), so this is no longer "none": the data is the
+        # patient's dental benefits, name, DOB and member id.
+        "data_collection_permissions": {"required": ["healthInfo"]},
     }
 }
 

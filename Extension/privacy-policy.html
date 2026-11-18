@@ -65,14 +65,15 @@
         <li>Session storage is cleared automatically when the browser session ends or the portal tab is closed.</li>
         <li>Local storage holds the current audit so it can be assembled across pages. It is cleared by the Extension during an audit run, replaced when the next audit begins, and removed entirely when the Extension is uninstalled.</li>
         <li>Users may clear this data at any time by removing the Extension or clearing browser data for it.</li>
-        <li>No data is stored outside the user's browser and the files the user chooses to export.</li>
+        <li>Finished scrapes are sent to the Insurance Auditor server operated by the user's own organisation, on that organisation's network, so the Sabrina Fill Form can be completed from them. See Section 4.</li>
     </ul>
 
     <h2>4. Data Sharing &amp; Transmission</h2>
-    <p>The Extension sends network requests only to the insurance portals listed in Section 6, and only to the portal the user is actively working in. These requests carry the user's own existing signed-in session, and are the same requests the portal's own web interface makes. They are used to retrieve benefit details for the patient the user is already viewing.</p>
+    <p>The Extension sends network requests to the insurance portals listed in Section 6, and only to the portal the user is actively working in. These requests carry the user's own existing signed-in session, and are the same requests the portal's own web interface makes. They are used to retrieve benefit details for the patient the user is already viewing.</p>
+    <p>When a scrape finishes, the Extension also sends the benefit data it collected to the <strong>Insurance Auditor server</strong>, so that the Sabrina Fill Form can be completed from it. This server is operated by the user's own organisation and its address is configurable in the Extension's Sabrina panel (by default a machine on the organisation's own network). The data sent is the benefit information for the patient just looked up, including the patient's name, date of birth and member identifier. It is not sent anywhere else.</p>
     <p>The Extension does <strong>NOT</strong>:</p>
     <ul>
-        <li>Send any data to the developer, to any analytics service, or to any server operated by or on behalf of the developer.</li>
+        <li>Send any data to any analytics service, or to any server other than the insurance portals in Section 6 and the user's own organisation's Insurance Auditor server described above.</li>
         <li>Sell, rent, or transfer user data to any third party.</li>
         <li>Use data for advertising, profiling, or any purpose unrelated to the Extension's insurance auditing function.</li>
         <li>Use data to determine creditworthiness or for lending purposes.</li>

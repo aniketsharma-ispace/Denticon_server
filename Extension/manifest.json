@@ -272,7 +272,7 @@
             "update_url": "https://github.com/aniketsharma-ispace/insurance-auditor-pro-mozilla/releases/latest/download/updates.json",
             "data_collection_permissions": {
                 "required": [
-                    "none"
+                    "healthInfo"
                 ]
             }
         }
