@@ -327,7 +327,7 @@ function _clickByText(text) {
 }
 
 function _finishCrawl(payload) {
-    downloadAetnaJSON(payload);
+    chrome.runtime.sendMessage({ type: "SCRAPE_DONE", carrier: "aetna", data: payload });
     _clearCrawlState();
 }
 

@@ -492,7 +492,7 @@
                 });
             });
 
-            downloadJson(data);
+            chrome.runtime.sendMessage({ type: "SCRAPE_DONE", carrier: "delta_toolkit", data: buildWorkbookOnlyOutput(data) });
         }
     }
 

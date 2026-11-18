@@ -1284,7 +1284,7 @@
                 context.delta_dental_data = auditData;
                 chrome.storage.local.set({ "audit_context": context }, () => {
                     console.log("✓ Delta Dental complete audit data stored successfully");
-                    triggerDeltaDentalDownload(auditData);
+                    chrome.runtime.sendMessage({ type: "SCRAPE_DONE", carrier: "delta_ins", data: auditData });
                 });
             });
 

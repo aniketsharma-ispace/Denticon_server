@@ -1552,7 +1552,7 @@ async function runUcciAuditInner() {
     context.ucci_data = auditData;
     chrome.storage.local.set({ audit_context: context }, () => {
       console.log("UCCI data stored");
-      triggerUcciDownload(auditData);
+      chrome.runtime.sendMessage({ type: "SCRAPE_DONE", carrier: "ucci", data: auditData });
       const secs = Math.round(auditData.scrape_duration_ms / 1000);
       const errs = Object.values(auditData.procedures).filter((p) => p.error).length;
       showUcciStatus(

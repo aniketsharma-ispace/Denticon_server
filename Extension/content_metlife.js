@@ -1123,10 +1123,10 @@
                 await new Promise(resolve => chrome.storage.local.set({ audit_context: {} }, resolve));
                 const res = await crawlBenefitCoverage("");
                 const plan = await crawlPlanOverview(false);
-                downloadAuditJSON();
+                chrome.storage.local.get("audit_context", r => chrome.runtime.sendMessage({ type: "SCRAPE_DONE", carrier: "metlife", data: r.audit_context || {} }));
                 // Plan Overview's own message only when it has a warning.
                 const planNote = plan.status.includes("[!]") ? " " + plan.status : "";
-                sendResponse({ status: res.status + planNote + " JSON downloaded." });
+                sendResponse({ status: res.status + planNote + " Sent to the server." });
             });
             return true;
         }

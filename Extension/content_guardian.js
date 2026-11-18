@@ -2017,7 +2017,7 @@
             sweepProgress = { completed: ALL_CODES.filter(isRecordDone).length, total: ALL_CODES.length };
             failureReason = null;
             await persist();
-            downloadExport();
+            chrome.runtime.sendMessage({ type: "SCRAPE_DONE", carrier: "guardian", data: buildExport() });
             broadcastStatus();
         }
 

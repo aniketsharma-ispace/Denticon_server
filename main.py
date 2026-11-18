@@ -34,6 +34,7 @@ import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 from shared.pdf_extractor import parse_insurance_pdf
+from shared import scrape_store
 from Appointment_Scheduler.appointment_processor import (
     process_appointments,
     generate_day_start_reports,
@@ -112,7 +113,10 @@ CLIENTS = {
         "system":   "Sabrina",
         "package":  "smile_partners",
         "hint":     "Portal export + Sabrina breakdown PDF",
-        "supports": {"sabrina_audit", "parse_pdf"},
+        # sabrina_prefill: its Fill Form's field names are mapped in
+        # smile_partners/sabrina/prefill.py. Other Sabrina clients get it once
+        # their own form is mapped.
+        "supports": {"sabrina_audit", "parse_pdf", "sabrina_prefill"},
     },
     "star_dental": {
         "label":    "Star Dental",
@@ -143,6 +147,7 @@ _CAPABILITY_NAMES = {
     "notes":         "patient notes",
     "new_plan":      "the Insurance Plan Breakdown PDF",
     "sabrina_audit": "the Sabrina sheet audit",
+    "sabrina_prefill": "Sabrina Fill Form prefill",
     "parse_pdf":     "portal PDF parsing",
 }
 
@@ -407,6 +412,136 @@ async def sabrina_compare_endpoint(
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Sabrina comparison failed: {e}")
+
+
+# ── Sabrina Fill Form prefill ─────────────────────────────────────────────────
+#
+# The extension posts each portal scrape here instead of downloading it
+# (/api/scrapes). On the patient's Fill Form, once the user picks IN OR OON, it
+# asks for that member's scrape (/api/prefill), fills the form, and marks the
+# scrape used. The values come from the same portal readers as the audit
+# (`<client>/sabrina/prefill.py`), so every audit rule applies to the fill too.
+
+class ScrapeRequest(BaseModel):
+    client:      str
+    portal_data: dict
+
+class PrefillRequest(BaseModel):
+    client:      str
+    network:     str = ""       # "In" / "Out" as picked on the Fill Form; "" for a Cigna scrape
+    portal_data: dict
+
+
+def _prefill_module(client):
+    """(key, the client's prefill module), refusing a client without one."""
+    key, spec = resolve_client(client, "sabrina_prefill")
+    return key, client_module(spec, "sabrina.prefill")
+
+
+@app.post("/api/scrapes")
+def save_scrape(req: ScrapeRequest):
+    """
+    Store a portal scrape until the user opens that patient's Fill Form.
+
+    Refused (422) for a portal with no Sabrina rules, or an export that states
+    neither the member ID nor the patient's DOB the Fill Form is matched on.
+    Some portals give no usable member ID (Guardian has none, the Toolkit not
+    always, MetLife masks it); those are matched on the DOB.
+    """
+    key, prefill = _prefill_module(req.client)
+    try:
+        carrier, _values, _spec = prefill.portal_values(req.portal_data, "In")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    member_id, dob = prefill.member_key(req.portal_data)
+    if not member_id and not dob:
+        raise HTTPException(
+            status_code=422,
+            detail="This portal export states neither a member ID nor a DOB, so it cannot be "
+                   "matched to a Fill Form.")
+    scrape_id = scrape_store.save(key, carrier, member_id, dob, req.portal_data)
+    return {"id": scrape_id, "client": key, "carrier": carrier,
+            "member_id": scrape_store.norm_member(member_id), "dob": dob}
+
+
+@app.get("/api/prefill")
+def get_prefill(client: str, member_id: str, network: str = "", dob: Optional[str] = None,
+                scrape_id: Optional[int] = None, only_own: bool = False):
+    """
+    What to fill on the Fill Form for this member and network.
+
+    `member_id` and `dob` are read off the Fill Form (MEMBER#, PATIENT DOB);
+    `network` is the user's IN OR OON pick; it may be empty for a portal whose
+    scrape states its own network (Cigna). `scrape_id` is the scrape this
+    user's extension made last: used first, when it is for the same member, so
+    a portal that words the member ID differently still finds it.
+
+    `only_own` (what the extension sends): fill from that scrape or not at all —
+    never from an older scrape of the same member left on the server, which
+    could be hours old and was not what the user just looked at.
+
+    404 when there is nothing to fill from, 409 when the user's own last scrape
+    is for someone else, 422 when the network is missing or the scrape cannot
+    be read.
+    """
+    key, prefill = _prefill_module(client)
+    scrape = None
+    own = scrape_store.get_pending(key, scrape_id) if scrape_id else None
+    if only_own and not own:
+        raise HTTPException(
+            status_code=404,
+            detail="No portal scrape from this browser to fill from. Run the extension "
+                   "on the carrier portal for this patient first.")
+    if own:
+        # A portal with no member ID (Guardian, some Toolkit and MetLife
+        # exports) is matched on the DOB alone: two blanks are not a match.
+        same_member = bool(own["member_id"]) and own["member_id"] == scrape_store.norm_member(member_id)
+        form_dob = scrape_store.norm_dob(dob)
+        same_dob = bool(form_dob and own["dob"] and own["dob"] == form_dob)
+        if same_member or same_dob:
+            # A member ID worded differently (SSN vs W-number) is allowed when
+            # the DOB agrees; the extension still shows the patient check.
+            scrape = own
+    if not scrape and not only_own:
+        scrape = scrape_store.find_pending(key, member_id, dob)
+    if not scrape and own:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Your last portal scrape is for member {own['member_id']} "
+                   f"(DOB {own['dob'] or 'not stated'}), not this patient. Scrape this "
+                   f"patient on the portal first.")
+    if not scrape:
+        raise HTTPException(
+            status_code=404,
+            detail="No portal data for this member yet. Run the extension on the "
+                   "carrier portal for this patient first.")
+    try:
+        result = prefill.build_prefill(scrape["data"], network)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    result.update({"client": key, "scrape_id": scrape["id"], "scraped_at": scrape["scraped_at"]})
+    return result
+
+
+@app.post("/api/scrapes/{scrape_id}/used")
+def mark_scrape_used(scrape_id: int):
+    """Mark a scrape filled, so a later appointment never reuses it."""
+    if not scrape_store.mark_used(scrape_id):
+        raise HTTPException(status_code=404, detail=f"No scrape {scrape_id}")
+    return {"id": scrape_id, "status": "used"}
+
+
+@app.post("/api/sabrina-prefill")
+def sabrina_prefill(req: PrefillRequest):
+    """
+    The same prefill for a portal export sent directly, without storing it.
+    For testing a carrier's mapping from /docs.
+    """
+    _key, prefill = _prefill_module(req.client)
+    try:
+        return prefill.build_prefill(req.portal_data, req.network)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 @app.get("/api/health")

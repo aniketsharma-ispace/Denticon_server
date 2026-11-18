@@ -39,6 +39,28 @@ from shared.portals.aetna import (
 from .vocabulary import _norm_network
 
 
+# Aetna standard values — answers that are the same on every Aetna plan and
+# that the portal does not state per patient (business team, 11/2026). Seat
+# Date for major services is already set by `portals/aetna.py`.
+_AETNA_STANDARD_ANSWERS = {
+    "d4341_quads": "4",                      # D4341 Scaling Root Planing — number of quads
+}
+
+
+def _aetna_standard_answer(portal_raw: dict, key: str) -> str | None:
+    """The Aetna standard answer for `key`, or None when the export isn't Aetna's."""
+    if _aetna_export(portal_raw) is None:
+        return None
+    return _AETNA_STANDARD_ANSWERS.get(key)
+
+
+def _aetna_code_not_covered(portal_raw: dict, code: str) -> bool:
+    """Whether the page lists `code` and marks it Not Covered."""
+    row = _aetna_row(portal_raw, code)
+    return bool(row) and "not covered" in " ".join(
+        str(row.get(k) or "") for k in ("message", "percentage_copay")).lower()
+
+
 # The tables whose network label decides OON Benefits. A Service Level
 # Benefits table labelled Out of Network counts even when every code in it
 # is Not Covered.

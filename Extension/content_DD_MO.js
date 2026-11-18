@@ -299,7 +299,7 @@
                     });
                 });
             });
-            downloadJson(data);
+            chrome.runtime.sendMessage({ type: "SCRAPE_DONE", carrier: "delta_mo", data: data });
         }
     }
 

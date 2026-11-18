@@ -126,9 +126,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         btnDownload.textContent = 'Download Stored DD MO JSON';
     } else if (isGuardian) {
         appTitle.textContent = 'Guardian Scraper';
-        btnCrawl.textContent = 'Crawl & Download';
-        btnDownload.style.display = 'none';
-        if (divider) divider.style.display = 'none';
+        btnCrawl.textContent = 'Crawl';
         btnCrawl.id = 'btnGuardianCrawl';
     } else if (isAetna) {
         appTitle.textContent = 'ClaimConnect Scraper';
@@ -228,7 +226,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         } else {
             btnCrawl.textContent = Number(payload.completed || 0) > 0
                 ? 'Retry Crawl'
-                : 'Crawl & Download';
+                : 'Crawl';
         }
     }
 
@@ -496,7 +494,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
+    // Payers that hand their scrape to scrape_delivery.js (sent to the server,
+    // not downloaded): the Download button saves that payer's last scrape.
+    const deliveryCarrier = isAetna ? 'aetna' : isCigna ? 'cigna' : isGuardian ? 'guardian'
+        : isMetLife ? 'metlife' : isUCCI ? 'ucci' : isDeltaINS ? 'delta_ins'
+        : isDeltaMO ? 'delta_mo' : isDeltaToolkit ? 'delta_toolkit' : null;
+    const delivered = deliveryCarrier
+        ? ((await chrome.storage.local.get('iapScrapes')).iapScrapes || {})[deliveryCarrier]
+        : null;
+    if (deliveryCarrier) btnDownload.textContent = 'Download JSON';
+
     btnDownload.onclick = () => {
+        if (deliveryCarrier) {
+            if (!delivered?.data) {
+                status.textContent = 'No scrape yet for this portal. Click Crawl first; the JSON can be downloaded here once it finishes.';
+                return;
+            }
+            downloadObject(delivered.data, delivered.filename || `${deliveryCarrier}_${Date.now()}.json`, false);
+            return;
+        }
+
         if (isAetna) {
             chrome.scripting.executeScript({
                 target: { tabId: tab.id },
