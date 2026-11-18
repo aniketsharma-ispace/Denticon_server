@@ -1113,13 +1113,7 @@
         return result;
     }
 
-    function triggerDeltaDentalDownload(auditData, iapDirect) {
-        // Sabrina prefill: send to the server; this download becomes the
-        // note's Download JSON button (or the fallback if it can't be sent).
-        if (!iapDirect && typeof window.iapDeliverScrape === "function") {
-            window.iapDeliverScrape(auditData, d => triggerDeltaDentalDownload(d, true));
-            return;
-        }
+    function triggerDeltaDentalDownload(auditData) {
         const sanitize = (s) => (s || "").trim().replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "").toLowerCase();
         const patient = sanitize(
             auditData.primary_patient?.name ||
@@ -1290,7 +1284,7 @@
                 context.delta_dental_data = auditData;
                 chrome.storage.local.set({ "audit_context": context }, () => {
                     console.log("✓ Delta Dental complete audit data stored successfully");
-                    triggerDeltaDentalDownload(auditData);
+                    chrome.runtime.sendMessage({ type: "SCRAPE_DONE", carrier: "delta_ins", data: auditData });
                 });
             });
 

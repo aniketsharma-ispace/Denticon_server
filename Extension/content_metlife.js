@@ -1089,15 +1089,9 @@
     // DOWNLOAD HELPER
     // ══════════════════════════════════════════════════════════════════════════
 
-    function downloadAuditJSON(iapDirect, given) {
+    function downloadAuditJSON() {
         chrome.storage.local.get("audit_context", (res) => {
-            const data = given || res.audit_context || {};
-            // Sabrina prefill: send to the server; this download becomes the
-            // note's Download JSON button (or the fallback if it can't be sent).
-            if (!iapDirect && typeof window.iapDeliverScrape === "function") {
-                window.iapDeliverScrape(data, d => downloadAuditJSON(true, d));
-                return;
-            }
+            const data = res.audit_context || {};
             const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
@@ -1129,10 +1123,10 @@
                 await new Promise(resolve => chrome.storage.local.set({ audit_context: {} }, resolve));
                 const res = await crawlBenefitCoverage("");
                 const plan = await crawlPlanOverview(false);
-                downloadAuditJSON();
+                chrome.storage.local.get("audit_context", r => chrome.runtime.sendMessage({ type: "SCRAPE_DONE", carrier: "metlife", data: r.audit_context || {} }));
                 // Plan Overview's own message only when it has a warning.
                 const planNote = plan.status.includes("[!]") ? " " + plan.status : "";
-                sendResponse({ status: res.status + planNote + " JSON downloaded." });
+                sendResponse({ status: res.status + planNote + " Sent to the server." });
             });
             return true;
         }

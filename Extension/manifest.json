@@ -46,7 +46,7 @@
     "background": {
         "service_worker": "content_cigna.js",
         "scripts": [
-            "iap_sabrina_bridge.js",
+            "scrape_delivery.js",
             "content_cigna.js"
         ]
     },
@@ -76,7 +76,6 @@
                 "https://dentalprovider.metlife.com/*"
             ],
             "js": [
-                "iap_scrape_delivery.js",
                 "content_metlife.js"
             ],
             "all_frames": true,
@@ -98,7 +97,6 @@
                 "https://cignaforhcp.cigna.com/*"
             ],
             "js": [
-                "iap_scrape_delivery.js",
                 "content_cigna.js"
             ],
             "run_at": "document_start",
@@ -120,7 +118,6 @@
                 "*://www.guardiananytime.com/*"
             ],
             "js": [
-                "iap_scrape_delivery.js",
                 "content_guardian.js"
             ],
             "all_frames": true,
@@ -143,7 +140,6 @@
             ],
             "js": [
                 "toolkit_requirements.generated.js",
-                "iap_scrape_delivery.js",
                 "content_DD_INS.js"
             ],
             "all_frames": true
@@ -164,7 +160,6 @@
                 "https://claimconnect.dentalxchange.com/*"
             ],
             "js": [
-                "iap_scrape_delivery.js",
                 "content_aetna.js"
             ],
             "all_frames": true
@@ -195,7 +190,6 @@
                 "https://www.unitedconcordia.com/*"
             ],
             "js": [
-                "iap_scrape_delivery.js",
                 "content_ucci.js"
             ],
             "all_frames": true
@@ -245,7 +239,6 @@
             ],
             "js": [
                 "toolkit_requirements.generated.js",
-                "iap_scrape_delivery.js",
                 "content_DD_Toolkit.js"
             ],
             "run_at": "document_start",
@@ -266,7 +259,6 @@
                 "https://providers.deltadentalmo.com/*"
             ],
             "js": [
-                "iap_scrape_delivery.js",
                 "content_DD_MO.js"
             ],
             "run_at": "document_start",

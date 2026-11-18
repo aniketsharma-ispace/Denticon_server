@@ -327,13 +327,7 @@ function _clickByText(text) {
 }
 
 function _finishCrawl(payload) {
-    // Sabrina prefill: sent to the server for the Fill Form, or downloaded as
-    // before when the server is off or the extension is set to download.
-    if (typeof window.iapDeliverScrape === "function") {
-        window.iapDeliverScrape(payload, downloadAetnaJSON);
-    } else {
-        downloadAetnaJSON(payload);
-    }
+    chrome.runtime.sendMessage({ type: "SCRAPE_DONE", carrier: "aetna", data: payload });
     _clearCrawlState();
 }
 
@@ -917,4 +911,4 @@ setTimeout(function() {
             window.__aetnaCrawlBusy = false;
         });
     }
-}, 500);
+}, 500);

@@ -454,4 +454,4 @@ def _aetna_field_override(field: dict, value, portal_raw: dict, sab_raw=None):
     if field.get("kind") == "money":
         if value is None or str(value).strip().lower() in _BLANK_AMOUNTS:
             return "0"
-    return value
+    return value

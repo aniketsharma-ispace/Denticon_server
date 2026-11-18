@@ -523,4 +523,4 @@ def _portal_value_from_spec(field: dict, bd: dict, portal_raw: dict, sab_raw=Non
     if isinstance(src, str) and src in _DERIVED:
         return _DERIVED[src](bd, portal_raw, sab_raw)
     val = bd.get(src) if isinstance(src, str) else None
-    return None if _blank(val) else str(val)
+    return None if _blank(val) else str(val)

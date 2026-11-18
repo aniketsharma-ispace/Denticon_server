@@ -487,7 +487,7 @@
                 });
             });
 
-            downloadJson(data);
+            chrome.runtime.sendMessage({ type: "SCRAPE_DONE", carrier: "delta_toolkit", data: buildWorkbookOnlyOutput(data) });
         }
     }
 
@@ -6659,17 +6659,9 @@
         return `delta_toolkit_${nameSlug}_${date}.json`;
     }
 
-    function downloadJson(data, iapDirect) {
+    function downloadJson(data) {
         if (!data || typeof data !== "object") throw new Error("Cannot download an empty extraction result.");
         const cleanData = buildWorkbookOnlyOutput(data);
-        // Sabrina prefill: send the cleaned export (the same object the file
-        // holds) to the server; this download becomes the note's Download JSON
-        // button (or the fallback). Only the ISOLATED world has the sender, so
-        // the MAIN world's fallback call keeps downloading.
-        if (!iapDirect && typeof window.iapDeliverScrape === "function") {
-            window.iapDeliverScrape(cleanData, () => downloadJson(data, true));
-            return;
-        }
         const filename = toolkitDownloadFilename(data);
         const blob = new Blob([JSON.stringify(cleanData, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);

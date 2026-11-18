@@ -3,11 +3,11 @@
 //
 // On Sabrina's Fill Form this adds a small panel. The user picks IN OR OON,
 // clicks Fill from portal, and the form is filled from the portal scrape the
-// extension sent to the server (iap_scrape_delivery.js). Nothing is saved:
+// extension sent to the server (scrape_delivery.js). Nothing is saved:
 // the user reviews and clicks Save / Submit as always, which marks the scrape
 // used so a later appointment never picks it up.
 //
-// All server calls go through the background (iap_sabrina_bridge.js).
+// All server calls go through the background (scrape_delivery.js).
 // ============================================================================
 
 (function () {
@@ -386,8 +386,6 @@
             <div style="display:grid;gap:6px;margin-top:6px">
               <span class="muted">Server</span>
               <input type="text" id="server" spellcheck="false">
-              <label class="chk"><input type="checkbox" id="toServer"> Send portal scrapes to the server (for filling)</label>
-              <label class="chk"><input type="checkbox" id="alsoDownload"> Always download the JSON too (otherwise a Download JSON button is offered)</label>
               <button class="go" id="saveSettings" style="padding:5px">Save settings</button>
             </div>
           </details>
@@ -406,8 +404,6 @@
     $("saveSettings").onclick = async () => {
       const r = await send({ type: "IAP_SET_SETTINGS", settings: {
         serverUrl: $("server").value.trim(),
-        scrapeMode: $("toServer").checked ? "server" : "download",
-        alsoDownload: $("alsoDownload").checked,
       } });
       say(r.ok ? "Settings saved." : r.error, r.ok ? "ok" : "err");
     };
@@ -442,8 +438,6 @@
     const r = await send({ type: "IAP_GET_SETTINGS" });
     if (!r.ok) return say("The extension's background is not answering: " + r.error, "err");
     ui.$("server").value = r.settings.serverUrl || "";
-    ui.$("toServer").checked = r.settings.scrapeMode !== "download";
-    ui.$("alsoDownload").checked = r.settings.alsoDownload === true;
     showLastScrape(r.lastScrape || null);
   }
 

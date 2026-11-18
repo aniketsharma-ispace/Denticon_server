@@ -1761,15 +1761,9 @@
 
         // The JSON the Sabrina audit uploads, saved the way the other portal
         // scrapers save theirs.
-        function downloadExport(iapDirect, given) {
+        function downloadExport() {
             try {
-                const data = given || buildExport();
-                // Sabrina prefill: send to the server; this download becomes the
-                // note's Download JSON button (or the fallback if it can't be sent).
-                if (!iapDirect && typeof window.iapDeliverScrape === "function") {
-                    window.iapDeliverScrape(data, d => downloadExport(true, d));
-                    return;
-                }
+                const data = buildExport();
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement("a");
@@ -2023,7 +2017,7 @@
             sweepProgress = { completed: ALL_CODES.filter(isRecordDone).length, total: ALL_CODES.length };
             failureReason = null;
             await persist();
-            downloadExport();
+            chrome.runtime.sendMessage({ type: "SCRAPE_DONE", carrier: "guardian", data: buildExport() });
             broadcastStatus();
         }
 

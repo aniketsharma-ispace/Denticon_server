@@ -299,7 +299,7 @@
                     });
                 });
             });
-            downloadJson(data);
+            chrome.runtime.sendMessage({ type: "SCRAPE_DONE", carrier: "delta_mo", data: data });
         }
     }
 
@@ -1214,15 +1214,8 @@
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    function downloadJson(data, iapDirect) {
+    function downloadJson(data) {
         if (!data || typeof data !== "object") throw new Error("Cannot download an empty extraction result.");
-        // Sabrina prefill: send to the server; this download becomes the note's
-        // Download JSON button (or the fallback if it can't be sent). Only the
-        // ISOLATED world has the sender, so the MAIN world keeps downloading.
-        if (!iapDirect && typeof window.iapDeliverScrape === "function") {
-            window.iapDeliverScrape(data, d => downloadJson(d, true));
-            return;
-        }
         const patient = String(data?.member_details?.patient_name || "patient").replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "patient";
         const date = new Date().toISOString().slice(0, 10);
         const filename = `delta_mo_${patient}_${date}.json`;
