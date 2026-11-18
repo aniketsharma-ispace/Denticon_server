@@ -1671,7 +1671,9 @@ def _normalize_delta_toolkit_portal(raw: dict[str, Any], network: str | None = N
         # [11/09] A plan whose network list names a non-participating network
         # pays out of network, whatever the notes say (Lisa Rawlinson: "MN
         # Non-NPF Non Par Dentist", with no non-participating note).
-        re.search(r"\bnon[\s-]?par(?:ticipating)?\b", _text(name), re.IGNORECASE)
+        # [11/18] "Non-PPO Dentist" is that network on Medicare Advantage PPO
+        # plans (Robert McDonald; its alternateName is "Nonparticipating Dentist").
+        re.search(r"\bnon[\s-]?(?:par(?:ticipating)?|ppo)\b", _text(name), re.IGNORECASE)
         for key in ("offered_by_plan", "available_in_output")
         for name in ((raw.get("networks") or {}).get(key) or [])
     )

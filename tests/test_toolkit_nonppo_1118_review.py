@@ -122,3 +122,39 @@ def test_premier_unchanged():
     assert got["names"] == {"PPO Dentist": False, "Premier Dentist": True, "Non-PPO Dentist": False,
                             "Nonparticipating Dentist": False, "Non-participating Dentist": False}
     assert got["buckets"] == [False, True]
+
+
+# ── Server side: "OON Benefits" from the plan's network list (Smile and Star) ──
+# A plan whose network list names a non-participating network pays out of
+# network (Smile 11/10, Star 11/09). "Non-PPO Dentist" is that network on
+# Medicare Advantage PPO plans, so it counts too.
+
+from smile_partners.portals import delta_toolkit as smile_toolkit  # noqa: E402
+from star_dental.portals import delta_toolkit as star_toolkit  # noqa: E402
+
+PORTALS = pytest.mark.parametrize("portal", [smile_toolkit, star_toolkit], ids=["smile", "star"])
+
+
+def _oon_stated(portal, networks, key="offered_by_plan"):
+    out = portal._normalize_delta_toolkit_portal({"networks": {key: networks}})
+    return out["_toolkit_meta"]["oon_stated"]
+
+
+@PORTALS
+@pytest.mark.parametrize("key", ["offered_by_plan", "available_in_output"])
+def test_non_ppo_network_states_oon_benefits(portal, key):
+    assert _oon_stated(portal, ["PPO Dentist", "Premier Dentist", "Non-PPO Dentist"], key) is True
+
+
+@PORTALS
+@pytest.mark.parametrize("name", ["Nonparticipating Dentist", "MN Non-NPF Non Par Dentist",
+                                  "Non-participating Dentist", "non ppo dentist"])
+def test_other_non_participating_names_still_state_oon(portal, name):
+    assert _oon_stated(portal, ["PPO Dentist", name]) is True
+
+
+@PORTALS
+@pytest.mark.parametrize("networks", [["PPO Dentist", "Premier Dentist"], ["PPO Dentist"],
+                                      ["MN Non-NPF Dentist"]])
+def test_in_network_lists_state_no_oon(portal, networks):
+    assert _oon_stated(portal, networks) is False
