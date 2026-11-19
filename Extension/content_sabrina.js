@@ -64,6 +64,13 @@
     { title: "INSURANCE DETAILS", probe: () => byName("insuranceDetails.network") },
     { title: "BENEFIT INFO",      probe: () => byName("benefitsInfo.yearlyMaxUsed") },
     { title: "SPECIALITIES",      probe: () => document.querySelector('[name$="_D0120_percentage"],[name$="_frequency"]') },
+    // Eligibility notes live here; nothing is filled in it, it is opened so
+    // the Details list can see whether the notes are written. Not every form
+    // has it, so a miss is not reported.
+    { title: "NOTE INFO",         optional: true,
+      probe: () => [...document.querySelectorAll("label, span, div, p, h4, h5, h6")].find(e =>
+        e.children.length <= 2 && !e.closest("#iap-sabrina-panel") &&
+        /^eligibility\s*notes?$/i.test((e.textContent || "").replace("*", "").trim())) },
   ];
   const visible = el => !!el && el.getClientRects().length > 0;
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -131,7 +138,7 @@
     for (const s of SECTIONS) {
       if (visible(s.probe())) continue;
       const targets = clickTargets(s.title);
-      if (!targets.length) { failed.push(s.title); continue; }
+      if (!targets.length) { if (!s.optional) failed.push(s.title); continue; }
       targets[0].scrollIntoView({ block: "center" });
       const order = targets.map((el, i) => i);
       if (workedAt < targets.length) order.unshift(...order.splice(workedAt, 1));
@@ -141,7 +148,8 @@
         ok = await waitFor(() => visible(s.probe()), 1200);
         if (ok) { workedAt = i; break; }
       }
-      (ok ? opened : failed).push(s.title);
+      if (ok) opened.push(s.title);
+      else if (!s.optional) failed.push(s.title);
     }
     return { opened, failed };
   }
@@ -216,7 +224,16 @@
     }
     return undefined;
   };
-  const isEmpty = el => !el.value || el.value === "--Select--";
+  // Empty: no value, or a dropdown still on its "--Select--" line, whatever
+  // value Sabrina gives that line ("", "0", "-1"…).
+  const isEmpty = el => {
+    if (!el.value || el.value === "--Select--") return true;
+    if (el.tagName === "SELECT") {
+      const opt = el.options[el.selectedIndex];
+      return !opt || /^[\s-]*select[\s-]*$/i.test(opt.text);
+    }
+    return false;
+  };
 
   // What this panel wrote, per field, so switching In ↔ Out may overwrite our
   // own values but never one the user (or the PMS) entered.
@@ -272,7 +289,8 @@
     if (el.disabled) return log.push({ status: "read-only", label, value: "ticked" });
     if (el.checked) return log.push({ status: "already same", label, value: "ticked" });
     el.click();
-    log.push({ status: el.checked ? "filled" : "not ticked", label, value: "ticked" });
+    // Sabrina ticks a moment after the click: the Details list looks again (el).
+    log.push({ status: el.checked ? "filled" : "not ticked", label, value: "ticked", el });
   }
 
   // ── waiting period rows (Period · Months/Years · Applies To) ─────────────
@@ -510,8 +528,134 @@
     m.className = "msg" + (kind ? " " + kind : "");
   }
 
+  // ── what is still blank after a fill ──────────────────────────────────────
+  // BPO feedback (11/2026): "Details (0 to check)" while COB, Relation, the
+  // C questions… were still empty. Every visible, editable field left blank
+  // is listed, by the label the operator sees on the form.
+  const COLUMN_NAMES = { frequency: "Frequency", percentage: "Percentage", history: "History",
+                         ageLimit: "Age Limit", quads: "Quads", amount: "Amount", covered: "" };
+  const words = s => {
+    const t = String(s).replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[._]+/g, " ").trim();
+    return t.charAt(0).toUpperCase() + t.slice(1);
+  };
+
+  // Never listed as blank (BPO, 11/2026): not the verifier's job on this form.
+  const NOT_CHECKED = new Set(["demographic.providerNpi", "benefitsInfo.expirationDate"]);
+  // Labels that don't say where the field is.
+  const LABEL_FOR = { "noteInfo.eligibilityResult": "Eligibility (NOTE INFO section, bottom of the form)" };
+
+  function labelOf(el) {
+    if (LABEL_FOR[el.name]) return LABEL_FOR[el.name];
+    const grid = el.name.match(/^[0-9a-f-]{20,}_(.+)_([A-Za-z]+)$/i);   // <GUID>_<CODE>_<column>
+    if (grid) {
+      // The row's own label (first line of the row: "D5995 …", "Does Missing Tooth Clause Apply?").
+      let row = el.parentElement, rowText = "";
+      for (let i = 0; i < 6 && row; i++, row = row.parentElement) {
+        const first = (row.innerText || "").split("\n").map(t => t.trim()).find(Boolean) || "";
+        if (first && !/^--select--$/i.test(first) && row.querySelectorAll("input,select").length <= 8) {
+          rowText = first;
+          break;
+        }
+      }
+      const col = COLUMN_NAMES[grid[2]] ?? words(grid[2]);
+      return [rowText || words(grid[1]), col].filter(Boolean).join(" · ");
+    }
+    const byFor = el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+    if (byFor) return byFor.textContent.replace("*", "").trim();
+    const wrap = el.closest("label");
+    if (wrap && wrap.textContent.trim()) return wrap.textContent.replace("*", "").trim();
+    // The field's own box: the closest container holding this control only.
+    let up = el.parentElement;
+    for (let i = 0; i < 4 && up; i++, up = up.parentElement) {
+      if (up.querySelectorAll("input,select,textarea").length > 1) break;
+      const lab = up.querySelector("label");
+      if (lab && lab.textContent.trim()) return lab.textContent.replace("*", "").trim();
+    }
+    return words(el.name.split(".").pop());
+  }
+
+  function stillBlank() {
+    const seen = new Set();
+    return [...document.querySelectorAll("input[name], select[name], textarea[name]")]
+      .filter(el => !el.closest("#iap-sabrina-panel") && el.type !== "hidden" && el.type !== "checkbox"
+                    && el.type !== "radio" && el.type !== "button" && el.type !== "submit"
+                    && !el.disabled && !el.readOnly && el.offsetParent !== null && isEmpty(el)
+                    && !NOT_CHECKED.has(el.name))
+      .filter(el => !seen.has(el.name) && seen.add(el.name));
+  }
+
+  // What the portal suggests for a field the panel doesn't fill itself
+  // ("Pick yourself"), shown next to that field while it is blank.
+  const HINT_FIELDS = {
+    "PMS Payer Name": ["PMSPayerName"],
+    "INS E-Claim Payer ID": ["insuranceDetails.payerId"],
+    "Insurance address": ["insuranceDetails.street1"],
+  };
+  // The server's "left for the user" reminders, by the form fields they are
+  // about: shown only when that field can't be checked on this form (the
+  // "Still blank" list covers it otherwise). Waiting period (the form asks
+  // Yes/No itself) and Mode of verification (Online is ticked) are never shown.
+  const LEFT_FIELDS = {
+    "IN OR OON": ["insuranceDetails.network"],
+    "INS Fee Schedule": ["feeschedulename"],
+    "PMS Payer Name / INS E-Claim Payer ID": ["PMSPayerName", "insuranceDetails.payerId"],
+    "Eligibility": ["noteInfo.eligibilityResult"],
+    "Waiting period details (Period / Applies To)": null,
+    "Mode of verification": null,
+    "Eligibility notes": null,
+  };
+  // Boxes with no usable name (the notes editor): found by the label next to
+  // them and listed while empty, gone once written in. Not found: not listed.
+  const BLANK_BY_LABEL = { "Eligibility notes": /^eligibility\s*notes?\b/i };
+
+  function fieldByLabel(re) {
+    for (const lab of document.querySelectorAll("label, h4, h5, h6, span, div, p")) {
+      if (lab.closest("#iap-sabrina-panel") || lab.children.length > 2) continue;
+      const t = (lab.textContent || "").replace("*", "").trim();
+      if (t.length > 40 || !re.test(t)) continue;
+      // The label's own box: the closest container holding exactly one field.
+      let box = lab;
+      for (let i = 0; i < 5 && box; i++, box = box.parentElement) {
+        const fields = box.querySelectorAll("textarea, [contenteditable='true'], select, " +
+                                            "input:not([type=checkbox]):not([type=radio]):not([type=hidden])");
+        if (fields.length === 1 && !fields[0].closest("#iap-sabrina-panel")) return fields[0];
+        if (fields.length > 1) break;
+      }
+    }
+    return null;
+  }
+  const boxEmpty = f => f.isContentEditable ? !(f.innerText || "").trim() : isEmpty(f);
+
+  // The last fill's details, so the list can follow the operator's edits:
+  // a field filled by hand drops off "Still blank" (and the count) at once.
+  let lastDetails = null;
+  let detailsTimer = null;
+  const recheckDetails = () => {
+    if (!lastDetails) return;
+    clearTimeout(detailsTimer);
+    detailsTimer = setTimeout(() => {
+      const before = ui.$("dsum").textContent;
+      const blank = showDetails(lastDetails.log, lastDetails.prefill);
+      if (ui.$("dsum").textContent !== before) {
+        say(blank ? `${blank} field${blank === 1 ? " is" : "s are"} still blank (see Details). Review, then Save or Submit.`
+                  : "Nothing left blank. Review, then Save or Submit.", blank ? "warn" : "ok");
+      }
+    }, 300);
+  };
+  ["input", "change", "keyup"].forEach(type => document.addEventListener(type, e => {
+    if (e.target && e.target.closest && !e.target.closest("#iap-sabrina-panel")) recheckDetails();
+  }, true));
+
   function showDetails(log, prefill) {
-    const issues = log.filter(r => r.status !== "filled" && r.status !== "already same");
+    lastDetails = { log, prefill };
+    const issues = log.filter(r => r.status !== "filled" && r.status !== "already same"
+                                   && !(r.status === "not ticked" && r.el && r.el.checked));
+    const blankEls = stillBlank();
+    // A blank field the portal has a suggestion for: say it once, with the value.
+    const hintFor = new Map();
+    Object.entries(prefill.hints || {}).forEach(([label, value]) =>
+      (HINT_FIELDS[label] || []).forEach(name => hintFor.set(name, value)));
+    const blank = blankEls.map(el => labelOf(el) + (hintFor.has(el.name) ? ` (portal says: ${hintFor.get(el.name)})` : ""));
     const list = ui.$("list");
     list.innerHTML = "";
     issues.forEach(r => {
@@ -519,19 +663,46 @@
       li.textContent = `${r.label}: ${r.status} (${r.value})`;
       list.appendChild(li);
     });
-    const hints = Object.entries(prefill.hints || {});
-    hints.forEach(([k, v]) => {
+    // Click a "Still blank" line to go to that field.
+    const goTo = el => () => {
+      el.scrollIntoView({ block: "center" });
+      const was = el.style.outline;
+      el.style.outline = "3px solid #f79009";
+      try { el.focus({ preventScroll: true }); } catch (_) { /* not focusable */ }
+      setTimeout(() => { el.style.outline = was; }, 2500);
+    };
+    const blankLine = (label, el) => {
+      const li = document.createElement("li");
+      li.textContent = `Still blank: ${label}`;
+      li.title = "Click to go to this field";
+      li.style.cursor = "pointer";
+      li.onclick = goTo(el);
+      list.appendChild(li);
+    };
+    blank.forEach((label, i) => blankLine(label, blankEls[i]));
+    let extraBlank = 0;
+    Object.entries(BLANK_BY_LABEL).forEach(([label, re]) => {
+      const box = fieldByLabel(re);
+      if (box && boxEmpty(box)) { blankLine(label, box); extraBlank++; }
+    });
+    // Hints whose field isn't on this form at all: still worth showing.
+    Object.entries(prefill.hints || {}).forEach(([k, v]) => {
+      if ((HINT_FIELDS[k] || []).some(name => byName(name))) return;
       const li = document.createElement("li");
       li.textContent = `Pick yourself: ${k} = ${v}`;
       list.appendChild(li);
     });
     (prefill.left_for_user || []).forEach(t => {
+      const fields = LEFT_FIELDS[t];
+      if (fields === null) return;                                   // never shown
+      if (fields && fields.some(name => byName(name))) return;       // "Still blank" covers it
       const li = document.createElement("li");
       li.textContent = `Left for you: ${t}`;
       list.appendChild(li);
     });
-    ui.$("dsum").textContent = `Details (${issues.length} to check)`;
+    ui.$("dsum").textContent = `Details (${issues.length + blank.length + extraBlank} to check)`;
     ui.$("details").hidden = !list.children.length;
+    return blank.length + extraBlank;
   }
 
   // ── fill ──────────────────────────────────────────────────────────────────
@@ -624,6 +795,9 @@
     const log = applyPrefill(prefill, mode);
     // Plan-level rows: new plans only (an existing plan already has its own).
     if (mode !== "existing") await fillWaitingPeriods(prefill.waiting_periods, log);
+    // ELIGIBILITY "New Plan" is set last (below): Sabrina clears it while the
+    // rest of the form is being changed.
+    const wantEligibility = mode === "new" && isEmpty(byName("noteInfo.eligibilityResult") || { value: "x" });
     applied = prefill;
     appliedNetwork = network;
     const n = s => log.filter(x => x.status === s).length;
@@ -639,9 +813,67 @@
     if (sections.failed.length) {
       text += ` Could not open: ${sections.failed.join(", ")}. Open it and click Fill again.`;
     }
+    // Let the form settle (React re-renders, sections that grew) before
+    // listing what is still blank.
+    await new Promise(res => setTimeout(res, 400));
+    // Set last, together, and again while Sabrina clears them as the form settles.
+    const late = [relationFromForm(log), mode === "new" ? eligibilityNewPlan(log, wantEligibility) : null]
+      .filter(Boolean);
+    const kept = await setAllAndKeep(late);
+    late.forEach(item => log.push({ status: kept.has(item.name) ? "filled" : "not kept by Sabrina",
+                                    label: item.label, value: item.text }));
+    const blank = showDetails(log, prefill);
+    if (blank) text += ` ${blank} field${blank === 1 ? " is" : "s are"} still blank (see Details).`;
     text += " Review, then Save or Submit.";
-    say(text, n("no matching option") || !memberSame ? "warn" : "ok");
-    showDetails(log, prefill);
+    say(text, n("no matching option") || !memberSame || blank ? "warn" : "ok");
+  }
+
+  // Relation to Insured the portal didn't give: Self when this form's patient
+  // is the insured (same first name, last name and DOB on the form).
+  function relationFromForm(log) {
+    const rel = byName("demographic.relationToInsured");
+    if (!rel || !isEmpty(rel)) return null;
+    const text = f => (f ? (f.isContentEditable ? f.innerText : f.value) : "").trim().toLowerCase();
+    const pFirst = text(fieldByLabel(/^patient first name$/i)), pLast = text(fieldByLabel(/^patient last name$/i));
+    const iFirst = pageVal("demographic.insuredFirstName").trim().toLowerCase()
+                   || text(fieldByLabel(/^insured first name$/i));
+    const iLast = pageVal("demographic.insuredLastName").trim().toLowerCase()
+                  || text(fieldByLabel(/^insured last name$/i));
+    const pDob = normDate(pageVal("demographic.patientDOB")), iDob = normDate(pageVal("demographic.insuredDob"));
+    if (!pFirst || !pLast || !pDob || pFirst !== iFirst || pLast !== iLast || pDob !== iDob) return null;
+    const v = pickOption(rel, "Self");
+    if (v === undefined) return null;
+    return { name: "demographic.relationToInsured", value: v, text: "Self",
+             label: "Relation to Insured (patient is the insured)" };
+  }
+
+  // Set these dropdowns, wait, and set again any Sabrina cleared (it resets
+  // some boxes as other fields change, including each other) until all stay.
+  // Returns the names that stayed.
+  async function setAllAndKeep(items) {
+    const stayed = new Set();
+    for (let round = 0; round < 6 && items.length; round++) {
+      items.forEach(it => { const box = byName(it.name); if (box && box.value !== it.value) setVal(box, it.value); });
+      await new Promise(res => setTimeout(res, 700));
+      stayed.clear();
+      items.forEach(it => { const box = byName(it.name); if (box && box.value === it.value) stayed.add(it.name); });
+      if (stayed.size === items.length) break;
+    }
+    return stayed;
+  }
+
+  // Fill as New plan → ELIGIBILITY "New Plan" (BPO team, 11/2026), only when
+  // it was empty before the fill (an operator's pick stays). Sabrina clears
+  // this box when other fields change, so it is set after everything else and
+  // set again if it was cleared a moment later.
+  function eligibilityNewPlan(log, wanted) {
+    const label = "Eligibility";
+    const elig = byName("noteInfo.eligibilityResult");
+    if (!elig) { log.push({ status: "not on this form", label, value: "New Plan" }); return null; }
+    if (!wanted) { log.push({ status: "kept existing", label, value: "New Plan" }); return null; }
+    const v = pickOption(elig, "New Plan");
+    if (v === undefined) { log.push({ status: "no matching option", label, value: "New Plan" }); return null; }
+    return { name: "noteInfo.eligibilityResult", value: v, text: "New Plan", label };
   }
 
   // ── keep the panel in step with the form ──────────────────────────────────
@@ -664,7 +896,7 @@
     if (onForm !== wasOnForm) {
       wasOnForm = onForm;
       pendingFill = false;
-      applied = null;
+      applied = null; lastDetails = null;
       written = {};
       matchState = null;
       scrapeLoaded = false;
@@ -684,7 +916,7 @@
           say("No portal scrape from this browser yet. Run the extension on this patient's portal page first.", "warn");
         } else if (state === "other") {
           say(otherPatientText(), "err");
-          applied = null;
+          applied = null; lastDetails = null;
         } else if ((state === "match" || state === "unknown") && !applied) {
           say("Ready. Pick New or Existing below. Sections are opened and filled for you.");
         }
@@ -726,7 +958,7 @@
     if (!/^\s*(save|submit)\s*$/i.test(b.textContent || "")) return;
     const id = applied.scrape_id;
     send({ type: "IAP_MARK_USED", scrape_id: id }).then(() => {
-      applied = null;
+      applied = null; lastDetails = null;
       written = {};
       if (ui) { say("Saved. This portal scrape is now marked used."); loadSettings(); }
     });

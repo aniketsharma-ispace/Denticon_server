@@ -235,6 +235,9 @@ def _waiting_period(text) -> tuple[str, str] | None:
 #  FORM SIDE — writing a value the way the Fill Form takes it
 # ══════════════════════════════════════════════════════════════════════════════
 
+MONEY_CAP = 99999
+
+
 def _money(value) -> str | None:
     """
     '$1,250.00' → '1250', '$154.37' → '154.37'.
@@ -247,6 +250,9 @@ def _money(value) -> str | None:
     if not m:
         return None
     amount = round(float(m.group(0).replace(",", "")), 2)
+    # Portals write "no maximum" as 9999999.99; Sabrina takes 99999 at most
+    # (BPO feedback, 11/2026).
+    amount = min(amount, MONEY_CAP)
     return str(int(amount)) if amount.is_integer() else f"{amount:.2f}"
 
 
@@ -475,6 +481,7 @@ def build_prefill(portal_raw: dict, network: str) -> dict:
                              "level": "appointment" if column == "history" else "plan",
                              "source": key, "label": field["label"]})
 
+    grid += _no_history(spec, by_key, grid)
     fields += _met_flags(values)
     hooks = carrier_prefill(portal_raw)
     reader = _hook(hooks, "form_only")
@@ -499,6 +506,11 @@ def build_prefill(portal_raw: dict, network: str) -> dict:
 
     checks = {k: values[k] for k in _CHECK_KEYS if k in values}
     hints = {label: values[k] for k, label in _HINT_KEYS.items() if k in values}
+    # "Is there a waiting period" answered (Yes with rows, or No): nothing left.
+    wait_flag = next((f["value"] for f in fields if f["name"] == "insuranceDetails.waitingPeriodFlag"), None)
+    wait_done = bool(waiting) or str(wait_flag or "").strip().lower() == "no"
+    # The payer name / ID are offered as "Pick yourself" hints: not again below.
+    payer_hinted = "PMS Payer Name" in hints or "INS E-Claim Payer ID" in hints
 
     return {
         "carrier": carrier,
@@ -512,11 +524,34 @@ def build_prefill(portal_raw: dict, network: str) -> dict:
         "checks": checks,
         "hints": hints,
         "left_for_user": [
-            *([] if scraped else ["IN OR OON"]), "INS Fee Schedule", "PMS Payer Name / INS E-Claim Payer ID",
-            *([] if waiting else ["Waiting period details (Period / Applies To)"]),
+            *([] if scraped else ["IN OR OON"]), "INS Fee Schedule",
+            *([] if payer_hinted else ["PMS Payer Name / INS E-Claim Payer ID"]),
+            *([] if wait_done else ["Waiting period details (Period / Applies To)"]),
             "Eligibility", "Mode of verification", "Eligibility notes",
         ],
     }
+
+
+def _no_history(spec: list, by_key: dict, grid: list) -> list[dict]:
+    """
+    History "NH" for a code the portal answered but gave no service date for,
+    including a Not Covered code (BPO feedback, 11/2026: never leave history
+    blank then). A code the scrape has nothing for at all stays blank, so the
+    panel lists it to check.
+    """
+    answered = {g["code"] for g in grid if g["column"] != "history"}
+    has_history = {g["code"] for g in grid if g["column"] == "history"}
+    out = []
+    for field in spec:
+        target = _grid_target(field, by_key)
+        if not target or target[1] != "history":
+            continue
+        code = target[0]
+        if code in answered and code not in has_history:
+            has_history.add(code)
+            out.append({"code": code, "column": "history", "value": "NH", "level": "appointment",
+                        "source": field["key"], "label": field["label"]})
+    return out
 
 
 def _met_flags(values: dict) -> list[dict]:
