@@ -133,6 +133,17 @@ try:
 except ValueError:
     check("no network refused", "ValueError", "ValueError")
 
+print("── BPO FEEDBACK 11/19 ──")
+check("unlimited max 9999999.99 → 99999", _money("$9,999,999.99"), "99999")
+check("ordinary amounts untouched by the cap", _money("$2,500.00"), "2500")
+hist = {g["code"]: g["value"] for g in r_in["grid"] if g["column"] == "history"}
+check("Not Covered code with a history box → NH", hist.get("D1206", "no box"), "NH")
+check("answered code without a service date → NH",
+      [hist.get(c) for c in ("D0274",) if c in hist], ["NH"])
+check("a service date still wins over NH", hist.get("D0120"), "03/04/2026")
+check("payer name/ID offered as hints are not also 'left for you'",
+      ("PMS Payer Name" in r_in["hints"], "PMS Payer Name / INS E-Claim Payer ID" in r_in["left_for_user"]),
+      (True, False))
 print("── WAITING PERIODS (AETNA) ──")
 import copy as _copy                                                    # noqa: E402
 
