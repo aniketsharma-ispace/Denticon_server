@@ -3259,10 +3259,11 @@ check("and refused for jobs that need a Denticon export",
 check("the server runs its own package",
       _main.client_module(_main.CLIENTS["star_dental"], "sabrina").__name__,
       "star_dental.sabrina")
-# Delta Dental of Missouri and Guardian (2026-11-02) and United Concordia
-# (2026-11-05) were added for Smile Partners only.
-check("it audits the same portals as Smile Partners, but DD Missouri, Guardian and UCCI",
-      _ns.CARRIERS, {k: v for k, v in _CARRIERS.items() if k not in ("delta_mo", "guardian", "ucci")})
+# Delta Dental of Missouri, Guardian, United Concordia and DD RI are
+# Smile Partners-specific carriers.
+check("Star keeps shared portals while Smile Partners adds its own carriers",
+      _ns.CARRIERS, {k: v for k, v in _CARRIERS.items()
+                     if k not in ("delta_mo", "guardian", "ucci", "delta_dental_ri")})
 check("a carrier's rules come from its own folder, not Smile Partners'",
       (_ns.carrier_rules(_tk)[1].__name__, _sp.carrier_rules(_tk)[1].__name__),
       ("star_dental.sabrina.carriers.delta_toolkit",

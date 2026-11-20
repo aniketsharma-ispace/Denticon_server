@@ -32,6 +32,7 @@ CARRIERS = {
     "aetna":        "Aetna",
     "cigna":        "Cigna",
     "delta_dental": "Delta Dental",
+    "delta_dental_ri": "Delta Dental of Rhode Island",
     "delta_mo":     "Delta Dental of Missouri",
     "delta_toolkit": "Delta Dental Office Toolkit",
     "guardian":     "Guardian",
@@ -93,6 +94,10 @@ def detect_carrier(portal_raw) -> str | None:
     # told apart by its own marker before that is looked up.
     if portal_raw.get("_toolkit"):
         return "delta_toolkit"
+
+    from ...portals.delta_dental_ri import _is_ddri_portal
+    if _is_ddri_portal(portal_raw):
+        return "delta_dental_ri"
 
     translated = _SOURCE_INSURER.get(str(portal_raw.get("_source_insurer") or "").strip().lower())
     if translated:

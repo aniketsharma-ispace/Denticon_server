@@ -25,6 +25,7 @@ from .portals.delta_dental import (_apply_dd_output_rules, _is_dd_portal,
                                    _normalize_dd_portal)
 from .portals.delta_mo import (_apply_dd_mo_output_rules, _is_dd_mo_portal,
                                _normalize_dd_mo_portal)
+from .portals.delta_dental_ri import (_is_ddri_portal, _normalize_ddri_portal)
 from .portals.metlife import _extract_metlife_ortho_age_limit
 
 
@@ -725,6 +726,10 @@ def _extract(portal_raw, denticon_raw):
             _extract(normalized, denticon_raw),
             normalized,
         )
+
+    if _is_ddri_portal(portal_raw) and not portal_raw.get("_ddri"):
+        normalized = _normalize_ddri_portal(portal_raw)
+        return _extract(normalized, denticon_raw)
 
     carrier = (
         portal_raw.get('carrier_information') or
