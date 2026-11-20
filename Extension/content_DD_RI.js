@@ -802,17 +802,11 @@ function collectFinancials() {
   }
 
   financials.deductibles = Array.from(deductibleByCategory.values());
-  const familyDeductible = financials.deductibles.find((entry) =>
-    /family deductible/i.test(entry.category),
-  );
   const individualDeductible = financials.deductibles.find((entry) =>
     /individual deductible/i.test(entry.category),
   );
   const individualAmount = Number(
     String(individualDeductible?.total || "").replace(/[$,\s]/g, ""),
-  );
-  const familyAmount = Number(
-    String(familyDeductible?.total || "").replace(/[$,\s]/g, ""),
   );
   if (
     individualDeductible &&
@@ -822,33 +816,14 @@ function collectFinancials() {
     individualDeductible.used = "0.00";
     individualDeductible.remaining = "0.00";
   }
-  if (
-    Number.isFinite(individualAmount) &&
-    (!Number.isFinite(familyAmount) || familyAmount === 0)
-  ) {
-    // No family deductible amount stated by the portal: the family deductible is derived
-    // (3x individual), and its paid-to-date mirrors the individual's paid-to-date.
-    const individualUsed =
-      individualDeductible?.used && individualDeductible.used !== "N/A"
-        ? individualDeductible.used
-        : "0.00";
-    const derivedTotal = individualAmount * 3;
-    const usedAmount = Number(String(individualUsed).replace(/[$,\s]/g, ""));
-    const derivedFamilyDeductible = {
-      category: "Family Deductible",
-      total: derivedTotal.toFixed(2),
-      used: individualUsed,
-      remaining: Number.isFinite(usedAmount)
-        ? Math.max(derivedTotal - usedAmount, 0).toFixed(2)
-        : "N/A",
-    };
-    if (familyDeductible) {
-      Object.assign(familyDeductible, derivedFamilyDeductible);
-    } else {
-      financials.deductibles.push(derivedFamilyDeductible);
-    }
-  }
 
+  // Export only the deductibles the portal states. A family deductible the
+  // page does not show is NOT derived here: DCA's plan matcher reads this
+  // export too (compare_patients.py, FORMAT D) and would take a derived
+  // 3x-individual figure for a stated one -- the guess that was removed from
+  // the matcher on 2026-07-15 because it rejected correct plans. The Smile
+  // Partners DD RI audit applies its 3x rule itself, in
+  // smile_partners/sabrina/carriers/delta_dental_ri/portal.py.
   return financials;
 }
 
@@ -1696,6 +1671,16 @@ async function collectProcedures(requestedCodes = null) {
           }
 
           if (match) {
+            // A code with no verified benefit label keeps the age the closest
+            // benefit row states, as every export did before the code table
+            // existed. DCA's plan matcher reads age_limit (D8080 among others,
+            // which has no label); the Sabrina DD RI audit ignores it, since it
+            // reads a code's age only beside a frequency_source.
+            if (!codeMatch && data.age_limit === "N/A") {
+              data.age_limit = extractAgeLimit(
+                match.service.frequency_limitations,
+              );
+            }
             // Keep the procedure lookup authoritative for coverage and waiting period.
             if (!data.waiting_period || data.waiting_period === "N/A") {
               data.waiting_period = match.service.waiting_period || "N/A";
@@ -1720,20 +1705,10 @@ async function collectProcedures(requestedCodes = null) {
             console.debug("[DDRI] No benefit match", {
               procedure: data.description,
             });
-            // Covered but no frequency mapped / stated on the portal
-        if (
-          !data.frequency ||
-          ["N/A", "N/C", "NC"].includes(
-            String(data.frequency).trim().toUpperCase(),
-          )
-        ) {
-          data.frequency = "Frequency not available";
-          data.frequency_details = "Frequency not available";
-          data.frequency_source =
-            data.frequency_source ||
-            "Default: no frequency stated for this procedure";
-        }
           }
+          // A covered code with no verified label keeps frequency "N/A" (not
+          // on portal). It is deliberately not turned into "Frequency not
+          // available", which the audit reads as "No Frequency".
         }
 
         return data;

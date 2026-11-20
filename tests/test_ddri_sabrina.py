@@ -415,7 +415,9 @@ class DeltaDentalRiSabrinaTests(unittest.TestCase):
         self.assertEqual(procedure_value(portal, "D4346", "frequency_limit"), "1X36Months")
         self.assertEqual(procedure_value(portal, "D1510", "frequency_limit"), "1XLifetime")
         self.assertEqual(procedure_value(portal, "D1516", "frequency_limit"), "1X60Months")
-        self.assertIsNone(procedure_value(portal, "D6010", "frequency_limit"))
+        # The extension maps D6010 to this implant row (BENEFIT_SERVICES_BY_CODE),
+        # so the server's fallback must read the same row.
+        self.assertEqual(procedure_value(portal, "D6010", "frequency_limit"), "1X60Months")
         self.assertEqual(procedure_value(portal, "D2740", "frequency_limit"), "1X60Months")
         self.assertEqual(procedure_value(portal, "D9944", "frequency_limit"), "1X36Months")
         self.assertEqual(procedure_value(portal, "D9243", "frequency_limit"), "No Frequency")
@@ -537,7 +539,9 @@ class DeltaDentalRiSabrinaTests(unittest.TestCase):
             item for item in portal["financials"]["deductibles"]
             if item["category"] != "Family Deductible"
         ]
-        self.assertEqual(portal_value({"portal": "family_ded_paid"}, portal), "0")
+        # No family row: the derived family deductible's met mirrors the
+        # individual's ($20), as the extension's own derivation did.
+        self.assertEqual(portal_value({"portal": "family_ded_paid"}, portal), "20.00")
         self.assertEqual(portal_value({"portal": "_ortho_ded"}, portal), "0")
         self.assertEqual(portal_value({"portal": "_ortho_ded_met"}, portal), "0")
         self.assertEqual(portal_value({"portal": "_ortho_age"}, portal), "99")
@@ -551,7 +555,7 @@ class DeltaDentalRiSabrinaTests(unittest.TestCase):
             "used": "$0.00",
         })
         self.assertEqual(portal_value({"portal": "family_ded"}, portal), "150.00")
-        self.assertEqual(portal_value({"portal": "family_ded_paid"}, portal), "0.00")
+        self.assertEqual(portal_value({"portal": "family_ded_paid"}, portal), "20.00")
         result = compare_sabrina_to_portal(
             {"fields": {"family_ded": "150"}},
             portal,
@@ -632,6 +636,45 @@ class DeltaDentalRiSabrinaTests(unittest.TestCase):
         )
         self.assertEqual(oon_row["status"], "not_in_portal")
         self.assertIsNone(oon_row["portal"])
+
+    def test_stated_family_deductible_is_never_replaced(self):
+        # The fixture states Family $150 / met $40 beside Individual $50 / met $20.
+        portal = _portal()
+        portal["financials"]["deductibles"][1].update({"total": "$100", "used": "$40"})
+        self.assertEqual(portal_value({"portal": "family_ded"}, portal), "100.00")
+        self.assertEqual(portal_value({"portal": "family_ded_paid"}, portal), "40.00")
+
+    def test_no_deductible_rows_leave_family_deductible_unstated(self):
+        # The extension once wrote "Family Deductible 0.00" for a page with no
+        # deductible rows at all; nothing is derived without an individual amount.
+        portal = _portal()
+        portal["financials"]["deductibles"] = []
+        self.assertIsNone(portal_value({"portal": "family_ded"}, portal))
+        self.assertEqual(portal_value({"portal": "family_ded_paid"}, portal), "0")
+
+    def test_implant_codes_read_their_benefit_row(self):
+        # D6010 and D6057 share one benefit row; its frequency is used when the
+        # export carries no frequency of its own for the code.
+        portal = _portal()
+        portal["benefit_categories"].append({
+            "category": "IMPLANTS",
+            "services": [{
+                "procedure": "Surgical placement of endosteal implant and abutment",
+                "covered_at": "50%",
+                "deductible_applies": "Yes",
+                "waiting_period": "None",
+                "frequency_limitations": "Once per tooth every 5 years",
+            }],
+        })
+        for code in ("D6010", "D6057"):
+            self.assertEqual(procedure_value(portal, code, "frequency_limit"), "1X5Year")
+
+    def test_fill_form_prefill_refuses_ddri_with_a_422_error(self):
+        # Sabrina prefill reads carriers through _portal_breakdown; DD RI must
+        # refuse with a ValueError (HTTP 422), not an AttributeError (HTTP 500).
+        from smile_partners.sabrina import prefill
+        with self.assertRaisesRegex(ValueError, "Rhode Island"):
+            prefill.portal_values(_portal(), "In")
 
 
 if __name__ == "__main__":

@@ -56,8 +56,8 @@ _BENEFIT_SERVICES_BY_CODE = {
     )
 },
 
-    "D6010": ("Surgical placement of endosteal implant and abutment "),
-    "D6057": ("Surgical placement of endosteal implant and abutment "),
+    "D6010": ("surgical placement of endosteal implant and abutment",),
+    "D6057": ("surgical placement of endosteal implant and abutment",),
     "D2920": ("recementing crowns or bridges",),
     "D2929": ("recementing crowns or bridges",),
     "D2980": ("recementing crowns or bridges",),
@@ -157,16 +157,37 @@ def _family_deductible_default(raw: dict):
         return None
 
 
-def _family_deductible_total(raw: dict):
+def _family_deductible_derived(raw: dict) -> bool:
+    """
+    Whether the family deductible is this audit's 3x-individual figure rather
+    than one the portal states: the individual amount is stated and the family
+    one is missing or zero.
+
+    The extension used to write the derived row into the export itself; it now
+    exports only what the page shows (DCA's plan matcher reads the same file),
+    so the rule lives here, in the Smile Partners DD RI audit only.
+    """
     family = _value(_financial_entry(raw, "deductibles", "family"), "total")
     individual = _value(_financial_entry(raw, "deductibles", "individual"), "total")
     if individual is None:
-        return family
+        return False
     try:
         family_amount = Decimal(re.sub(r"[$,\s]", "", str(family))) if family is not None else Decimal(0)
     except InvalidOperation:
-        return family
-    return _family_deductible_default(raw) if family_amount == 0 else family
+        return False
+    return family_amount == 0
+
+
+def _family_deductible_total(raw: dict):
+    if _family_deductible_derived(raw):
+        return _family_deductible_default(raw)
+    return _value(_financial_entry(raw, "deductibles", "family"), "total")
+
+
+def _family_deductible_paid(raw: dict):
+    """Met toward the family deductible; a derived one mirrors the individual's met."""
+    collection = "individual" if _family_deductible_derived(raw) else "family"
+    return _value(_financial_entry(raw, "deductibles", collection), "used") or "0"
 
 
 def _value(obj: dict | None, key: str):
@@ -501,7 +522,7 @@ def _field_value(field: dict, raw: dict):
     if source == "family_ded":
         return _family_deductible_total(raw)
     if source == "family_ded_paid":
-        return _value(_financial_entry(raw, "deductibles", "family"), "used") or "0"
+        return _family_deductible_paid(raw)
     if source == "ded_prev":
         return _deductible_applies(raw, "preventive")
     if source == "ded_diag":
@@ -538,3 +559,16 @@ def portal_value(field: dict, portal_raw: dict):
 def procedure_value(portal_raw: dict, code: str, field: str):
     """Public procedure lookup for tests and diagnostics."""
     return _procedure_field(portal_raw, field, (code,))
+
+
+def _portal_breakdown(_portal_raw: dict):
+    """
+    The Sabrina Fill Form prefill (`sabrina/prefill.py`) reads a carrier through
+    `_portal_breakdown` / `_portal_normalized` / `_portal_value`, which this
+    folder does not implement: the DD RI extension downloads its JSON and does
+    not send scrapes to the server. Refuse with a ValueError (HTTP 422) rather
+    than fail with an AttributeError (HTTP 500).
+    """
+    raise ValueError(
+        "The Sabrina Fill Form cannot be prefilled from a Delta Dental of Rhode "
+        "Island export yet. Upload the JSON with the Sabrina PDF on the audit page.")

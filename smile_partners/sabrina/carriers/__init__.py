@@ -1,7 +1,8 @@
 """
 One folder per insurance portal.
 
-    aetna/  cigna/  delta_dental/  delta_mo/  delta_toolkit/  guardian/  metlife/  ucci/
+    aetna/  cigna/  delta_dental/  delta_dental_ri/  delta_mo/  delta_toolkit/
+    guardian/  metlife/  ucci/
 
 Each folder holds the whole audit for its carrier:
 
