@@ -14,10 +14,11 @@ called here yet.
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from .common import _UNLIMITED_MAX
 from .rules import _metlife_provider_network
 from .vocabulary import (_blank, _coalesce_keys, _norm_network, _num_cob, _num_money,
-                         _num_pct, _num_yesno)
+                         _num_date, _num_pct, _num_yesno)
 
 
 # MetLife's answer for a code it will not price from the details given — seen
@@ -32,25 +33,86 @@ def _no_coverage_info(proc) -> bool:
         _NO_COVERAGE_INFO_RE.search(str(proc.get("frequency_limit") or "")))
 
 
+# Plan Provisions › Cleanings and Periodontal Maintenance — "This plan combines
+# the frequency limitation for cleanings and periodontal maintenance visits.
+# The combined limit is 4".
+_COMBINED_LIMIT_RE = re.compile(r"combined\s+limit\s+is\s+(\d+)", re.IGNORECASE)
+
+# The two codes whose history is shared when that limit is above 0
+# (team rule, 2026-11-20).
+_SHARED_HISTORY_CODES = ("D1110", "D4910")
+
+
+def _cleaning_perio_combined_limit(portal_raw: dict) -> int | None:
+    """The combined cleaning / perio-maintenance limit the plan states, if any."""
+    ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
+    for prov in (ml.get("provisions") or []):
+        if not isinstance(prov, dict):
+            continue
+        if "cleanings and periodontal maintenance" not in str(prov.get("rule", "")).lower():
+            continue
+        m = _COMBINED_LIMIT_RE.search(str(prov.get("value", "")))
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _shared_history(procs: list) -> str | None:
+    """
+    Every service date D1110 and D4910 carry between them, most recent first,
+    or None when neither has one (each keeps its own "—").
+    """
+    dates = {}
+    for p in procs:
+        if not isinstance(p, dict) or str(p.get("procedure_code", "")).upper() not in _SHARED_HISTORY_CODES:
+            continue
+        for raw in re.findall(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", str(p.get("late_date_of_service") or "")):
+            norm = _num_date(raw)
+            if norm:
+                dates.setdefault(norm, raw)
+    if not dates:
+        return None
+    newest_first = sorted(dates, key=lambda d: datetime.strptime(d, "%m/%d/%Y"), reverse=True)
+    return ", ".join(dates[d] for d in newest_first)
+
+
 def _portal_for_sheet(portal_raw: dict, sab_fields: dict) -> dict:
     """
     The portal export as this sheet should read it.
 
-    A procedure MetLife answers with "We cannot currently provide coverage
-    information on the details shared." is read as Not Covered: its frequency
-    becomes "Not Covered", which the per-code readers already take as a stated
-    0% benefit. Everything else is read as it arrives.
+    · A procedure MetLife answers with "We cannot currently provide coverage
+      information on the details shared." is read as Not Covered: its frequency
+      becomes "Not Covered", which the per-code readers already take as a
+      stated 0% benefit.
+    · When the plan combines the frequency for cleanings and periodontal
+      maintenance with a limit above 0, D1110 and D4910 share one history: each
+      code's history is every date either carries. MetLife records a prophy
+      only on D1110, so the sheet's D4910 row rightly shows that date too
+      (Benjamin R Stanaj: D1110 03/17/26, D4910 "—", sheet D4910 03/17/2026).
+      A limit of 0, or no such provision, leaves each code its own history.
+
+    Everything else is read as it arrives.
     """
     bc = (portal_raw or {}).get("benefit_coverage")
     procs = bc.get("procedures") if isinstance(bc, dict) else None
-    if not isinstance(procs, list) or not any(_no_coverage_info(p) for p in procs):
+    if not isinstance(procs, list):
         return portal_raw
+
+    limit = _cleaning_perio_combined_limit(portal_raw)
+    shared = _shared_history(procs) if limit and limit > 0 else None
+    if not shared and not any(_no_coverage_info(p) for p in procs):
+        return portal_raw
+
+    def _for_sheet(p):
+        if _no_coverage_info(p):
+            p = dict(p, frequency_limit="Not Covered")
+        if shared and isinstance(p, dict) and str(p.get("procedure_code", "")).upper() in _SHARED_HISTORY_CODES:
+            p = dict(p, late_date_of_service=shared)
+        return p
+
     out = dict(portal_raw)
     out["benefit_coverage"] = dict(bc)
-    out["benefit_coverage"]["procedures"] = [
-        dict(p, frequency_limit="Not Covered") if _no_coverage_info(p) else p
-        for p in procs
-    ]
+    out["benefit_coverage"]["procedures"] = [_for_sheet(p) for p in procs]
     return out
 
 

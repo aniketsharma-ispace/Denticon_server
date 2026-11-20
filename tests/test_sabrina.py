@@ -28,6 +28,18 @@ import os
 import sys
 
 import sabrina_compare as sc
+from smile_partners.sabrina.carriers.metlife.portal import (
+    _cleaning_perio_combined_limit as _ml_combined_limit)
+
+
+def _ml_shares_cleaning_history(portal) -> bool:
+    """
+    Whether a MetLife plan combines cleanings and perio maintenance (limit > 0).
+    Since 2026-11-20 D1110 and D4910 then share one history, so a sheet
+    carrying the prophy date on the D4910 row is right, not a copying error.
+    """
+    limit = _ml_combined_limit(portal)
+    return bool(limit and limit > 0)
 
 # Windows consoles default to cp1252 and cannot encode the section rules below.
 for _stream in (sys.stdout, sys.stderr):
@@ -384,12 +396,12 @@ else:
               any(r.get("group") for s in res["sections"]
                   for r in s["rows"] if s["section"] != "Coverage by CDT Code"), False)
 
-        # One genuine finding, surfaced once the portal's "—" in Late Date Of
-        # Service is read as "never performed" rather than as an empty cell:
-        # the sheet carries the prophy date on the perio-maintenance row too.
-        # The same pattern appears on Amanda Wilson and Aaren Boyd.
-        check("[2] the copied perio date is the only disagreement",
-              sorted(r["key"] for r in res["mismatches"]), ["d4910__hist"])
+        # The sheet carries the prophy date on the perio-maintenance row too
+        # (also Amanda Wilson and Aaren Boyd). Once a finding; since 2026-11-20
+        # correct whenever the plan combines cleanings and perio maintenance.
+        check("[2] the perio date on the D4910 row follows the shared-history rule",
+              sorted(r["key"] for r in res["mismatches"]),
+              [] if _ml_shares_cleaning_history(portal2) else ["d4910__hist"])
         check("[2] D1110 keeps its own date", rows["d1110__hist"]["status"], "match")
         check("[2] and D0120 too", rows["d0120__hist"]["status"], "match")
         # Nothing is reported blank any more. The three rows that used to be
@@ -1027,6 +1039,55 @@ check("metlife D4341 quads: not covered -> blank (no portal value)",
 check("metlife D4341 quads: not covered and blank on the sheet -> nothing to flag",
       _kritzer_rows(_kritzer("N/A", "*NOT COVERED"), {})["d4341__age"]["status"], "not_stated")
 
+# Benjamin R Stanaj (MetLife, 2026-11-20): "This plan combines the frequency
+# limitation for cleanings and periodontal maintenance visits. The combined
+# limit is 4". MetLife recorded the prophy (03/17/26) on D1110 only and "—" on
+# D4910; the sheet rightly carried 03/17/2026 on the D4910 row too. A combined
+# limit above 0 gives D1110 and D4910 one shared history; 0 leaves them apart.
+_COMBINED = ("This plan combines the frequency limitation for cleanings and periodontal "
+             "maintenance visits. The combined limit is {}")
+
+def _stanaj(limit, d1110="03/17/26", d4910="—"):
+    provisions = [_BENEFIT_PERIOD]
+    if limit is not None:
+        provisions.append({"rule": "Cleanings and Periodontal Maintenance",
+                           "value": _COMBINED.format(limit)})
+    return {"metlife_data": {"patient": {"name": "Benjamin R Stanaj", "dob": "11/15/2006",
+                                         "relationship": "Dependent"},
+                             "provisions": provisions},
+            "benefit_coverage": {"procedures": [
+                {"procedure_code": "D1110", "description": "PROPHYLAXIS- ADULT",
+                 "frequency_limit": "2 TIMES IN 1 CALENDAR YEAR", "age_limit": "0-99",
+                 "late_date_of_service": d1110, "benefit_level": "100%"},
+                {"procedure_code": "D4910", "description": "PERIODONTAL MAINTENANCE",
+                 "frequency_limit": "4 TIMES IN 1 CALENDAR YEAR", "age_limit": "0-99",
+                 "late_date_of_service": d4910, "benefit_level": "80%"},
+            ]}}
+
+_STANAJ_SHEET = {"d1110": "100%", "d1110__hist": "03/17/2026",
+                 "d4910": "80%", "d4910__hist": "03/17/2026"}
+
+check("metlife shared history: the combined limit is read off the provision",
+      (_ml_combined_limit(_stanaj(4)), _ml_combined_limit(_stanaj(0)), _ml_combined_limit(_stanaj(None))),
+      (4, 0, None))
+_st = _kritzer_rows(_stanaj(4), _STANAJ_SHEET)
+check("metlife shared history: limit 4 -> D4910 shares D1110's date (Benjamin)",
+      (_st["d4910__hist"]["portal"], _st["d4910__hist"]["status"]), ("03/17/26", "match"))
+check("metlife shared history: and D1110 keeps it",
+      (_st["d1110__hist"]["portal"], _st["d1110__hist"]["status"]), ("03/17/26", "match"))
+_st_both = _kritzer_rows(_stanaj(4, d4910="06/29/26"), _STANAJ_SHEET)
+check("metlife shared history: both codes dated -> each carries both, newest first",
+      (_st_both["d1110__hist"]["portal"], _st_both["d4910__hist"]["portal"]),
+      ("06/29/26, 03/17/26", "06/29/26, 03/17/26"))
+check("metlife shared history: a sheet listing one of the shared dates agrees",
+      _st_both["d1110__hist"]["status"], "match")
+_st_zero = _kritzer_rows(_stanaj(0), _STANAJ_SHEET)
+check("metlife shared history: limit 0 -> D4910 keeps its own '—', so the copy is flagged",
+      (_st_zero["d4910__hist"]["portal"], _st_zero["d4910__hist"]["status"]), ("—", "mismatch"))
+_st_none = _kritzer_rows(_stanaj(None), _STANAJ_SHEET)
+check("metlife shared history: no provision -> histories stay apart",
+      (_st_none["d4910__hist"]["portal"], _st_none["d4910__hist"]["status"]), ("—", "mismatch"))
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  1g. Apt 91215 — one plan stating two rules
@@ -1137,10 +1198,12 @@ else:
     check("[4] and says which clause was applied",
           "patient is" in rows4["d0274__freq"]["note"], True)
 
-    # One genuine error remains: the sheet carries D1110's service date on the
-    # D4910 row (03/30/2023) where the portal has 04/14/26.
-    check("[4] the genuine history error is still reported",
-          sorted(r["key"] for r in res4["mismatches"]), ["d4910__hist"])
+    # The sheet carries D1110's service date on the D4910 row (03/30/2023)
+    # where the portal has 04/14/26 for D4910 — an error unless the plan
+    # combines cleanings and perio maintenance, when both dates are D4910's.
+    check("[4] the D4910 history follows the shared-history rule",
+          sorted(r["key"] for r in res4["mismatches"]),
+          [] if _ml_shares_cleaning_history(portal4) else ["d4910__hist"])
     check("[4] D1110's own history matches", rows4["d1110__hist"]["status"], "match")
 
 
@@ -1527,9 +1590,10 @@ else:
         check(f"[6] {key} agrees (NH against the portal dash)",
               rows6[key]["status"], "match")
 
-    # The same copied perio date as Tudor and Amanda Wilson.
-    check("[6] the copied perio date is the only disagreement",
-          sorted(r["key"] for r in res6["mismatches"]), ["d4910__hist"])
+    # The same prophy date on the D4910 row as Tudor and Amanda Wilson.
+    check("[6] the perio date on the D4910 row follows the shared-history rule",
+          sorted(r["key"] for r in res6["mismatches"]),
+          [] if _ml_shares_cleaning_history(portal6) else ["d4910__hist"])
     check("[6] D1110 keeps its own date", rows6["d1110__hist"]["status"], "match")
 
     # D5212/D2980 stay unstated until the extension rebuild reaches the team.
@@ -3032,11 +3096,18 @@ else:
 
     # A fourth patient whose sheet carries the prophylaxis date on the
     # periodontal-maintenance row, where MetLife records no history at all.
-    # Tudor, Amanda Wilson and Aaren Boyd show the same thing.
-    check("[11] the perio-maintenance history disagrees with the portal",
-          (rows11["d1110"]["status"], rows11["d4910__hist"]["sabrina"],
-           rows11["d4910__hist"]["portal"], rows11["d4910__hist"]["status"]),
-          ("match", "05/05/2026", "—", "mismatch"))
+    # Tudor, Amanda Wilson and Aaren Boyd show the same thing. Correct since
+    # 2026-11-20 when the plan combines cleanings and perio maintenance.
+    if _ml_shares_cleaning_history(portal11):
+        check("[11] the perio-maintenance history shares D1110's date",
+              (rows11["d1110"]["status"], rows11["d4910__hist"]["sabrina"],
+               rows11["d4910__hist"]["status"]),
+              ("match", "05/05/2026", "match"))
+    else:
+        check("[11] the perio-maintenance history disagrees with the portal",
+              (rows11["d1110"]["status"], rows11["d4910__hist"]["sabrina"],
+               rows11["d4910__hist"]["portal"], rows11["d4910__hist"]["status"]),
+              ("match", "05/05/2026", "—", "mismatch"))
     check("[11] and it is the prophylaxis date the portal records",
           parsed11["benefit_rows"]["d1110"]["history"], "05/05/2026")
 
