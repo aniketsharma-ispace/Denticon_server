@@ -501,7 +501,7 @@
     if (!ui) return;
     ui.$("scrape").textContent = last
       ? `${last.carrier || "portal"} · ${scrapeWho(last)} · ${new Date(last.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-      : "none from this browser";
+      : "none from this browser · Fill checks your other browser";
   }
 
   function scrapeMatch() {
@@ -752,16 +752,10 @@
     const memberId = pageVal("demographic.memberId");
     const dob = normDate(pageVal("demographic.patientDOB"));
     if (!memberId) return say("MEMBER# is empty on this form.", "warn");
-    // Demographic is open now: the last scrape must be this patient.
-    const state = scrapeMatch();
-    if (state === "none") {
-      matchState = state; setButtons(false);
-      return say("No portal scrape from this browser yet. Run the extension on this patient's portal page first.", "warn");
-    }
-    if (state === "other") {
-      matchState = state; setButtons(false);
-      return say(otherPatientText(), "err");
-    }
+    // No scrape of this patient in this browser: the server still looks for
+    // one made in another browser (portal scraped in Firefox, Fill Form open
+    // here in Edge) for the same MEMBER# and DOB in the last 60 minutes, and
+    // answers 404/409 with the reason when there is none.
 
     setButtons(false);
     say("Fetching portal data…");
@@ -935,16 +929,19 @@
       loadSettings();
     }
 
-    // Buttons only when the last scrape is this patient.
+    // Buttons stay on without a scrape of this patient in this browser: Fill
+    // can still use one made in another browser (Firefox → Edge).
     if (!filling) {
       const state = scrapeMatch();
       if (state !== matchState) {
         matchState = state;
-        setButtons(state === "match" || state === "unknown");
+        setButtons(state !== "loading");
         if (state === "none") {
-          say("No portal scrape from this browser yet. Run the extension on this patient's portal page first.", "warn");
+          say("No portal scrape from this browser. Fill uses this patient's scrape from your other " +
+              "browser (e.g. Firefox) if it was made in the last 60 minutes.", "warn");
         } else if (state === "other") {
-          say(otherPatientText(), "err");
+          say(otherPatientText() + " Fill can still use this patient's scrape from your other " +
+              "browser (e.g. Firefox) if it was made in the last 60 minutes.", "warn");
           applied = null; lastDetails = null;
         } else if ((state === "match" || state === "unknown") && !applied) {
           say("Ready. Pick New or Existing below. Sections are opened and filled for you.");

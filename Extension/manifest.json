@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "Insurance Auditor Pro",
-    "version": "1.60",
+    "version": "1.62",
     "permissions": [
         "storage",
         "activeTab",
@@ -42,6 +42,9 @@
     ],
     "action": {
         "default_popup": "popup.html"
+    },
+    "content_security_policy": {
+        "extension_pages": "script-src 'self'; object-src 'self';"
     },
     "background": {
         "service_worker": "content_cigna.js",
