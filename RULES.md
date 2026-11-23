@@ -272,3 +272,8 @@ The rules live in `smile_partners/portals/ucci.py` (reading the export of united
 - **OON benefits [11/05, team rule]:** Yes for every UCCI plan.
 - **Not compared [11/05, team rule]:** Payor ID, which does not show on the UI. Are Posterior Crowns Downgraded is shown with the portal side always blank.
 - **Not on this portal:** perio maintenance after SRP. A patient past a code's age limit (D1351, D1510) gets no % from the portal, and that row stays not on portal.
+# Sabrina Fill Form: scrape in one browser, fill in another [11/23]
+
+- **Firefox → server:** Firefox gives Manifest V3 extensions a default CSP with `upgrade-insecure-requests`, which turned the background's `http://10.30.10.67:8000` calls into `https://` and failed ("Cannot reach the Insurance Auditor server"). The manifest (1.62) sets `content_security_policy.extension_pages` to `script-src 'self'; object-src 'self';` so the calls stay on HTTP. Chrome/Edge never upgraded them.
+- **Firefox scrape, Edge Fill Form:** `/api/prefill` with `only_own=true` still fills from this browser's own last scrape first. When this browser has no scrape of the form's patient, it fills from the newest **pending** scrape with the same MEMBER# **and** PATIENT DOB (both required, both must agree) made in the last `SCRAPE_OTHER_BROWSER_MINUTES` (default 60). Otherwise 404 (no scrape) or 409 (this browser's last scrape is another patient).
+- The Sabrina panel keeps New/Existing enabled without a matching scrape in this browser and lets the server decide; the patient check after the fill is unchanged.

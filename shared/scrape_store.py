@@ -14,6 +14,9 @@ older than RETENTION_DAYS is deleted on every save.
     SCRAPE_RETENTION_DAYS  how long a scrape is kept (default 7)
     SCRAPE_MAX_AGE_HOURS   how old a pending scrape may be and still fill a
                            form (default 48)
+    SCRAPE_OTHER_BROWSER_MINUTES
+                           how old a scrape made in another browser (scraped
+                           in Firefox, filled in Edge) may be (default 60)
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.environ.get("SCRAPE_DB") or os.path.join(_HERE, "data", "scrapes.db")
 RETENTION_DAYS = int(os.environ.get("SCRAPE_RETENTION_DAYS", "7"))
 MAX_AGE_HOURS = int(os.environ.get("SCRAPE_MAX_AGE_HOURS", "48"))
+OTHER_BROWSER_MINUTES = int(os.environ.get("SCRAPE_OTHER_BROWSER_MINUTES", "60"))
 
 _lock = threading.Lock()
 
@@ -91,14 +95,17 @@ def save(client: str, carrier: str | None, member_id: str, dob: str | None, data
         return int(cur.lastrowid)
 
 
-def find_pending(client: str, member_id: str, dob: str | None = None) -> dict | None:
+def find_pending(client: str, member_id: str, dob: str | None = None,
+                 max_age_minutes: int | None = None) -> dict | None:
     """
     The latest pending scrape for this member, or None.
 
     When both the form and the scrape state a DOB they must agree, so two
     family members sharing a subscriber ID cannot be mixed up.
+    `max_age_minutes` narrows the default MAX_AGE_HOURS window.
     """
-    since = (_now() - timedelta(hours=MAX_AGE_HOURS)).isoformat()
+    age = timedelta(minutes=max_age_minutes) if max_age_minutes is not None else timedelta(hours=MAX_AGE_HOURS)
+    since = (_now() - age).isoformat()
     want_dob = norm_dob(dob)
     with _lock, _connect() as conn:
         rows = conn.execute(

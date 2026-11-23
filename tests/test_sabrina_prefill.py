@@ -331,5 +331,42 @@ for block in ("patient", "patient_information"):
 check("a 2-digit portal DOB is stored in the right century",
       member_key(two_digit)[1], "02/03/1990")
 
+print("── ENDPOINTS: SCRAPED IN ANOTHER BROWSER (Firefox → Edge, 11/23) ──")
+# The portal is scraped in Firefox and the Fill Form is open in Edge: Edge's
+# extension has no scrape of its own. It then fills from the newest pending
+# scrape for the same member ID and DOB made in the last
+# SCRAPE_OTHER_BROWSER_MINUTES (60), never from an older or used one.
+other = copy.deepcopy(EXPORT)
+for block in ("patient", "patient_information"):
+    other[block]["member_id_or_ssn"] = "W999000111"
+    other[block]["date_of_birth"] = "07/04/1985"
+fx = api.post("/api/scrapes", json={"client": "smile_partners", "portal_data": other}).json()["id"]
+edge = lambda **q: api.get("/api/prefill", params=dict(client="smile_partners", network="In",
+                                                        only_own="true", **q))
+got = edge(member_id="W999-000-111", dob="7/4/1985")
+check("no scrape in this browser: fills from the other browser's scrape",
+      (got.status_code, got.json().get("scrape_id")), (200, fx))
+check("…but not without a DOB on the form", edge(member_id="W999000111", dob="").status_code, 404)
+check("…nor for another DOB (a family member)",
+      edge(member_id="W999000111", dob="01/01/2010").status_code, 404)
+check("…nor for another member", edge(member_id="W123123123", dob="07/04/1985").status_code, 404)
+check("…nor with a blank member ID", edge(member_id="", dob="07/04/1985").status_code, 404)
+got = edge(member_id="W999000111", dob="07/04/1985", scrape_id=sid3)
+check("this browser's last scrape is another patient: the other browser's scrape fills",
+      (got.status_code, got.json().get("scrape_id")), (200, fx))
+check("this browser's own matching scrape still comes first",
+      own(member_id="W000111222", dob="02/03/1990").json().get("scrape_id"), sid3)
+with scrape_store._lock, scrape_store._connect() as conn:
+    conn.execute("UPDATE scrapes SET scraped_at = ? WHERE id = ?",
+                 ((scrape_store._now() - scrape_store.timedelta(minutes=61)).isoformat(), fx))
+check("a scrape older than 60 minutes is not used across browsers",
+      edge(member_id="W999000111", dob="07/04/1985").status_code, 404)
+check("…and the refusal for another patient in this browser stays (409)",
+      edge(member_id="W999000111", dob="07/04/1985", scrape_id=sid3).status_code, 409)
+fx2 = api.post("/api/scrapes", json={"client": "smile_partners", "portal_data": other}).json()["id"]
+api.post(f"/api/scrapes/{fx2}/used")
+check("a used scrape is not used across browsers",
+      edge(member_id="W999000111", dob="07/04/1985").status_code, 404)
+
 print(f"\n{'all passed' if not _failed else f'{_failed} failed'}")
 sys.exit(1 if _failed else 0)

@@ -464,6 +464,21 @@ def save_scrape(req: ScrapeRequest):
             "member_id": scrape_store.norm_member(member_id), "dob": dob}
 
 
+def _other_browser_scrape(key: str, member_id: str, dob: Optional[str]) -> Optional[dict]:
+    """
+    A scrape made in another browser for this patient: the portal scraped in
+    Firefox, the Fill Form open in Edge. Strict, because nothing ties it to
+    this user: the member ID and the DOB must both be stated and agree (family
+    members share a member ID), and it must be recent and still pending.
+    """
+    form_dob = scrape_store.norm_dob(dob)
+    if not scrape_store.norm_member(member_id) or not form_dob:
+        return None
+    found = scrape_store.find_pending(key, member_id, form_dob,
+                                      max_age_minutes=scrape_store.OTHER_BROWSER_MINUTES)
+    return found if found and found["dob"] == form_dob else None
+
+
 @app.get("/api/prefill")
 def get_prefill(client: str, member_id: str, network: str = "", dob: Optional[str] = None,
                 scrape_id: Optional[int] = None, only_own: bool = False):
@@ -476,9 +491,13 @@ def get_prefill(client: str, member_id: str, network: str = "", dob: Optional[st
     user's extension made last: used first, when it is for the same member, so
     a portal that words the member ID differently still finds it.
 
-    `only_own` (what the extension sends): fill from that scrape or not at all —
-    never from an older scrape of the same member left on the server, which
-    could be hours old and was not what the user just looked at.
+    `only_own` (what the extension sends): fill from that scrape — never from
+    an older scrape of the same member left on the server, which could be
+    hours old and was not what the user just looked at. One exception: the
+    portal scraped in another browser (Firefox) while the Fill Form is open in
+    this one (Edge). This browser then has no matching scrape of its own, and
+    the newest pending scrape with the same member ID and DOB made in the last
+    SCRAPE_OTHER_BROWSER_MINUTES (60) fills the form.
 
     404 when there is nothing to fill from, 409 when the user's own last scrape
     is for someone else (including a family member on the same member ID with
@@ -487,11 +506,6 @@ def get_prefill(client: str, member_id: str, network: str = "", dob: Optional[st
     key, prefill = _prefill_module(client)
     scrape = None
     own = scrape_store.get_pending(key, scrape_id) if scrape_id else None
-    if only_own and not own:
-        raise HTTPException(
-            status_code=404,
-            detail="No portal scrape from this browser to fill from. Run the extension "
-                   "on the carrier portal for this patient first.")
     family_member = False
     if own:
         # A portal with no member ID (Guardian, some Toolkit and MetLife
@@ -509,6 +523,8 @@ def get_prefill(client: str, member_id: str, network: str = "", dob: Optional[st
             scrape = own
     if not scrape and not only_own:
         scrape = scrape_store.find_pending(key, member_id, dob)
+    if not scrape and only_own:
+        scrape = _other_browser_scrape(key, member_id, dob)
     if not scrape and own:
         detail = (f"Your last portal scrape is for member {own['member_id']} "
                   f"(DOB {own['dob'] or 'not stated'}), not this patient.")
@@ -518,6 +534,13 @@ def get_prefill(client: str, member_id: str, network: str = "", dob: Optional[st
                       f"family member on the same member ID.")
         raise HTTPException(status_code=409,
                             detail=detail + " Scrape this patient on the portal first.")
+    if not scrape and only_own:
+        raise HTTPException(
+            status_code=404,
+            detail="No portal scrape for this patient from this browser, nor from another "
+                   f"browser in the last {scrape_store.OTHER_BROWSER_MINUTES} minutes (same "
+                   "MEMBER# and PATIENT DOB). Run the extension on the carrier portal for "
+                   "this patient first.")
     if not scrape:
         raise HTTPException(
             status_code=404,
