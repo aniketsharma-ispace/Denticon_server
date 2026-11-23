@@ -154,15 +154,32 @@
     return { opened, failed };
   }
 
+  // Reloading or updating the extension cuts this copy of the panel off from
+  // it: the page keeps running the old copy, but its chrome.runtime is gone
+  // (Chrome then answers "Cannot read properties of undefined (reading
+  // 'sendMessage')" or "Extension context invalidated"). Chrome does not put
+  // the new copy into open tabs; only a page refresh does.
+  const RELOADED = "The extension was reloaded or updated after this page opened, so this panel " +
+                   "can no longer reach it. Save your work, then refresh this page (F5).";
+  const disconnected = () => {
+    try { return !globalThis.chrome?.runtime?.id; } catch (_) { return true; }
+  };
+  const cutOff = text => /context invalidated/i.test(String(text || ""));
+
   function send(message) {
+    if (disconnected()) return Promise.resolve({ ok: false, error: RELOADED, reloaded: true });
     return new Promise(resolve => {
       try {
         chrome.runtime.sendMessage(message, reply => {
-          if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
+          const err = chrome.runtime.lastError;
+          if (err) resolve(cutOff(err.message) ? { ok: false, error: RELOADED, reloaded: true }
+                                               : { ok: false, error: err.message });
           else resolve(reply || { ok: false, error: "no answer from the extension" });
         });
       } catch (e) {
-        resolve({ ok: false, error: String(e && e.message || e) });
+        const text = String(e && e.message || e);
+        resolve(cutOff(text) || disconnected() ? { ok: false, error: RELOADED, reloaded: true }
+                                               : { ok: false, error: text });
       }
     });
   }
@@ -461,7 +478,10 @@
 
   async function loadSettings() {
     const r = await send({ type: "IAP_GET_SETTINGS" });
-    if (!r.ok) return say("The extension's background is not answering: " + r.error, "err");
+    if (!r.ok) {
+      if (r.reloaded) { setButtons(false); return say(r.error, "err"); }
+      return say("The extension's background is not answering: " + r.error, "err");
+    }
     ui.$("server").value = r.settings.serverUrl || "";
     showLastScrape(r.lastScrape || null);
   }
@@ -757,7 +777,10 @@
       pendingFill = true;
       return say("Pick IN OR OON (highlighted). Filling starts as soon as you pick it.", "warn");
     }
-    if (!r.ok) return say(r.error, "err");
+    if (!r.ok) {
+      if (r.reloaded) setButtons(false);
+      return say(r.error, "err");
+    }
     const prefill = r.prefill;
 
     // Patient check. A DOB that differs is another patient even when the
@@ -879,7 +902,7 @@
   // ── keep the panel in step with the form ──────────────────────────────────
   // Sabrina's own pages only (the content script also matches other ispace.com sites).
   const onSabrina = () => /sabrina/i.test(location.hostname);
-  let wasOnForm = null;
+  let wasOnForm = null, cutOffShown = false;
 
   function refresh() {
     if (!onSabrina()) return;
@@ -893,6 +916,12 @@
     }
     if (!host) buildPanel();
     host.style.display = "";
+    // The extension was reloaded or updated while this tab stayed open: say
+    // so as soon as it happens, not on the next click.
+    if (disconnected()) {
+      if (!cutOffShown) { cutOffShown = true; setButtons(false); say(RELOADED, "err"); }
+      return;
+    }
     if (onForm !== wasOnForm) {
       wasOnForm = onForm;
       pendingFill = false;
@@ -957,7 +986,13 @@
     if (!b || !applied || !applied.scrape_id) return;
     if (!/^\s*(save|submit)\s*$/i.test(b.textContent || "")) return;
     const id = applied.scrape_id;
-    send({ type: "IAP_MARK_USED", scrape_id: id }).then(() => {
+    send({ type: "IAP_MARK_USED", scrape_id: id }).then(r => {
+      if (!r.ok) {
+        // Sabrina saved; only our "used" mark failed. Never claim it was made.
+        if (ui) say(r.reloaded ? r.error
+                    : `Sabrina saved, but this portal scrape could not be marked used: ${r.error}`, "warn");
+        return;
+      }
       applied = null; lastDetails = null;
       written = {};
       if (ui) { say("Saved. This portal scrape is now marked used."); loadSettings(); }
