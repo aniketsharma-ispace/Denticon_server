@@ -74,15 +74,17 @@
     // user picks one of the three networks the Member Benefits page has tabs
     // for. Only that network's benefits are scraped and exported; the other
     // networks' buckets are dropped wherever the Toolkit returns them.
-    // `aliases` are other names the Toolkit uses for the same network: Medicare
-    // Advantage plans name the out-of-network bucket "Non-PPO Dentist" (with
-    // alternateName "Nonparticipating Dentist"), while their faxback PDF says
-    // "Nonparticipating Dentist".
+    // PPO and Premier are "PPO Dentist" and "Premier Dentist" on every plan and
+    // are matched by those exact names. The out-of-network bucket's name
+    // changes from plan to plan ("Nonparticipating Dentist", "Non-PPO Dentist"
+    // on Medicare Advantage plans, "MN Non-NPF Non Par Dentist" on Minnesota
+    // plans, ...), so Non-participating (`otherwise`) is every network that is
+    // neither PPO nor Premier [11/24]. The faxback PDF says "Nonparticipating
+    // Dentist", and the export always names the pick by `name`.
     const NETWORK_CHOICES = Object.freeze([
-        Object.freeze({ key: "ppo", name: "PPO Dentist", label: "PPO", aliases: Object.freeze([]) }),
-        Object.freeze({ key: "premier", name: "Premier Dentist", label: "Premier", aliases: Object.freeze([]) }),
-        Object.freeze({ key: "oon", name: "Nonparticipating Dentist", label: "Non-participating",
-            aliases: Object.freeze(["Non-PPO Dentist", "Non-participating Dentist"]) })
+        Object.freeze({ key: "ppo", name: "PPO Dentist", label: "PPO", otherwise: false }),
+        Object.freeze({ key: "premier", name: "Premier Dentist", label: "Premier", otherwise: false }),
+        Object.freeze({ key: "oon", name: "Nonparticipating Dentist", label: "Non-participating", otherwise: true })
     ]);
     // Set by startCrawl from the user's pick; the extraction reads it throughout.
     let selectedNetwork = null;
@@ -2787,7 +2789,7 @@
         // The few figures read off the page itself (the Maximums table) must be
         // the picked network's, so its tab is opened, as the DD INS extractor
         // opens the tabs it reads.
-        await showNetworkTab(choice.name);
+        await showNetworkTab(choice.name, state.memberBenefitsResponse);
 
         try {
             // Start PDF capture immediately. It is independent of the procedure
@@ -6029,21 +6031,22 @@
         return NETWORK_CHOICES.find(item => item.name === selectedNetwork) || null;
     }
 
-    // Every name the Toolkit may use for the network called `name`.
-    function networkNameVariants(name) {
-        const wanted = cleanText(name).toLowerCase();
-        const choice = NETWORK_CHOICES.find(item =>
-            [item.name, ...item.aliases].some(variant => variant.toLowerCase() === wanted));
-        return choice ? [choice.name, ...choice.aliases] : [cleanText(name)];
+    // The NETWORK_CHOICES entry a network goes by, from its names (a name, or a
+    // network object's name and alternateName): PPO or Premier when one of the
+    // names is exactly theirs, otherwise Non-participating. Null with no name.
+    function networkChoiceForNames(names) {
+        const texts = toArray(names).map(text => cleanText(text).toLowerCase()).filter(Boolean);
+        if (!texts.length) return null;
+        return NETWORK_CHOICES.find(item => !item.otherwise && texts.includes(item.name.toLowerCase())) ||
+            NETWORK_CHOICES.find(item => item.otherwise) || null;
     }
 
     // True for a network name, or a {name, alternateName} network object, that
-    // is the picked network under any of its names.
+    // is the picked network.
     function isSelectedNetworkName(name) {
         if (!selectedNetwork) return false;
         const texts = typeof name === "string" ? [name] : [name?.name, name?.alternateName];
-        const variants = networkNameVariants(selectedNetwork).map(variant => variant.toLowerCase());
-        return texts.some(text => variants.includes(cleanText(text).toLowerCase()));
+        return networkChoiceForNames(texts)?.name === selectedNetwork;
     }
 
     // The networks the member's plan offers, as the Member Benefits response names them.
@@ -6051,14 +6054,28 @@
         return uniqueStrings(toArray(benefitRoot?.networks).map(item => typeof item === "string" ? item : item?.name));
     }
 
-    // Opens the Member Benefits tab named `name` ("PPO Dentist", "Premier
-    // Dentist", "Nonparticipating Dentist"). The tab is found by its exact
-    // label or one of the network's aliases ("Non-PPO Dentist"), tab-like
-    // elements first. Not finding it is not fatal: the page
-    // figures are checked against the API before use (displayedAccumulatorsAgree).
-    async function showNetworkTab(name) {
+    // The labels the picked network's Member Benefits tab may carry, lower case:
+    // its own name, and every name and alternateName the plan's network list
+    // gives it ("MN Non-NPF Non Par Dentist"). Only exact labels are matched,
+    // so a container holding every tab never matches.
+    function selectedNetworkTabNames(benefitRoot) {
+        const names = [selectedNetwork];
+        for (const item of toArray(benefitRoot?.networks)) {
+            if (!isSelectedNetworkName(item)) continue;
+            if (typeof item === "string") names.push(item);
+            else names.push(item?.name, item?.alternateName);
+        }
+        return uniqueStrings(names.map(text => cleanText(text).toLowerCase()).filter(Boolean));
+    }
+
+    // Opens the picked network's Member Benefits tab ("PPO Dentist", "Premier
+    // Dentist", "Nonparticipating Dentist" or the plan's own name for it, as
+    // selectedNetworkTabNames lists them), tab-like elements first. Not finding
+    // it is not fatal: the page figures are checked against the API before use
+    // (displayedAccumulatorsAgree).
+    async function showNetworkTab(name, benefitRoot) {
         try {
-            const wanted = networkNameVariants(name).map(variant => variant.toLowerCase());
+            const wanted = selectedNetworkTabNames(benefitRoot);
             const scope = document.querySelector("app-memberdetails-benefits") || document;
             const target = ["[role='tab']", "button", "a", "li", "span", "div"]
                 .map(selector => [...scope.querySelectorAll(selector)].find(element =>
