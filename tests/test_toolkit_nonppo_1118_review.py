@@ -24,7 +24,7 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[1] / "Extension" / "content_DD_Toolkit.js"
 NODE = shutil.which("node")
 
-FUNCTIONS = ["cleanText", "toArray", "safeStringify", "uniqueStrings", "networkNameVariants",
+FUNCTIONS = ["cleanText", "toArray", "safeStringify", "uniqueStrings", "networkChoiceForNames",
              "useSelectedNetwork", "isSelectedNetworkName", "planNetworkNames",
              "isSelectedNetworkBucket"]
 

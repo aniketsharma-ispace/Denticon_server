@@ -1,11 +1,7 @@
 {
     "manifest_version": 3,
     "name": "Insurance Auditor Pro",
-<<<<<<< HEAD
-    "version": "1.62",
-=======
-    "version": "1.61",
->>>>>>> fb71670 (Extension 1.61: Delta Dental RI rewrite, panel survives an extension reload)
+    "version": "1.63",
     "permissions": [
         "storage",
         "activeTab",
