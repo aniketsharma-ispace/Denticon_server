@@ -106,9 +106,11 @@ _SPEC: list[dict] = [
     {"key": "family_ded_paid",  "label": "Paid to Date($)",          "kind": "money", "section": "Maximums & Deductibles", "portal": "family_ded_paid",
      "after": "Family Deductible($)", "aliases": ["Paid to Date", "Deductible Met"]},
 
-    {"key": "ded_prev", "label": "Deductible Applies to Preventative", "kind": "yesno", "section": "Maximums & Deductibles", "portal": "ded_prev",
+    # Read through portal.py: a Deductibles footnote waiving the deductible
+    # ("No deductible applies for Diagnostic & Preventive services") decides.
+    {"key": "ded_prev", "label": "Deductible Applies to Preventative", "kind": "yesno", "section": "Maximums & Deductibles", "portal": "_ded_prev",
      "aliases": ["Deductible Applies to Preventive"]},
-    {"key": "ded_diag", "label": "Deductible Applies to Diagnostic",   "kind": "yesno", "section": "Maximums & Deductibles", "portal": "ded_diag"},
+    {"key": "ded_diag", "label": "Deductible Applies to Diagnostic",   "kind": "yesno", "section": "Maximums & Deductibles", "portal": "_ded_diag"},
 
     # ── Plan provisions ──────────────────────────────────────────────────────
     {"key": "waiting_period", "label": "Is there a Waiting Period",  "kind": "yesno", "section": "Plan Provisions", "portal": "waiting_period",

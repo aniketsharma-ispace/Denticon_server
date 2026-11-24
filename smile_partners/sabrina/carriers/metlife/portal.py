@@ -152,6 +152,45 @@ def _subscriber_unread(portal_raw: dict) -> bool:
     return bool(rel) and not rel.startswith(_SELF_RELATIONS)
 
 
+# A Deductibles footnote waiving the deductible for named classes — "No
+# deductible applies for Diagnostic & Preventive services".
+_NO_DEDUCTIBLE_NOTE_RE = re.compile(r"no\s+deductible\s+applies\s+(?:for|to)\s+(.+)", re.IGNORECASE)
+
+
+def _deductible_waived_for(portal_raw: dict, word: str) -> bool:
+    """
+    Whether a Deductibles footnote waives the deductible for a class.
+
+    Read from `metlife_data.deductible_notes` (extension 1.63+). The footnote
+    wins over Covered Services: Richard Tinnell's plan showed "Deductible
+    Applies : Yes" for Diagnostic and Preventive in Covered Services, on every
+    category card and on every procedure row, while the footnote under
+    Deductibles said no deductible applies — and the sheet's "No" was right.
+    """
+    ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
+    for note in (ml.get("deductible_notes") or []):
+        m = _NO_DEDUCTIBLE_NOTE_RE.search(str(note))
+        if m and word in m.group(1).lower():
+            return True
+    return False
+
+
+def _portal_ded_prev(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """Deductible applies to preventive — a waiving footnote first."""
+    if _deductible_waived_for(portal_raw, "prevent"):
+        return "No"
+    value = bd.get("ded_prev")
+    return None if _blank(value) else str(value)
+
+
+def _portal_ded_diag(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
+    """Deductible applies to diagnostic — a waiving footnote first."""
+    if _deductible_waived_for(portal_raw, "diagnos"):
+        return "No"
+    value = bd.get("ded_diag")
+    return None if _blank(value) else str(value)
+
+
 def _portal_subscriber_name(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     """Subscriber name — unstated rather than the patient's, when not captured."""
     if _subscriber_unread(portal_raw):
@@ -602,6 +641,8 @@ def _portal_d4341_quads(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
 # All three share the (breakdown, raw_portal) signature so `_portal_value` can
 # call them uniformly, even where one of the two arguments isn't needed.
 _DERIVED = {
+    "_ded_prev": _portal_ded_prev,
+    "_ded_diag": _portal_ded_diag,
     "_subscriber_name": _portal_subscriber_name,
     "_subscriber_dob": _portal_subscriber_dob,
     "_cob": _portal_cob,

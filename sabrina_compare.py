@@ -175,6 +175,8 @@ _portal_value = _on_portal("_portal_value", 2)
 
 _portal_cob = _on_portal("_portal_cob", 1)
 _portal_d4341_quads = _on_portal("_portal_d4341_quads", 1)
+_portal_ded_diag = _on_portal("_portal_ded_diag", 1)
+_portal_ded_prev = _on_portal("_portal_ded_prev", 1)
 _portal_eff_date = _on_portal("_portal_eff_date", 1)
 _portal_in_network = _on_portal("_portal_in_network", 1)
 _portal_major_paid_on = _on_portal("_portal_major_paid_on", 1)

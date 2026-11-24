@@ -1088,6 +1088,38 @@ _st_none = _kritzer_rows(_stanaj(None), _STANAJ_SHEET)
 check("metlife shared history: no provision -> histories stay apart",
       (_st_none["d4910__hist"]["portal"], _st_none["d4910__hist"]["status"]), ("—", "mismatch"))
 
+# Richard Tinnell (MetLife, 2026-11-24): Covered Services, every category card
+# and every procedure row said "Deductible Applies : Yes" for Diagnostic and
+# Preventive, while the footnote under Deductibles said "No deductible applies
+# for Diagnostic & Preventive services". The sheet's "No" follows the footnote;
+# the audit read only Covered Services and flagged both rows.
+def _tinnell(notes):
+    md = {"patient": {"name": "Richard Tinnell", "dob": "05/06/1992", "relationship": "Subscriber"},
+          "provisions": [_BENEFIT_PERIOD],
+          "covered_services": [
+              {"category": "DIAGNOSTIC", "in_network": "100% Deductible Applies : Yes",
+               "out_of_network": "100% Deductible Applies : Yes"},
+              {"category": "PREVENTIVE", "in_network": "100% Deductible Applies : Yes",
+               "out_of_network": "100% Deductible Applies : Yes"}]}
+    if notes is not None:
+        md["deductible_notes"] = notes
+    return {"metlife_data": md, "benefit_coverage": {"procedures": []}}
+
+_TINNELL_NOTES = ["No deductible applies for Diagnostic & Preventive services",
+                  "This deductible can be combined with other types of procedures, such as TMJ or Periodontics."]
+_TINNELL_SHEET = {"ded_prev": "No", "ded_diag": "No"}
+_tn = _kritzer_rows(_tinnell(_TINNELL_NOTES), _TINNELL_SHEET)
+check("metlife deductible: the Deductibles footnote waives preventive (Richard)",
+      (_tn["ded_prev"]["portal"], _tn["ded_prev"]["status"]), ("No", "match"))
+check("metlife deductible: and diagnostic",
+      (_tn["ded_diag"]["portal"], _tn["ded_diag"]["status"]), ("No", "match"))
+_tn_old = _kritzer_rows(_tinnell(None), _TINNELL_SHEET)
+check("metlife deductible: an export without the footnote reads Covered Services as before",
+      (_tn_old["ded_prev"]["portal"], _tn_old["ded_diag"]["portal"]), ("Yes", "Yes"))
+_tn_prev_only = _kritzer_rows(_tinnell(["No deductible applies for Preventive services"]), _TINNELL_SHEET)
+check("metlife deductible: a footnote naming only preventive leaves diagnostic alone",
+      (_tn_prev_only["ded_prev"]["portal"], _tn_prev_only["ded_diag"]["portal"]), ("No", "Yes"))
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  1g. Apt 91215 — one plan stating two rules

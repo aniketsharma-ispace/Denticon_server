@@ -325,6 +325,13 @@
         };
     }
 
+    function scrapeDeductibleNotes() {
+        return Array.from(document.querySelectorAll(
+            ".plan-deductible-details .plan-deductible-details__footer-text"))
+            .map(li => clean(li.textContent).replace(/^\*\s*/, ""))
+            .filter(Boolean);
+    }
+
 
     // ══════════════════════════════════════════════════════════════════════════
     // COVERED SERVICES
@@ -463,6 +470,11 @@
             // The network the maximums and deductibles below are shown for.
             financials_network: financialsNetwork(),
             financials: scrapeFinancials(),
+            // The footnotes under Deductibles, e.g. "* No deductible applies for
+            // Diagnostic & Preventive services". MetLife can state that while
+            // Covered Services and every procedure row say "Deductible: YES"
+            // (Richard Tinnell), and the sheet follows the footnote.
+            deductible_notes: scrapeDeductibleNotes(),
             covered_services: scrapeCoveredServices(),
             provisions: scrapeProvisions()
         };
