@@ -498,7 +498,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // not downloaded): the Download button saves that payer's last scrape.
     const deliveryCarrier = isAetna ? 'aetna' : isCigna ? 'cigna' : isGuardian ? 'guardian'
         : isMetLife ? 'metlife' : isUCCI ? 'ucci' : isDeltaINS ? 'delta_ins'
-        : isDeltaMO ? 'delta_mo' : isDeltaToolkit ? 'delta_toolkit' : null;
+        : isDeltaMO ? 'delta_mo' : isDeltaToolkit ? 'delta_toolkit' : isDeltaRI ? 'delta_ri' : null;
     if (deliveryCarrier) btnDownload.textContent = 'Download JSON';
 
     btnDownload.onclick = async () => {

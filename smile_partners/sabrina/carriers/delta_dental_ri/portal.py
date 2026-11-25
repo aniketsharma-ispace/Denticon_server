@@ -561,14 +561,22 @@ def procedure_value(portal_raw: dict, code: str, field: str):
     return _procedure_field(portal_raw, field, (code,))
 
 
-def _portal_breakdown(_portal_raw: dict):
-    """
-    The Sabrina Fill Form prefill (`sabrina/prefill.py`) reads a carrier through
-    `_portal_breakdown` / `_portal_normalized` / `_portal_value`, which this
-    folder does not implement: the DD RI extension downloads its JSON and does
-    not send scrapes to the server. Refuse with a ValueError (HTTP 422) rather
-    than fail with an AttributeError (HTTP 500).
-    """
-    raise ValueError(
-        "The Sabrina Fill Form cannot be prefilled from a Delta Dental of Rhode "
-        "Island export yet. Upload the JSON with the Sabrina PDF on the audit page.")
+# ── Sabrina Fill Form prefill (sabrina/prefill.py) ──────────────────────────
+# The prefill reads a carrier through _portal_breakdown / _portal_normalized /
+# _portal_value, the other folders' interface. DD RI resolves every field
+# straight off the export (portal_value), so these hand the prefill that same
+# resolver: the Fill Form gets exactly the values the audit compares.
+
+def _portal_breakdown(portal_raw: dict) -> dict:
+    """No shared breakdown: DD RI answers each field from the export itself."""
+    return {}
+
+
+def _portal_normalized(portal_raw: dict) -> dict:
+    """The export as uploaded; `portal_value` translates it where it needs to."""
+    return portal_raw or {}
+
+
+def _portal_value(field: dict, bd: dict, portal_raw: dict, sab_raw=None):
+    """One spec'd field's value, as the audit reads it."""
+    return _field_value(field, portal_raw)

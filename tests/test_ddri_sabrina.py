@@ -669,13 +669,65 @@ class DeltaDentalRiSabrinaTests(unittest.TestCase):
         for code in ("D6010", "D6057"):
             self.assertEqual(procedure_value(portal, code, "frequency_limit"), "1X5Year")
 
-    def test_fill_form_prefill_refuses_ddri_with_a_422_error(self):
-        # Sabrina prefill reads carriers through _portal_breakdown; DD RI must
-        # refuse with a ValueError (HTTP 422), not an AttributeError (HTTP 500).
+    def test_fill_form_prefill_reads_ddri_through_the_audit_resolver(self):
+        # The prefill reads carriers through _portal_breakdown / _portal_value;
+        # DD RI implements them over portal_value (11/25), so the Fill Form
+        # gets the values the audit compares instead of a refusal.
         from smile_partners.sabrina import prefill
-        with self.assertRaisesRegex(ValueError, "Rhode Island"):
-            prefill.portal_values(_portal(), "In")
+        carrier, values, _spec = prefill.portal_values(_portal(), "In")
+        self.assertEqual(carrier, "delta_dental_ri")
+        self.assertEqual(values.get("member_id"), "0003268280")
 
+
+
+class DdriSabrinaPrefillTests(unittest.TestCase):
+    """The Fill Form prefill reads DD RI through the same resolver the audit uses."""
+
+    def _prefill(self, portal=None):
+        from smile_partners.sabrina.prefill import build_prefill
+        return build_prefill(portal or _portal(), "In")
+
+    @staticmethod
+    def _field(result, name):
+        return next((f["value"] for f in result["fields"] if f["name"] == name), None)
+
+    @staticmethod
+    def _cell(result, code, column):
+        return next((g["value"] for g in result["grid"]
+                     if g["code"] == code and g["column"] == column), None)
+
+    def test_prefill_is_no_longer_refused(self):
+        self.assertEqual(self._prefill()["carrier"], "delta_dental_ri")
+
+    def test_member_key_matches_scrape_to_form(self):
+        from smile_partners.sabrina.prefill import member_key
+        self.assertEqual(member_key(_portal()), ("0003268280", "03/22/1997"))
+
+    def test_plan_amounts_as_the_audit_reads_them(self):
+        result = self._prefill()
+        self.assertEqual(self._field(result, "insuranceDetails.yearlyMaxAmount"), "1000")
+        self.assertEqual(self._field(result, "benefitsInfo.yearlyMaxUsed"), "100")
+        self.assertEqual(self._field(result, "insuranceDetails.individualDeductible"), "50")
+        self.assertEqual(self._field(result, "insuranceDetails.basic"), "80")
+
+    def test_grid_and_team_answers(self):
+        result = self._prefill()
+        self.assertEqual(self._cell(result, "D0120", "frequency"), "2X1Year")
+        self.assertEqual(self._cell(result, "D4341", "quads"), "4")
+        self.assertEqual(self._cell(result, "D2160", "frequency"), "No Frequency")
+
+    def test_waiting_periods_per_code(self):
+        portal = _portal()
+        for row in portal["benefit_coverage"]["procedures"]:
+            if row.get("procedure_code") == "D2160":
+                row["waiting_period"] = "6 Months"
+        rows = self._prefill(portal)["waiting_periods"]
+        self.assertEqual([(w["applies_to"], w["period"], w["unit"]) for w in rows],
+                         [("Basic", "6", "Months")])
+        self.assertEqual(self._field(self._prefill(portal), "insuranceDetails.waitingPeriodFlag"), "Yes")
+
+    def test_no_waiting_period_stated_adds_no_rows(self):
+        self.assertEqual(self._prefill()["waiting_periods"], [])
 
 if __name__ == "__main__":
     unittest.main()
