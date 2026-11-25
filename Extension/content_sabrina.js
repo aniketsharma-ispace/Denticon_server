@@ -560,7 +560,10 @@
   };
 
   // Never listed as blank (BPO, 11/2026): not the verifier's job on this form.
-  const NOT_CHECKED = new Set(["demographic.providerNpi", "benefitsInfo.expirationDate"]);
+  // Not required on the Fill Form, so never listed as "Still blank"
+  // (Provider Specialty: BPO feedback, 11/25).
+  const NOT_CHECKED = new Set(["demographic.providerNpi", "benefitsInfo.expirationDate",
+                               "demographic.speciality"]);
   // Labels that don't say where the field is.
   const LABEL_FOR = { "noteInfo.eligibilityResult": "Eligibility (NOTE INFO section, bottom of the form)" };
 

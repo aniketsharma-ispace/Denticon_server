@@ -340,8 +340,12 @@ def _frequency(value, vocab=None) -> str | None:
         return None
     if text.upper() in _FREQ_WORDS:
         return _FREQ_WORDS[text.upper()]
-    if re.fullmatch(r"\d+X\d+(Year|Month|Day)s?", text, re.IGNORECASE):
-        return text
+    span = re.fullmatch(r"(\d+)X(\d+)(Year|Month|Day)s?", text, re.IGNORECASE)
+    if span:
+        # "1 Unit, per 999 Months" is the portal's way of saying once per
+        # lifetime (BPO feedback, 11/25: D4355 → 1xLifetime).
+        months = int(span.group(2)) * {"year": 12, "month": 1, "day": 1 / 30}[span.group(3).lower()]
+        return f"{span.group(1)}XLifetime" if months >= 999 else text
     if vocab is None:
         from .sheet import vocabulary as vocab
     _num_frequency = vocab._num_frequency
@@ -503,6 +507,7 @@ def build_prefill(portal_raw: dict, network: str) -> dict:
                              "source": key, "label": field["label"]})
 
     grid += _no_history(spec, by_key, grid)
+    grid = _not_covered_ages(spec, by_key, grid)
     fields += _met_flags(values)
     hooks = carrier_prefill(portal_raw)
     reader = _hook(hooks, "form_only")
@@ -579,6 +584,28 @@ def _no_history(spec: list, by_key: dict, grid: list) -> list[dict]:
             has_history.add(code)
             out.append({"code": code, "column": "history", "value": "NH", "level": "appointment",
                         "source": field["key"], "label": field["label"]})
+    return out
+
+
+def _not_covered_ages(spec: list, by_key: dict, grid: list) -> list[dict]:
+    """
+    Age Limit "0" on every age cell whose code is Not Covered (frequency NC),
+    replacing any age the portal printed for it (BPO feedback, 11/25: "update
+    age 0 whenever a code is not covered"). Only the age cells the client's
+    spec has (D1206, D1208, D1351, D1510, Ortho); D4341's age is Quads.
+    """
+    not_covered = {g["code"] for g in grid if g["column"] == "frequency" and g["value"] == "NC"}
+    if not not_covered:
+        return grid
+    out = [g for g in grid if not (g["column"] == "ageLimit" and g["code"] in not_covered)]
+    done = set()
+    for field in spec:
+        target = _grid_target(field, by_key)
+        if not target or target[1] != "ageLimit" or target[0] not in not_covered or target[0] in done:
+            continue
+        done.add(target[0])
+        out.append({"code": target[0], "column": "ageLimit", "value": "0", "level": "plan",
+                    "source": field["key"], "label": field["label"]})
     return out
 
 

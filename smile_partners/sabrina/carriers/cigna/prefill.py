@@ -21,8 +21,9 @@ def scrape_network(portal_raw: dict) -> str | None:
 
 def form_only(view: dict, values: dict) -> list[dict]:
     """
-    Plan Type, Calendar/Fiscal Year and Ortho Maximum Covered, from the
-    Patient and Plan Detail and Benefit Maximums cards (business rules, 11/2026).
+    Relation to Insured, Plan Type, Calendar/Fiscal Year and Ortho Maximum
+    Covered, from the Patient and Plan Detail and Benefit Maximums cards
+    (business rules, 11/2026).
     """
     from .rules import _cigna_export
     from ....portals.cigna import _cigna_class_codes, _cigna_matching_records
@@ -35,6 +36,19 @@ def form_only(view: dict, values: dict) -> list[dict]:
         if value:
             out.append({"name": name, "value": value, "level": level,
                         "source": source, "label": label})
+
+    # Relation to Insured — the patient card's Relationship ("Self", "Spouse",
+    # "Child"); BPO feedback 11/25: it was never filled for Cigna.
+    relationship = str((raw.get("patient") or {}).get("relationship") or "").lower()
+    relation = None
+    if re.search(r"self|subscriber|employee|member|insured", relationship):
+        relation = "Self"
+    elif re.search(r"spouse|domestic partner|husband|wife", relationship):
+        relation = "Spouse"
+    elif re.search(r"child|son|daughter|dependent|student", relationship):
+        relation = "Dependent"
+    add("demographic.relationToInsured", relation, "appointment",
+        "patient.relationship", "Relation to Insured")
 
     # Plan Type — "DENTAL PPO" / "Preferred Provider Organization-..." -> PPO,
     # "DENTAL INDEMNITY" -> Indemnity.
