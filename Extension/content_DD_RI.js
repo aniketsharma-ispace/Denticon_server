@@ -945,16 +945,16 @@ async function startCrawl() {
             [STORAGE_KEYS.CACHED_PATIENT_NOTES]: patientNotes 
         }, resolve));
         
-        logState("INITIATING DOWNLOAD");
-        broadcastState("DOWNLOADING", "Downloading Audit JSON...");
-        await downloadJSON(finalJson);
+        logState("SENDING");
+        broadcastState("DOWNLOADING", "Sending to the server...");
+        chrome.runtime.sendMessage({ type: "SCRAPE_DONE", carrier: "delta_ri", data: finalJson });
         
         logState("CLEANUP");
         await clearPreviousSession(false); // Keep cached_patient_notes for subsequent manual download
         resetCacheTimeout();
         
         logState("COMPLETE");
-        broadcastState("COMPLETE", "Download Complete", "Audit Saved Successfully");
+        broadcastState("COMPLETE", "Crawl Complete", "Sent to the server. The popup's Download JSON button saves it.");
         
     } catch (err) {
         logState("FAILED");

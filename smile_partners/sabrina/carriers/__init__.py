@@ -1,7 +1,7 @@
 """
 One folder per insurance portal.
 
-    aetna/  cigna/  delta_dental/  delta_mo/  delta_toolkit/  guardian/  metlife/  ucci/
+    aetna/  cigna/  delta_dental/  delta_mo/  delta_ri/  delta_toolkit/  guardian/  metlife/  ucci/
 
 Each folder holds the whole audit for its carrier:
 
@@ -33,6 +33,7 @@ CARRIERS = {
     "cigna":        "Cigna",
     "delta_dental": "Delta Dental",
     "delta_mo":     "Delta Dental of Missouri",
+    "delta_ri":     "Delta Dental of Rhode Island",
     "delta_toolkit": "Delta Dental Office Toolkit",
     "guardian":     "Guardian",
     "metlife":      "MetLife",
@@ -47,6 +48,7 @@ _SOURCE_INSURER = {
     "cigna":           "cigna",
     "delta dental":    "delta_dental",
     "delta dental mo": "delta_mo",
+    "delta dental ri": "delta_ri",
     "guardian":        "guardian",
     "united concordia": "ucci",
 }
@@ -102,6 +104,7 @@ def detect_carrier(portal_raw) -> str | None:
     from ...portals.cigna import _is_cigna_portal
     from ...portals.delta_dental import _is_dd_portal
     from ...portals.delta_mo import _is_dd_mo_portal
+    from ...portals.delta_ri import _is_ddri_portal
     from ...portals.delta_toolkit import _is_dd_toolkit_portal
     from ...portals.guardian import _is_guardian_portal
     from ...portals.ucci import _is_ucci_portal
@@ -119,6 +122,8 @@ def detect_carrier(portal_raw) -> str | None:
             return "delta_dental"
         if _is_dd_mo_portal(candidate):
             return "delta_mo"
+        if _is_ddri_portal(candidate):
+            return "delta_ri"
         if _is_guardian_portal(candidate):
             return "guardian"
         if _is_ucci_portal(candidate):

@@ -249,6 +249,241 @@ check("Toolkit: In picked on a Nonparticipating scrape is refused",
 check("Toolkit before the pop-up (no network_choice) still takes the pick",
       scrape_network(_tk(None, "PPO Dentist")), None)
 
+print("── PREFILL: DELTA DENTAL RI ──")
+# A made-up DD RI export in content_DD_RI.js's shape (ddri_data) — no real patient.
+import json as _json
+_DDRI = _json.loads(r"""
+{
+ "patient": {
+  "name": "TEST PATIENT",
+  "subscriber_name": "TEST PATIENT",
+  "member_id": "123456789",
+  "dob": "02/03/1990",
+  "relationship": "Self"
+ },
+ "plan_details": {
+  "employer_group": "TEST EMPLOYER - RI - ACTIVE",
+  "group_number": "4250 - 0403",
+  "effective_date": "01/01/2024",
+  "termination_date": "",
+  "network_status": "Delta Dental PPO",
+  "coverage_type": "Family",
+  "plan_type": "PPO"
+ },
+ "financials": {
+  "maximums": [
+   {
+    "category": "Annual Maximum",
+    "total": "$1,500.00",
+    "used": "$320.00",
+    "remaining": "$1,180.00"
+   },
+   {
+    "category": "Orthodontic Lifetime Maximum",
+    "total": "$1,000.00",
+    "used": "$0.00",
+    "remaining": "$1,000.00"
+   }
+  ],
+  "deductibles": [
+   {
+    "category": "Individual Deductible",
+    "total": "$50.00",
+    "used": "$50.00",
+    "remaining": "$0.00"
+   },
+   {
+    "category": "Family Deductible",
+    "total": "$150.00",
+    "used": "$50.00",
+    "remaining": "$100.00"
+   }
+  ]
+ },
+ "benefit_categories": [],
+ "missing_tooth_clause": "Yes",
+ "dependent_age_limit": "Dependent children are covered to age 26.",
+ "benefit_coverage": {
+  "procedures": [
+   {
+    "procedure_code": "D0120",
+    "description": "Periodic oral evaluation",
+    "coverage_status": "COVERED",
+    "coverage_percentage": "100 %",
+    "deductible_applies": "No",
+    "waiting_period": "None",
+    "alternate_benefit": "No",
+    "frequency": "Two per calendar year",
+    "age_limit": "N/A",
+    "history": [
+     {
+      "service_date": "03/04/2026"
+     },
+     {
+      "service_date": "09/10/2025"
+     }
+    ]
+   },
+   {
+    "procedure_code": "D0210",
+    "description": "Intraoral complete series",
+    "coverage_status": "COVERED",
+    "coverage_percentage": "100 %",
+    "deductible_applies": "No",
+    "waiting_period": "None",
+    "alternate_benefit": "No",
+    "frequency": "Once every 5 years",
+    "age_limit": "N/A",
+    "history": []
+   },
+   {
+    "procedure_code": "D0274",
+    "description": "Bitewings - four images",
+    "coverage_status": "COVERED",
+    "coverage_percentage": "100 %",
+    "deductible_applies": "No",
+    "waiting_period": "None",
+    "alternate_benefit": "No",
+    "frequency": "Once per calendar year",
+    "age_limit": "N/A",
+    "history": [
+     {
+      "service_date": "03/04/2026"
+     }
+    ]
+   },
+   {
+    "procedure_code": "D1110",
+    "description": "Prophylaxis - adult",
+    "coverage_status": "COVERED",
+    "coverage_percentage": "100 %",
+    "deductible_applies": "No",
+    "waiting_period": "None",
+    "alternate_benefit": "No",
+    "frequency": "Two per calendar year",
+    "age_limit": "N/A",
+    "history": [
+     {
+      "service_date": "03/04/2026"
+     }
+    ]
+   },
+   {
+    "procedure_code": "D1206",
+    "description": "Topical fluoride varnish",
+    "coverage_status": "COVERED",
+    "coverage_percentage": "100 %",
+    "deductible_applies": "No",
+    "waiting_period": "None",
+    "alternate_benefit": "No",
+    "frequency": "Two per calendar year for dependent children under age 19",
+    "age_limit": "under age 19",
+    "history": []
+   },
+   {
+    "procedure_code": "D1351",
+    "description": "Sealant",
+    "coverage_status": "NOT COVERED",
+    "coverage_percentage": "N/A",
+    "deductible_applies": "N/A",
+    "waiting_period": "N/A",
+    "alternate_benefit": "N/A",
+    "frequency": "N/A",
+    "age_limit": "N/A",
+    "history": []
+   },
+   {
+    "procedure_code": "D2140",
+    "description": "Amalgam - one surface",
+    "coverage_status": "COVERED",
+    "coverage_percentage": "80 %",
+    "deductible_applies": "Yes",
+    "waiting_period": "6 Months",
+    "alternate_benefit": "No",
+    "frequency": "N/A",
+    "age_limit": "N/A",
+    "history": []
+   },
+   {
+    "procedure_code": "D2740",
+    "description": "Crown - porcelain/ceramic",
+    "coverage_status": "COVERED",
+    "coverage_percentage": "50 %",
+    "deductible_applies": "Yes",
+    "waiting_period": "12 Months",
+    "alternate_benefit": "Yes",
+    "frequency": "Once every 5 years",
+    "age_limit": "N/A",
+    "history": []
+   },
+   {
+    "procedure_code": "D4341",
+    "description": "Periodontal scaling and root planing - four or more teeth per quadrant",
+    "coverage_status": "COVERED",
+    "coverage_percentage": "80 %",
+    "deductible_applies": "Yes",
+    "waiting_period": "None",
+    "alternate_benefit": "No",
+    "frequency": "Once per quadrant every 24 months",
+    "age_limit": "N/A",
+    "history": []
+   },
+   {
+    "procedure_code": "D8080",
+    "description": "Comprehensive orthodontic treatment",
+    "coverage_status": "COVERED",
+    "coverage_percentage": "50 %",
+    "deductible_applies": "No",
+    "waiting_period": "None",
+    "alternate_benefit": "No",
+    "frequency": "N/A",
+    "age_limit": "under age 19",
+    "history": []
+   },
+   {
+    "procedure_code": "D9310",
+    "description": "Consultation",
+    "coverage_status": "SCRAPE ERROR",
+    "coverage_percentage": "N/A",
+    "deductible_applies": "N/A",
+    "waiting_period": "N/A",
+    "alternate_benefit": "N/A",
+    "frequency": "N/A",
+    "age_limit": "N/A",
+    "history": []
+   }
+  ]
+ },
+ "ddri_data": true
+}
+""")
+from smile_partners.sabrina.carriers import detect_carrier            # noqa: E402
+r_ri = build_prefill(_DDRI, "In")
+check("DD RI recognised", (detect_carrier(_DDRI), r_ri["carrier"]), ("delta_ri", "delta_ri"))
+check("DD RI member key", member_key(_DDRI), ("123456789", "02/03/1990"))
+check("DD RI yearly max / used", (field(r_ri, "insuranceDetails.yearlyMaxAmount"),
+                                  field(r_ri, "benefitsInfo.yearlyMaxUsed")), ("1500", "320"))
+check("DD RI deductibles and met", (field(r_ri, "insuranceDetails.individualDeductible"),
+                                    field(r_ri, "benefitsInfo.individualMetAmount"),
+                                    field(r_ri, "insuranceDetails.familyDeductible"),
+                                    field(r_ri, "benefitsInfo.familyMetAmount")), ("50", "50", "150", "50"))
+check("DD RI basic % from D2140 (its crawl has no D2160)", field(r_ri, "insuranceDetails.basic"), "80")
+check("DD RI ortho max", field(r_ri, "benefitsInfo.orthoMaximumAmount"), "1000")
+check("DD RI frequency in Sabrina's words",
+      [cell(r_ri, c, "frequency") for c in ("D0120", "D0210", "D0274")], ["2X1Year", "1X5Year", "1X1Year"])
+check("DD RI D4341 'per quadrant every 24 months' → 1X2Year", cell(r_ri, "D4341", "frequency"), "1X2Year")
+check("DD RI history: latest date only", cell(r_ri, "D0120", "history"), "03/04/2026")
+check("DD RI 'under age 19' → 19", cell(r_ri, "D1206", "ageLimit"), "19")
+check("DD RI Not Covered → NC / 0", (cell(r_ri, "D1351", "frequency"), cell(r_ri, "D1351", "percentage")),
+      ("NC", "0"))
+check("DD RI missing tooth clause", next((q["value"] for q in r_ri["questions"]
+                                          if q["question"] == "DoesMissingToothClauseApply?"), None), "Yes")
+check("DD RI waiting periods per code",
+      [(w["applies_to"], w["period"], w["unit"]) for w in r_ri["waiting_periods"]],
+      [("Basic", "6", "Months"), ("Major", "12", "Months")])
+check("DD RI: no UCCI team rules carried over (quads left for the user)", cell(r_ri, "D4341", "quads"), None)
+check("DD RI: a failed lookup (D9310) fills nothing", [g for g in r_ri["grid"] if g["code"] == "D9310"], [])
+
 print("── SCRAPE STORE ──")
 sid = scrape_store.save("smile_partners", "aetna", "w000-111 222", "2/3/1990", EXPORT)
 check("found by member ID, any format",
