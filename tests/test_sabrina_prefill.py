@@ -296,6 +296,31 @@ check("Contract Year → Fiscal, yearly ortho max → Yearly, no timing when ort
        [q for q in _extras if "question" in q]),
       ("Fiscal", "Yearly", []))
 
+print("── BPO FEEDBACK 11/25 ──")
+import copy as _c25                                                       # noqa: E402
+fb = _c25.deepcopy(EXPORT)
+fb["in_network"]["service_level_benefits"] += [
+    _row("D1351", message="Not Covered", age="Maximum Age: 99"),
+    _row("D1510", message="Not Covered"),
+    _row("D4355", "100% / 0%", "1 Unit, per 999 Months PER FULL MOUTH."),
+    _row("D1208", "0% / 100%", "1 Unit, for 1 Calendar Year PER FULL MOUTH.", age="Maximum Age: 14"),
+]
+r_fb = build_prefill(fb, "In")
+check("not covered → Age 0, replacing the printed age", cell(r_fb, "D1351", "ageLimit"), "0")
+check("not covered with no age printed → Age 0", cell(r_fb, "D1510", "ageLimit"), "0")
+check("D1206 (Not Covered in the sample) → Age 0", cell(r_fb, "D1206", "ageLimit"), "0")
+check("covered code keeps its own age", cell(r_fb, "D1208", "ageLimit"), "14")
+check("D4341's age column is Quads, not touched", cell(r_fb, "D4341", "quads"), "4")
+check("999 months → 1XLifetime", cell(r_fb, "D4355", "frequency"), "1XLifetime")
+from smile_partners.sabrina.prefill import _frequency as _f25              # noqa: E402
+check("other spans untouched", [_f25("1X36Months"), _f25("1X5Year"), _f25("1X84Year")],
+      ["1X36Months", "1X5Year", "1XLifetime"])
+for rel, want in (("Child", "Dependent"), ("Spouse", "Spouse"), ("Self", "Self"), ("", None)):
+    cg_rel = _c25.deepcopy(cg_total)
+    cg_rel.setdefault("patient", {})["relationship"] = rel
+    check(f"Cigna relation {rel or '(none)'!r} → {want}",
+          field(build_prefill(cg_rel, ""), "demographic.relationToInsured"), want)
+
 print("── SCRAPE STORE ──")
 sid = scrape_store.save("smile_partners", "aetna", "w000-111 222", "2/3/1990", EXPORT)
 check("found by member ID, any format",
