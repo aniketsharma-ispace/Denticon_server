@@ -1992,9 +1992,9 @@ async function startCrawl() {
       ),
     );
 
-    broadcastState("DOWNLOADING", "Downloading DD RI Audit...");
-    await downloadJSON(finalJson);
-    broadcastState("COMPLETE", "Download Complete", "DD RI audit JSON saved.");
+    broadcastState("DOWNLOADING", "Sending DD RI audit to the server...");
+    chrome.runtime.sendMessage({ type: "SCRAPE_DONE", carrier: "delta_ri", data: finalJson });
+    broadcastState("COMPLETE", "Crawl Complete", "Sent to the server. The popup's Download JSON button saves it.");
 
     logState("CLEANUP");
     await clearPreviousSession(false); // Keep cached_patient_notes for subsequent manual download
