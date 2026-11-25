@@ -260,6 +260,42 @@ check("Toolkit: In picked on a Nonparticipating scrape is refused",
 check("Toolkit before the pop-up (no network_choice) still takes the pick",
       scrape_network(_tk(None, "PPO Dentist")), None)
 
+print("── PREFILL: TOOLKIT FORM-ONLY CELLS (11/25) ──")
+from smile_partners.sabrina import prefill as _pf                        # noqa: E402
+from smile_partners.sabrina.carriers.delta_toolkit import prefill as _tkpf  # noqa: E402
+check("Not Covered % → 0 (grid option and Insurance Details number)",
+      (_pf._pct_option("Not Covered"), _pf._pct_number("Not Covered"), _pf._pct_option("80%")),
+      ("0", "0", "80%"))
+check("the Toolkit's major_payment_timing fills the Prep or Seat question",
+      _pf.GRID_QUESTIONS.get("major_payment_timing"), "AreMajorServicesPaidonPreporSeatdate?")
+check("Toolkit form-only rows: D0120/D2160/D2740 %, D4381, D4260 freq, D1510 age, ortho age",
+      sorted(f["key"] for f in _tkpf.FORM_ONLY_SPEC),
+      sorted(["pct_prev", "pct_basic", "pct_major", "d4381", "d4381__freq", "d4260__freq",
+              "d1510__age", "ortho_coverage__age"]))
+_tk_raw = {
+    "more_information": {"client_benefit_information": {"display_fields": {
+        "product": "Delta Dental PPO (Point-of-Service)"}}},
+    "maximums_and_deductibles": {"accumulationPeriodType": "Calendar Year", "rows": [
+        {"type": "Maximum", "category": "General", "isLifetime": False},
+        {"type": "Maximum", "category": "Orthodontic", "isLifetime": True}]},
+    "ortho_information": {"orthoPaymentSchedule": {"paymentFrequencyType": {"code": "M", "value": "Monthly"}}},
+}
+_extras = _tkpf.form_only({}, {"_raw": _tk_raw, "ortho_coverage": "60%"})
+check("Toolkit Plan Type / Calendar / Ortho Max Covered",
+      {f["name"]: f["value"] for f in _extras if "name" in f},
+      {"insuranceDetails.planType": "PPO", "insuranceDetails.calendarorfiscal": "Calendar",
+       "benefitsInfo.orthoMaximumCovered": "Lifetime"})
+check("Toolkit Ortho Payment Timing is a grid question",
+      [(q["question"], q["value"]) for q in _extras if "question" in q], [("OrthoPaymentTiming", "Monthly")])
+_tk_raw["maximums_and_deductibles"]["accumulationPeriodType"] = "Contract Year"
+_tk_raw["maximums_and_deductibles"]["rows"][1]["isLifetime"] = False
+_extras = _tkpf.form_only({}, {"_raw": _tk_raw, "ortho_coverage": "Not Covered"})
+check("Contract Year → Fiscal, yearly ortho max → Yearly, no timing when ortho is not covered",
+      ({f.get("name"): f["value"] for f in _extras}.get("insuranceDetails.calendarorfiscal"),
+       {f.get("name"): f["value"] for f in _extras}.get("benefitsInfo.orthoMaximumCovered"),
+       [q for q in _extras if "question" in q]),
+      ("Fiscal", "Yearly", []))
+
 print("── SCRAPE STORE ──")
 sid = scrape_store.save("smile_partners", "aetna", "w000-111 222", "2/3/1990", EXPORT)
 check("found by member ID, any format",

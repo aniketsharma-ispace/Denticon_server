@@ -65,7 +65,7 @@ The rules live in each client’s `portals/delta_toolkit.py` (reading the Toolki
 - **Frequency phrases added over Smile:**
   - D9110 matches only “emergency examinations/exams”.
   - D4341 matches either word order.
-  - D6056/57/58 match “implants and/or the restorations”.
+  - D6056/57/58 match “implants and/or the restorations”. **[11/25]** Smile now does the same (user: D6057/D6058 are 1X5Years).
   - D9944 also matches “night guard/nightguard”.
   - **[10/26]** D1516 matches “space maintainers”, D2642 “cast restorations/onlays”, D2750 “cast restorations/crowns”, D6240 “bridgework”, and D9946 “occlusal guard/night guard/nightguard”. The 10/23 crawl attaches these sentences to the codes themselves.
 - **“no age limitation” sentence:** it becomes 99.
@@ -278,3 +278,17 @@ The rules live in `smile_partners/portals/ucci.py` (reading the export of united
 - **Firefox → server:** Firefox gives Manifest V3 extensions a default CSP with `upgrade-insecure-requests`, which turned the background's `http://10.30.10.67:8000` calls into `https://` and failed ("Cannot reach the Insurance Auditor server"). The manifest (1.62) sets `content_security_policy.extension_pages` to `script-src 'self'; object-src 'self';` so the calls stay on HTTP. Chrome/Edge never upgraded them.
 - **Firefox scrape, Edge Fill Form:** `/api/prefill` with `only_own=true` still fills from this browser's own last scrape first. When this browser has no scrape of the form's patient, it fills from the newest **pending** scrape with the same MEMBER# **and** PATIENT DOB (both required, both must agree) made in the last `SCRAPE_OTHER_BROWSER_MINUTES` (default 60). Otherwise 404 (no scrape) or 409 (this browser's last scrape is another patient).
 - The Sabrina panel keeps New/Existing enabled without a matching scrape in this browser and lets the server decide; the patient check after the fill is unchanged.
+
+# Sabrina Fill Form: Delta Toolkit prefill review [11/25]
+
+Toolkit PPO new-plan review: every value filled was right, but 14 cells the export states were left blank. Fixed:
+
+- **Fill Form cells the sheet doesn't print** are read in `carriers/delta_toolkit/prefill.py` (`FORM_ONLY_SPEC`): the same readers as the audit, filled only and never audited. They cover PREVENTIVE(D0120)% / BASIC(D2160)% / MAJOR(D2740)% (exact code %), D4381 % and Frequency, D4260 Frequency, D1510 Age Limit and Ortho Coverage Age Limit (`orthoAgeLimitConfig`, as the audit reads it).
+- **Toolkit `form_only`:**
+  - **Plan Type:** PPO when Client Benefit Information's product says PPO. Any other product is left to the user.
+  - **Calendar/Fiscal:** Calendar for `accumulationPeriodType` "Calendar Year"; any other year is Fiscal.
+  - **Ortho Maximum Covered:** Lifetime or Yearly, from the Orthodontic maximum row's `isLifetime`.
+  - **Ortho Payment Timing** (grid question `OrthoPaymentTiming`): from `orthoPaymentSchedule.paymentFrequencyType`, mapped to Monthly / Quarterly / Semi Yearly / Yearly / One Time, and only when ortho is covered.
+- **Prep or Seat:** the Toolkit spec's `major_payment_timing` ("Seat Date") now fills "Are Major Services Paid on Prep or Seat date?".
+- **Not Covered % → 0** on every carrier, for both the grid's Percentage option and the Insurance Details % inputs.
+- **Left blank on purpose (user, 11/25):** the payer names and ID, ADDRESS / STREET1 / CITY / STATE / ZIP, INS PHONE#, INS PLAN NAME and INS FEE SCHEDULE. Everything else in Insurance Details is filled.

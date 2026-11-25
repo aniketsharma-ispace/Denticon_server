@@ -76,6 +76,12 @@ _FREQUENCY_PHRASES: dict[str, tuple[str, ...]] = {
     "D6750": ("bridgework",),
     "D6245": ("bridgework",),
     "D6010": ("implants",),
+    # "Implants and/or the restorations are payable once per tooth per
+    # five-year period" covers the abutment and implant crown too (11/25, user:
+    # D6057/D6058 are 1X5Years). Same as Star.
+    "D6056": ("implants and/or the restorations", "implants and/or restorations"),
+    "D6057": ("implants and/or the restorations", "implants and/or restorations"),
+    "D6058": ("implants and/or the restorations", "implants and/or restorations"),
     "D9944": ("occlusal guard",),   # matches "occlusal guard" and "occlusal guards"
 }
 
