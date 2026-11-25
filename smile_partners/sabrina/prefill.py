@@ -80,6 +80,8 @@ GRID_QUESTIONS: dict[str, str] = {
     "missing_tooth":                 "DoesMissingToothClauseApply?",
     "prev_in_max":                   "PreventativeIncludedinYearlymax?",
     "major_paid_on":                 "AreMajorServicesPaidonPreporSeatdate?",
+    # The Toolkit's spec names the same question major_payment_timing.
+    "major_payment_timing":          "AreMajorServicesPaidonPreporSeatdate?",
     "posterior_composite_downgrade": "ArePosteriorCompositesDowngradedToAmalgam?",
     "porcelain_posterior_downgrade": "ArePosteriorCrownsDowngraded?",
     "perio_maint_after_srp":         "WhenIsFirstPerioMaintenanceAllowedAfterSRP?",
@@ -120,6 +122,15 @@ def carrier_prefill(portal_raw: dict):
     people working on different carriers never edit the same file:
 
       form_only(view, values) -> [field, …]   Relation, Plan Type, … (optional)
+                                              values["_raw"] is the export as sent.
+                                              An item with "question" goes to the
+                                              grid questions, one with "code" and
+                                              "column" to the grid; the rest are
+                                              plain fields.
+      FORM_ONLY_SPEC          [spec row, …]   rows read exactly like the audit's
+                                              spec rows but filled only, never
+                                              audited: Fill Form cells the sheet
+                                              doesn't print (optional)
       waiting_periods(view)   -> [row, …]     Basic / Major rows    (optional)
       scrape_network(raw)     -> "In"/"Out"   the network the scrape was taken
                                               for, when the portal scrapes one
@@ -177,6 +188,9 @@ def portal_values(portal_raw: dict, network: str) -> tuple[str, dict, list[dict]
     key, rules = carrier_rules(portal_raw)
     portal = import_module(f"{rules.__name__}.portal")
     spec = import_module(f"{rules.__name__}.spec")._SPEC
+    # Fill Form cells the sheet doesn't print: read the same way, never audited.
+    extra = getattr(carrier_prefill(portal_raw), "FORM_ONLY_SPEC", None) or []
+    spec = list(spec) + [f for f in extra if f["key"] not in {s["key"] for s in spec}]
 
     # The audit's In Network answer, as the sheet would state it.
     sheet = {"in_network": net}
@@ -196,8 +210,9 @@ def portal_values(portal_raw: dict, network: str) -> tuple[str, dict, list[dict]
             value = None
         if value is not None and str(value).strip() != "":
             values[field["key"]] = str(value).strip()
-    # The network-specific view, for the form-only readers below.
+    # The network-specific view and the export as sent, for the form-only readers below.
     values["_view"] = norm
+    values["_raw"] = raw
     return key, values, spec
 
 
@@ -256,8 +271,14 @@ def _money(value) -> str | None:
     return str(int(amount)) if amount.is_integer() else f"{amount:.2f}"
 
 
+def _not_covered(value) -> bool:
+    return re.sub(r"[^a-z]", "", str(value).lower()) in ("notcovered", "nc")
+
+
 def _pct_number(value) -> str | None:
-    """'80%' → '80' for the Insurance Details number inputs."""
+    """'80%' → '80' for the Insurance Details number inputs; Not Covered → '0'."""
+    if _not_covered(value):
+        return "0"
     m = re.search(r"\d+(?:\.\d+)?", str(value))
     if not m:
         return None
@@ -487,9 +508,16 @@ def build_prefill(portal_raw: dict, network: str) -> dict:
     reader = _hook(hooks, "form_only")
     if reader:
         try:
-            fields += reader(values.get("_view") or {}, values)
+            extras = reader(values.get("_view") or {}, values) or []
         except Exception:          # a form-only extra must never sink the fill
-            pass
+            extras = []
+        for item in extras:
+            if item.get("question"):
+                questions.append(item)
+            elif item.get("code") and item.get("column"):
+                grid.append(item)
+            else:
+                fields.append(item)
 
     waiting = []
     wp_reader = _hook(hooks, "waiting_periods")
