@@ -132,6 +132,7 @@ def carrier_prefill(portal_raw: dict):
                                               audited: Fill Form cells the sheet
                                               doesn't print (optional)
       waiting_periods(view)   -> [row, …]     Basic / Major rows    (optional)
+      adjust_grid(grid)       -> grid         carrier-only grid rules (optional)
       scrape_network(raw)     -> "In"/"Out"   the network the scrape was taken
                                               for, when the portal scrapes one
                                               network only (Cigna)   (optional)
@@ -396,6 +397,26 @@ def _yesno(value) -> str | None:
     return None
 
 
+# COORDINATION OF BENEFITS is a dropdown: the portal's wording → its option.
+# A plain "always the primary plan" / standard rule is Standard (user, 11/26).
+_COB_OPTIONS = (
+    (r"non[\s-]*dup", "Non-Duplicate"),
+    (r"carve[\s-]*out", "Carve-Out Clause"),
+    (r"maintenance\s+of\s+benefits|\bMOB\b", "Maintenance of Benefits"),
+    (r"up\s*to\s+the\s+allowable|allowable", "Upto the Allowable"),
+    (r"traditional", "Traditional"),
+    (r"standard|primary", "Standard"),
+)
+
+
+def _cob_option(value) -> str | None:
+    text = str(value or "").strip()
+    for pattern, option in _COB_OPTIONS:
+        if re.search(pattern, text, re.IGNORECASE):
+            return option
+    return None
+
+
 def _form_value(spec_key: str, kind: str, aspect: str | None, value, vocab=None) -> str | None:
     """A portal value rewritten for its Fill Form input, or None to leave it empty."""
     if aspect == "hist":
@@ -414,6 +435,8 @@ def _form_value(spec_key: str, kind: str, aspect: str | None, value, vocab=None)
         return _date(value)
     if kind in ("yesno", "network"):
         return _yesno(value)
+    if spec_key == "cob":
+        return _cob_option(value)
     text = str(value).strip()
     return text or None
 
@@ -522,6 +545,9 @@ def build_prefill(portal_raw: dict, network: str) -> dict:
     grid += _no_history(spec, by_key, grid)
     grid = _not_covered_ages(spec, by_key, grid)
     fields += _met_flags(values)
+    grid_hook = _hook(hooks, "adjust_grid")
+    if grid_hook:
+        grid = grid_hook(grid)
     reader = _hook(hooks, "form_only")
     if reader:
         try:
