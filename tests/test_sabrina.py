@@ -28,7 +28,7 @@ import os
 import sys
 
 import sabrina_compare as sc
-from smile_partners.sabrina.carriers.metlife.portal import (
+from sabrina.smile_partners.carriers.metlife.portal import (
     _cleaning_perio_combined_limit as _ml_combined_limit)
 
 
@@ -585,7 +585,7 @@ check("carrier: unknown brands fall back to text rules",
       sc._compare("carrier", "Acme Dental Trust", "Acme Dental Trust")[0], True)
 
 # OBS: the missing-tooth answer is INVERTED and taken from the FIRST sentence.
-from smile_partners.breakdown import _missing_tooth_clause as _mtc
+from sabrina.smile_partners.breakdown import _missing_tooth_clause as _mtc
 _BOTH = ("Are plan benefits available for teeth lost prior to effective date: {} "
          "Are plan benefits available for congenital teeth lost prior to "
          "effective date: {}")
@@ -809,7 +809,7 @@ else:
 
 print("── 1f. APT 92763 MAPPING BUGS ──")
 
-from smile_partners.breakdown import _get_plan_year_start as _pys
+from sabrina.smile_partners.breakdown import _get_plan_year_start as _pys
 
 _BENEFIT_PERIOD = {
     "rule": "Benefit Period",
@@ -929,7 +929,7 @@ check("ortho max: TMJ card with ortho covered -> still not ortho",
 # fell back to the PATIENT's name and DOB, so the audit reported her own name
 # and birthday as the subscriber's against a sheet correctly naming Brian
 # Leiter — a critical DOB mismatch the portal never stated.
-from smile_partners.sabrina.carriers.metlife.spec import _SPEC as _ML_SPEC
+from sabrina.smile_partners.carriers.metlife.spec import _SPEC as _ML_SPEC
 _ml_field = {f["key"]: f for f in _ML_SPEC}
 
 def _member(name, dob, relationship, sub_info=None):
@@ -1263,7 +1263,7 @@ print("── 1h. CIGNA PAIRING (Matthew Herzwurm) ──")
 # Unit-level: the pieces that were broken, independent of the fixture files.
 # This is Cigna's wording, so it is checked against Cigna's own copy of the
 # vocabulary — the one a Cigna audit uses.
-from smile_partners.sabrina.carriers.cigna import compare as cg_compare, vocabulary as cg_vocab
+from sabrina.smile_partners.carriers.cigna import compare as cg_compare, vocabulary as cg_vocab
 
 check("cigna: 'Not Applicable' means no frequency limit",
       cg_vocab._num_frequency("Not Applicable"), ("unlimited",))
@@ -1279,7 +1279,7 @@ check("cigna: sheet 18 matches an 'Exclude after age 18' limit",
       cg_compare._compare("agelimit", "18", "Exclude after age 18")[0], True)
 
 # A multi-class annual maximum must survive the ortho/implant exclusion.
-from smile_partners.portals.cigna import _cigna_general_annual_record as _annual
+from sabrina.smile_partners.portals.cigna import _cigna_general_annual_record as _annual
 _NET = {"id": "P0010", "name": "TOTAL"}
 _MIXED = [{"desc": "Individual Calendar Year Maximum", "amount": "$2,000.00",
            "met": "$222.20", "remaining": "$1,777.80", "covers": "IND",
@@ -1654,7 +1654,7 @@ else:
 
 print("── 1k. DELTA DENTAL PAIRING (Jason Knezevich) ──")
 
-from smile_partners.portals.delta_dental import (_dd_age_limit, _dd_frequency, _is_dd_portal,
+from sabrina.smile_partners.portals.delta_dental import (_dd_age_limit, _dd_frequency, _is_dd_portal,
                       _normalize_dd_portal)
 
 # Delta states limits in prose; the sheet uses the compact form.
@@ -1683,7 +1683,7 @@ check("delta frequency: a lifetime stated before any period still wins",
 
 # Delta states only that the deductible does NOT apply; a card that is silent
 # means it applies, once the export carries the footnote reader's keys at all.
-from smile_partners.portals.delta_dental import _dd_deductible_applies
+from sabrina.smile_partners.portals.delta_dental import _dd_deductible_applies
 check("delta deductible: footnoted out of the deductible",
       _dd_deductible_applies({"code": "D0120", "applies_to_deductible": "No"}), "No")
 check("delta deductible: no footnote on the search means it applies",
@@ -1791,7 +1791,7 @@ else:
 
 print("── 1l. DELTA DENTAL (Carlos Evans) ──")
 
-from smile_partners.portals.delta_dental import _dd_maximum, _dd_not_covered
+from sabrina.smile_partners.portals.delta_dental import _dd_maximum, _dd_not_covered
 
 # The rest of Delta's limitation wording, each taken verbatim off a card.
 for prose, compact in [
@@ -1884,7 +1884,7 @@ check("delta perio after SRP: D4910 names no period -> Not available in website"
 check("delta perio after SRP: D4910 never searched -> not stated",
       _portal_perio_after_srp({}, _dd_codes(_dd_entry("D0120", "100%", "None"))), None)
 # A wrapped History cell is read in full in a Delta audit and nowhere else.
-from smile_partners.sabrina.carriers.delta_dental.rules import _dd_wrapped_history
+from sabrina.smile_partners.carriers.delta_dental.rules import _dd_wrapped_history
 
 _WRAPPED_SHEET = {
     "fields": {"d1110__hist": "06/10/2026,"},
@@ -2067,7 +2067,7 @@ check("delta ortho age: a blank sheet age agrees", _ortho_age(None), ("not_state
 # Delta Dental INS (appointment 120147, Frances Wilson): the orthodontic
 # deductible is a lifetime deductible that also names Diagnostic, beside the
 # lifetime maximum covering the same three types.
-from smile_partners.sabrina.carriers.delta_dental.compare import _compare as _dd_compare
+from sabrina.smile_partners.carriers.delta_dental.compare import _compare as _dd_compare
 _GENERAL_TYPES = ["Diagnostic", "Endodontics", "Oral & Maxillofacial Surgery", "Restorative"]
 _LIFETIME_ORTHO_DED = {"type": "Lifetime Individual Deductible",
                        "treatment_types": ["Diagnostic", "Orthodontics", "Oral & Maxillofacial Surgery"],
@@ -2218,7 +2218,7 @@ check("delta deductible applies: no Deductibles table scraped keeps the footnote
       _ded_applies(None), ("Yes", "Yes"))
 # History records only the service dates that affect the frequency (agreed
 # with the team after Deion Reid: bitewings last taken 01/07/2020 are NH).
-from smile_partners.sabrina.carriers.delta_dental.rules import _dd_history_in_window
+from sabrina.smile_partners.carriers.delta_dental.rules import _dd_history_in_window
 
 
 def _hist(limitation, dates, scraped="2026-10-06T18:29:37.364Z", period_start="1/1/2026",
@@ -2278,7 +2278,7 @@ check("delta plan year: any other maximum label is not",
 # Delta Dental INS: an in-network office is audited against the Premier
 # Benefits Search when the sheet's fee schedule names Premier, and against PPO
 # when it is a Premier Lite schedule (agreed with the team, 2026-10-14).
-from smile_partners.sabrina.carriers.delta_dental.rules import (_dd_fee_schedule_network,
+from sabrina.smile_partners.carriers.delta_dental.rules import (_dd_fee_schedule_network,
                                                                 _dd_network_export)
 for fee, want in [("GA - DD GP Premier B", "premier"),
                   ("CO - DD Prem Reg 2", "premier"),
@@ -2342,7 +2342,7 @@ check("delta audit: a Premier sheet reads Premier percentages and the Premier ma
       _premier_audit("GA - DD GP Premier B"), ("70%", "1,500.00", "Delta Dental Premier Dentist"))
 check("delta audit: a Premier Lite sheet reads PPO",
       _premier_audit("MI Delta Premier Lite Perio"), ("80%", "1,700.00", "Delta Dental PPO Dentist"))
-from smile_partners.sabrina.carriers.delta_dental.parser import parse_sabrina_text as _dd_parse_text
+from sabrina.smile_partners.carriers.delta_dental.parser import parse_sabrina_text as _dd_parse_text
 _fee_parsed = _dd_parse_text("Group Number \n03668-02571\nFee Schedule \nGA - DD GP Premier B\n"
                              "Insurance Address \nP.O. Box 1809\n")
 check("delta sheet: the fee schedule is read",
@@ -2418,7 +2418,7 @@ check("delta overview read: the plan start month comes from the maximum's period
 
 # Delta Dental INS (2026-10-16): the user picks the office's network in the
 # extension's pop-up, only that network is searched, and the export says which.
-from smile_partners.sabrina.carriers.delta_dental.rules import _dd_selected_network
+from sabrina.smile_partners.carriers.delta_dental.rules import _dd_selected_network
 
 
 def _picked(selected, level, label):
@@ -2803,7 +2803,7 @@ print("── 1m. DELTA DENTAL (Angela Cao / dependents) ──")
 
 import datetime as _dt
 
-from smile_partners.portals.delta_dental import (_apply_dd_output_rules, _dd_age_ceiling, _dd_best_row,
+from sabrina.smile_partners.portals.delta_dental import (_apply_dd_output_rules, _dd_age_ceiling, _dd_best_row,
                       _dd_ortho_only, _dd_waiting_rows)
 
 # ── age bands ─────────────────────────────────────────────────────────────
@@ -2837,7 +2837,7 @@ check("rows: a single row is that row", _dd_best_row([{"age_limits": "None"}]),
 # ── member class ──────────────────────────────────────────────────────────
 # Delta also splits a limit by who it covers, saying so at the end of the
 # sentence. The sheet always records the subscriber's.
-from smile_partners.portals.delta_dental import _dd_member_class
+from sabrina.smile_partners.portals.delta_dental import _dd_member_class
 check("member class: the subscriber's row ranks highest",
       _dd_member_class({"limitation": "…rampant caries.For Subscriber and Spouse."}), 1)
 check("member class: a dependents-only row ranks lowest",
@@ -3003,7 +3003,7 @@ else:
 
 print("── 1n. DELTA DENTAL (Martin Sas) ──")
 
-from smile_partners.portals.delta_dental import _dd_alternate_benefit
+from sabrina.smile_partners.portals.delta_dental import _dd_alternate_benefit
 
 # Delta does not refuse a posterior composite outright — it says the amalgam
 # benefit is applied instead, which is a benefit the patient has.
@@ -3162,10 +3162,10 @@ else:
 
 print("── 1p. DELTA DENTAL OFFICE TOOLKIT ──")
 
-from smile_partners import sabrina as _sp
-from smile_partners.sabrina.carriers import CARRIERS as _CARRIERS, detect_carrier as _detect
-from smile_partners.sabrina.carriers.delta_toolkit import portal as _tk_portal
-from smile_partners.portals.delta_toolkit import _normalize_delta_toolkit_portal
+from sabrina import smile_partners as _sp
+from sabrina.smile_partners.carriers import CARRIERS as _CARRIERS, detect_carrier as _detect
+from sabrina.smile_partners.carriers.delta_toolkit import portal as _tk_portal
+from sabrina.smile_partners.portals.delta_toolkit import _normalize_delta_toolkit_portal
 
 
 def _tk_result(code, pct, limits=(), category="Diagnostic"):
@@ -3264,7 +3264,7 @@ check("and not when the description excepts it",
 #  1q. STAR DENTAL — a Sabrina client with a folder of its own
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# Added 2026-10-22 as a copy of smile_partners/. Its audit must be run by its
+# Added 2026-10-22 as a copy of sabrina/smile_partners/. Its audit must be run by its
 # own package, never Smile Partners', so that a fix for one cannot reach the
 # other. Reuses the inline Toolkit export from 1p, so this section always runs.
 
@@ -3272,7 +3272,7 @@ print("── 1q. STAR DENTAL ──")
 
 from fastapi import HTTPException
 import main as _main
-from star_dental import sabrina as _ns
+from sabrina import star_dental as _ns
 
 
 def _refused(name, capability):
@@ -3289,8 +3289,8 @@ check("and refused for jobs that need a Denticon export",
       tuple(_refused("star_dental", c) for c in ("match", "notes", "new_plan")),
       (400, 400, 400))
 check("the server runs its own package",
-      _main.client_module(_main.CLIENTS["star_dental"], "sabrina").__name__,
-      "star_dental.sabrina")
+      _main.client_module(_main.CLIENTS["star_dental"]).__name__,
+      "sabrina.star_dental")
 # Delta Dental of Missouri, Guardian, United Concordia and DD RI are
 # Smile Partners-specific carriers.
 check("Star keeps shared portals while Smile Partners adds its own carriers",
@@ -3298,16 +3298,16 @@ check("Star keeps shared portals while Smile Partners adds its own carriers",
                      if k not in ("delta_mo", "guardian", "ucci", "delta_dental_ri")})
 check("a carrier's rules come from its own folder, not Smile Partners'",
       (_ns.carrier_rules(_tk)[1].__name__, _sp.carrier_rules(_tk)[1].__name__),
-      ("star_dental.sabrina.carriers.delta_toolkit",
-       "smile_partners.sabrina.carriers.delta_toolkit"))
+      ("sabrina.star_dental.carriers.delta_toolkit",
+       "sabrina.smile_partners.carriers.delta_toolkit"))
 
 # Star Dental's field list (its tab of "Updated Sabrina Codes & C Q's Data -
 # All Clients.xlsx"): which codes it audits, and which of them carry a
 # Frequency, Age Limit or History cell. D4341's age cell is "SRP Quads per day?".
-from star_dental.sabrina.carriers.metlife import spec as _ns_spec, parser as _ns_parser
-from star_dental.sabrina.carriers.delta_dental import parser as _ns_dd_parser
-from star_dental.sabrina.carriers.metlife.portal import _portal_dep_age_limit as _ns_dep_age
-from smile_partners.sabrina.carriers.metlife import spec as _sp_spec
+from sabrina.star_dental.carriers.metlife import spec as _ns_spec, parser as _ns_parser
+from sabrina.star_dental.carriers.delta_dental import parser as _ns_dd_parser
+from sabrina.star_dental.carriers.metlife.portal import _portal_dep_age_limit as _ns_dep_age
+from sabrina.smile_partners.carriers.metlife import spec as _sp_spec
 
 _NS_CODES = set(
     "D0120 D1110 D0220 D0230 D0240 D0150 D0140 D1120 D0210 D0330 D0274 D1351 "
@@ -3376,15 +3376,15 @@ check("a dependent age limit of NAL is unstated, not 'no limit'",
 #  1r. JEFFERSON — a Sabrina client built from its own field list
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# Added 2026-10-26 as a copy of star_dental/, with the field list replaced by
+# Added 2026-10-26 as a copy of sabrina/star_dental/, with the field list replaced by
 # the "Jefferson " tab of the codes workbook. Inline data only, so this section
 # always runs.
 
 print("── 1r. JEFFERSON ──")
 
-from jefferson import sabrina as _jf
-from jefferson.sabrina.carriers.metlife import spec as _jf_spec, parser as _jf_parser
-from jefferson.sabrina.carriers.delta_dental import parser as _jf_dd_parser
+from sabrina import jefferson as _jf
+from sabrina.jefferson.carriers.metlife import spec as _jf_spec, parser as _jf_parser
+from sabrina.jefferson.carriers.delta_dental import parser as _jf_dd_parser
 
 check("Jefferson is registered for the Sabrina audit",
       _main.resolve_client("Jefferson", "sabrina_audit")[0], "jefferson")
@@ -3392,7 +3392,7 @@ check("and refused for jobs that need a Denticon export",
       tuple(_refused("jefferson", c) for c in ("match", "notes", "new_plan")),
       (400, 400, 400))
 check("a carrier's rules come from Jefferson's own folder",
-      _jf.carrier_rules(_tk)[1].__name__, "jefferson.sabrina.carriers.delta_toolkit")
+      _jf.carrier_rules(_tk)[1].__name__, "sabrina.jefferson.carriers.delta_toolkit")
 
 _JF_CODES = set(
     "D0120 D1110 D0220 D0230 D0150 D0140 D1120 D0210 D0330 D0274 D1351 D1206 "
@@ -3444,7 +3444,7 @@ check("Delta Dental picks its network from the fee schedule",
 #  1s. PARK DENTAL — Star Dental's rules, Park's own field list
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# Added 2026-10-28 as a copy of star_dental/, with the field list replaced by
+# Added 2026-10-28 as a copy of sabrina/star_dental/, with the field list replaced by
 # the "Park Dental" tab of the codes workbook. That tab ticks 21 codes for
 # Frequency but not Coverage %, so those codes compare no percentage. Inline
 # data only, so this section always runs.
@@ -3452,7 +3452,7 @@ check("Delta Dental picks its network from the fee schedule",
 print("── 1s. PARK DENTAL ──")
 
 import importlib as _importlib
-from park_dental import sabrina as _pk
+from sabrina import park_dental as _pk
 
 check("Park Dental is registered for the Sabrina audit",
       _main.resolve_client("Park Dental", "sabrina_audit")[0], "park_dental")
@@ -3460,7 +3460,7 @@ check("and refused for jobs that need a Denticon export",
       tuple(_refused("park_dental", c) for c in ("match", "notes", "new_plan")),
       (400, 400, 400))
 check("a carrier's rules come from Park Dental's own folder",
-      _pk.carrier_rules(_tk)[1].__name__, "park_dental.sabrina.carriers.delta_toolkit")
+      _pk.carrier_rules(_tk)[1].__name__, "sabrina.park_dental.carriers.delta_toolkit")
 
 _PK_CODES = set(
     "D0120 D0140 D0150 D0220 D0210 D0330 D0274 D0364 D1110 D1208 D1351 D1510 "
@@ -3494,12 +3494,12 @@ def _pk_columns(spec):
 
 for _carrier in ("aetna", "cigna", "delta_dental", "delta_toolkit", "metlife"):
     check(f"{_carrier}: Park audits exactly its codes, each on the columns its list ticks",
-          _pk_columns(_importlib.import_module(f"park_dental.sabrina.carriers.{_carrier}.spec")._SPEC),
+          _pk_columns(_importlib.import_module(f"sabrina.park_dental.carriers.{_carrier}.spec")._SPEC),
           _PK_EXPECTED)
 check("the upload preview's copy agrees",
-      _pk_columns(_importlib.import_module("park_dental.sabrina.sheet.spec")._SPEC), _PK_EXPECTED)
+      _pk_columns(_importlib.import_module("sabrina.park_dental.sheet.spec")._SPEC), _PK_EXPECTED)
 check("Ortho - Age limit is the plan's orthodontic age on every carrier",
-      {c: next(f["portal"] for f in _importlib.import_module(f"park_dental.sabrina.carriers.{c}.spec")._SPEC
+      {c: next(f["portal"] for f in _importlib.import_module(f"sabrina.park_dental.carriers.{c}.spec")._SPEC
                if f["key"] == "ortho_coverage__age")
        for c in ("aetna", "cigna", "delta_dental", "delta_toolkit", "metlife")},
       {c: "_ortho_age" for c in ("aetna", "cigna", "delta_dental", "delta_toolkit", "metlife")})
@@ -3521,7 +3521,7 @@ _PK_READ = ("d0120", "d0120__hist", "d0210__freq", "d0210__hist", "posterior_com
             "d7140__freq", "d7961_d7962__freq", "ortho_coverage", "ortho_coverage__age",
             "ortho_payment_timing")
 for _carrier in ("metlife", "delta_dental", "delta_toolkit"):
-    _pk_f = _importlib.import_module(f"park_dental.sabrina.carriers.{_carrier}.parser").parse_sabrina_text(_pk_text)["fields"]
+    _pk_f = _importlib.import_module(f"sabrina.park_dental.carriers.{_carrier}.parser").parse_sabrina_text(_pk_text)["fields"]
     check(f"{_carrier}: Park's rows read — a reversed label, History with no %, a wrapped label, the questions",
           tuple(_pk_f.get(k) for k in _PK_READ),
           ("100%", "04/09/2026", "1X5Years", "03/03/2024", "Yes", "80%", "80%", "No", "4X1Year", "Yes",
@@ -3591,8 +3591,8 @@ check("aetna not covered: a blank sheet age is left with nothing to compare",
 
 print("── 1t. GUARDIAN ──")
 
-from smile_partners.portals import guardian as _gp
-from smile_partners.sabrina.carriers import carrier_rules as _carrier_rules
+from sabrina.smile_partners.portals import guardian as _gp
+from sabrina.smile_partners.carriers import carrier_rules as _carrier_rules
 
 
 def _gd_row(service, category, in_pct, out_pct, messages, last_visit=None):
@@ -3811,7 +3811,7 @@ check("guardian: a patient who is the subscriber names the subscriber",
 
 _GD_SHEET = os.path.join(BASE, "Material", "Smile Partners", "Gaurdian", "TITUS JACKSON.pdf")
 if os.path.exists(_GD_SHEET):
-    from smile_partners.sabrina.carriers.guardian import parse_sabrina_pdf as _gd_parse
+    from sabrina.smile_partners.carriers.guardian import parse_sabrina_pdf as _gd_parse
     with open(_GD_SHEET, "rb") as _fh:
         _gd_sheet = _gd_parse(_fh.read())
     check("guardian: Titus Jackson's sheet is read with every label found",
@@ -3829,7 +3829,7 @@ else:
 # records derived by a port of content_guardian.js. The port was checked
 # against the extension's JavaScript on 62 codes x 3 plans with no difference;
 # these pin a few of its rules without the JavaScript.
-from smile_partners.portals import guardian_pdf as _gpdf
+from sabrina.smile_partners.portals import guardian_pdf as _gpdf
 
 _GDP_FILLINGS = _gd_row("Fillings", "Basic", "80%", "70%", [
     "Amalgam (silver fillings) and resin-based composite restorations (white fillings) are covered once "
@@ -3880,7 +3880,7 @@ check("guardian pdf: and Smile Partners' reader leaves any other PDF to the shar
       _main_gd.client_portal_pdf("smile_partners", _gd_other.tobytes()), None)
 
 # The rules added 2026-11-04 from Keith Cline's page, on inline rows.
-from smile_partners.portals import guardian as _gpn
+from sabrina.smile_partners.portals import guardian as _gpn
 
 _GDN = dict(_gd_export("Husband"),
             deductibles=[{"coverage": "Individual Dental", "network": "In network", "deductible": "$50.00",
@@ -3937,7 +3937,7 @@ check("guardian pdf: 'except bitewings (D0270-D0277)' leaves bitewings out; the 
        "D0330": ("Basic", ["80%", "80%"]), "D0274": ("Preventive", ["100%", "100%"])})
 
 # The sheet's Eligibility Notes may run the words of a label in lowercase.
-from smile_partners.sabrina.carriers.guardian.parser import parse_sabrina_text as _gd_parse_text
+from sabrina.smile_partners.carriers.guardian.parser import parse_sabrina_text as _gd_parse_text
 _gd_notes = _gd_parse_text("\n".join([
     "Eligibility Notes",
     "Insurance Name: Guardian, Benefits are verified through website. As per website there is no",
@@ -4062,7 +4062,7 @@ for _gd_path in _gd_printout_paths:
     if not (_gdx_case and os.path.exists(_gdx_sheet_path)):
         skip("Guardian eligibility printout", f"no known sheet for {_gdx['patient_name']!r}")
         continue
-    from smile_partners.sabrina.carriers.guardian import parse_sabrina_pdf as _gd_parse
+    from sabrina.smile_partners.carriers.guardian import parse_sabrina_pdf as _gd_parse
     with open(_gdx_sheet_path, "rb") as _fh:
         _gdx_sheet = _gd_parse(_fh.read())
     _gdx_procs = {r["code"]: r for r in _gdx["procedure_codes"]}
@@ -4114,7 +4114,7 @@ _GD_CHARLES_SHEET = os.path.join(_GD_FOLDER, "Charles Young.pdf")
 _GD_CHARLES_JSON = os.path.join(_GD_FOLDER, "charles_young_guardian_benefits.json")
 if os.path.exists(_GD_CHARLES_SHEET) and os.path.exists(_GD_CHARLES_JSON):
     import json as _json_gd
-    from smile_partners.sabrina.carriers.guardian import parse_sabrina_pdf as _gd_parse
+    from sabrina.smile_partners.carriers.guardian import parse_sabrina_pdf as _gd_parse
     with open(_GD_CHARLES_SHEET, "rb") as _fh:
         _gdc_sheet = _gd_parse(_fh.read())
     with open(_GD_CHARLES_JSON, encoding="utf-8") as _fh:
@@ -4334,8 +4334,8 @@ else:
 # CDT code. The fixture is cut down from Riley Butler's (11/05) and Robert
 # Woodley's exports.
 print("── 1r. UNITED CONCORDIA ──")
-from smile_partners.portals import ucci as _up
-from smile_partners.sabrina.carriers import detect_carrier as _ucci_detect
+from sabrina.smile_partners.portals import ucci as _up
+from sabrina.smile_partners.carriers import detect_carrier as _ucci_detect
 
 
 def _ucci_proc(covered, pct_lines, limitations, groups=(), history=(), policy=()):
@@ -4536,7 +4536,7 @@ check("ucci: a stated alternate benefit is a downgrade",
       _up._alternate_benefit(_ucci_proc("Yes", ["60%"], ["1 Per Tooth ~ Per 5 Years", "Alternate Benefit ~ Full Cast"])), "Yes")
 check("ucci: January plan year from Per Calendar Year", _ucm["plan_year_start"], "January")
 
-from smile_partners.sabrina.carriers.ucci import portal as _ucpo
+from sabrina.smile_partners.carriers.ucci import portal as _ucpo
 check("ucci: the sheet's payor ID matches when UCCI lists it",
       (_ucpo._portal_payor_id({}, _ucn, "CX007"), _ucpo._portal_payor_id({}, _ucn, "12345")),
       ("CX007", "89070, 99994, or CX007"))

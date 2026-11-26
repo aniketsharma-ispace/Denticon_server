@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from smile_partners.sabrina.carriers.delta_toolkit import audit, rules
+from sabrina.smile_partners.carriers.delta_toolkit import audit, rules
 
 
 @pytest.mark.parametrize("sheet, portal, expected", [

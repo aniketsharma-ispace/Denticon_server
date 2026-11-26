@@ -1,5 +1,5 @@
 """
-Sabrina Fill Form prefill (smile_partners/sabrina/prefill.py) and the scrape
+Sabrina Fill Form prefill (sabrina/smile_partners/prefill.py) and the scrape
 store behind /api/scrapes and /api/prefill.
 
 Run:  python tests/test_sabrina_prefill.py
@@ -12,7 +12,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["SCRAPE_DB"] = os.path.join(tempfile.mkdtemp(), "scrapes.db")
 
-from smile_partners.sabrina.prefill import build_prefill, member_key   # noqa: E402
+from sabrina.smile_partners.prefill import build_prefill, member_key   # noqa: E402
 from shared import scrape_store                                         # noqa: E402
 
 _failed = 0
@@ -93,7 +93,7 @@ check("carrier", r_in["carrier"], "aetna")
 check("network echoed", (r_in["network"], r_out["network"]), ("In", "Out"))
 check("yearly max: plain number, no commas or .00", field(r_in, "insuranceDetails.yearlyMaxAmount"), "1500")
 check("yearly max used = max − remaining", field(r_in, "benefitsInfo.yearlyMaxUsed"), "300")
-from smile_partners.sabrina.prefill import _money                      # noqa: E402
+from sabrina.smile_partners.prefill import _money                      # noqa: E402
 check("money formats", [_money("$1,250.00"), _money("154.37"), _money("0.00"), _money("$37.5")],
       ["1250", "154.37", "0", "37.50"])
 check("plan start month", field(r_in, "insuranceDetails.planMonth"), "January")
@@ -195,7 +195,7 @@ check("Cigna: IN OR OON not left for the user", "IN OR OON" in r_cg["left_for_us
 check("Cigna frequency in Sabrina's words",
       [cell(r_cg, c, "frequency") for c in ("D0120", "D1208", "D1351")], ["2X1Year", "1X1Year", "1X3Year"])
 check("Cigna 'Exclude after age 18' → 18", cell(r_cg, "D1208", "ageLimit"), "18")
-from smile_partners.sabrina.prefill import _frequency                  # noqa: E402
+from sabrina.smile_partners.prefill import _frequency                  # noqa: E402
 check("frequency wordings",
       [_frequency(t) for t in ("Once Per 6 Consecutive Months", "Four Times Per Calendar Year",
                                "No benefits for this service", "Not Applicable", "2X1Year")],
@@ -207,7 +207,7 @@ print("── DELTA DENTAL / TOOLKIT: NETWORK FROM THE SCRAPE ──")
 # that network only: PPO and Premier are In, Out of Network is Out. A pick on
 # the form against it is refused, as for Cigna, instead of filling the scraped
 # network's figures under the other one.
-from smile_partners.sabrina.prefill import scrape_network                # noqa: E402
+from sabrina.smile_partners.prefill import scrape_network                # noqa: E402
 
 
 def _refused(export, network):
@@ -261,8 +261,8 @@ check("Toolkit before the pop-up (no network_choice) still takes the pick",
       scrape_network(_tk(None, "PPO Dentist")), None)
 
 print("── PREFILL: TOOLKIT FORM-ONLY CELLS (11/25) ──")
-from smile_partners.sabrina import prefill as _pf                        # noqa: E402
-from smile_partners.sabrina.carriers.delta_toolkit import prefill as _tkpf  # noqa: E402
+from sabrina.smile_partners import prefill as _pf                        # noqa: E402
+from sabrina.smile_partners.carriers.delta_toolkit import prefill as _tkpf  # noqa: E402
 check("Not Covered % → 0 (grid option and Insurance Details number)",
       (_pf._pct_option("Not Covered"), _pf._pct_number("Not Covered"), _pf._pct_option("80%")),
       ("0", "0", "80%"))
@@ -312,7 +312,7 @@ check("D1206 (Not Covered in the sample) → Age 0", cell(r_fb, "D1206", "ageLim
 check("covered code keeps its own age", cell(r_fb, "D1208", "ageLimit"), "14")
 check("D4341's age column is Quads, not touched", cell(r_fb, "D4341", "quads"), "4")
 check("999 months → 1XLifetime", cell(r_fb, "D4355", "frequency"), "1XLifetime")
-from smile_partners.sabrina.prefill import _frequency as _f25              # noqa: E402
+from sabrina.smile_partners.prefill import _frequency as _f25              # noqa: E402
 check("other spans untouched", [_f25("1X36Months"), _f25("1X5Year"), _f25("1X84Year")],
       ["1X36Months", "1X5Year", "1XLifetime"])
 for rel, want in (("Child", "Dependent"), ("Spouse", "Spouse"), ("Self", "Self"), ("", None)):
@@ -438,10 +438,10 @@ check("Maximums not read at all → deductibles not guessed as 0",
       field(build_prefill(ml4, "In"), "insuranceDetails.individualDeductible"), None)
 
 print("── STAR DENTAL: ITS OWN FILL FORM (ClientID 19, 11/26) ──")
-# star_dental/sabrina/prefill.py: Star's own copy, run on Star's carrier
+# sabrina/star_dental/prefill.py: Star's own copy, run on Star's carrier
 # readers, with the rows of Star's Insurance Plan Breakdown.
-from star_dental.sabrina.prefill import build_prefill as star_prefill   # noqa: E402
-from star_dental.sabrina.prefill import scrape_network as star_network  # noqa: E402
+from sabrina.star_dental.prefill import build_prefill as star_prefill   # noqa: E402
+from sabrina.star_dental.prefill import scrape_network as star_network  # noqa: E402
 r_star = star_prefill(EXPORT, "In")
 check("Star: plan amounts under Sabrina's usual names",
       [field(r_star, "insuranceDetails.yearlyMaxAmount"), field(r_star, "benefitsInfo.orthoMaximumAmount")],

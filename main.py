@@ -111,10 +111,10 @@ CLIENTS = {
     "smile_partners": {
         "label":    "Smile Partners",
         "system":   "Sabrina",
-        "package":  "smile_partners",
+        "package":  "sabrina.smile_partners",
         "hint":     "Portal export + Sabrina breakdown PDF",
         # sabrina_prefill: its Fill Form's field names are mapped in
-        # smile_partners/sabrina/prefill.py. Other Sabrina clients get it once
+        # sabrina/smile_partners/prefill.py. Other Sabrina clients get it once
         # their own form is mapped.
         "supports": {"sabrina_audit", "parse_pdf", "sabrina_prefill"},
         "sabrina_client_id": 26,
@@ -122,23 +122,23 @@ CLIENTS = {
     "star_dental": {
         "label":    "Star Dental",
         "system":   "Sabrina",
-        "package":  "star_dental",
+        "package":  "sabrina.star_dental",
         "hint":     "Portal export + Sabrina breakdown PDF",
-        # sabrina_prefill: star_dental/sabrina/prefill.py (11/26).
+        # sabrina_prefill: sabrina/star_dental/prefill.py (11/26).
         "supports": {"sabrina_audit", "parse_pdf", "sabrina_prefill"},
         "sabrina_client_id": 19,
     },
     "jefferson": {
         "label":    "Jefferson",
         "system":   "Sabrina",
-        "package":  "jefferson",
+        "package":  "sabrina.jefferson",
         "hint":     "Portal export + Sabrina breakdown PDF",
         "supports": {"sabrina_audit", "parse_pdf"},
     },
     "park_dental": {
         "label":    "Park Dental",
         "system":   "Sabrina",
-        "package":  "park_dental",
+        "package":  "sabrina.park_dental",
         "hint":     "Portal export + Sabrina breakdown PDF",
         "supports": {"sabrina_audit", "parse_pdf"},
     },
@@ -211,23 +211,29 @@ def client_for_sabrina_id(sabrina_client_id):
                 if name else f"Unknown Sabrina ClientID {cid}."))
 
 
-def client_module(spec, dotted):
-    """A module inside a client's package, imported by name."""
+def client_module(spec, dotted=""):
+    """
+    A module inside a client's package, imported by name; the package itself
+    when `dotted` is empty. Sabrina clients' packages are sabrina/<client>/.
+    """
     from importlib import import_module
-    return import_module(f"{spec['package']}.{dotted}")
+    return import_module(f"{spec['package']}.{dotted}" if dotted else spec["package"])
 
 
 def client_portal_pdf(client, pdf_bytes):
     """
     A carrier PDF read by the client's own reader (`read_portal_pdf` in its
-    `sabrina` package), or None to leave it to the shared parser — no client
-    named, a client without a reader, or a PDF its reader does not take.
+    sabrina/<client>/ package), or None to leave it to the shared parser — no
+    client named, a client without a reader (DCA is not a Sabrina client), or
+    a PDF its reader does not take.
     """
     if not client:
         return None
     try:
         _key, spec = resolve_client(client, "parse_pdf")
-        reader = getattr(client_module(spec, "sabrina"), "read_portal_pdf", None)
+        if spec["system"] != "Sabrina":
+            return None
+        reader = getattr(client_module(spec), "read_portal_pdf", None)
     except (HTTPException, ImportError):
         return None
     if reader is None:
@@ -364,7 +370,7 @@ async def sabrina_parse_endpoint(
         raise HTTPException(status_code=400, detail="Uploaded file must be a PDF")
 
     _key, spec = resolve_client(client, "sabrina_audit")
-    audit = client_module(spec, "sabrina")
+    audit = client_module(spec)
 
     pdf_bytes = await file.read()
     try:
@@ -407,11 +413,11 @@ async def sabrina_compare_endpoint(
     carrier PDF, parsed here). Returns per-field statuses plus a mismatch list.
 
     The audit is run by the folder of the carrier whose export this is
-    (`sabrina/carriers/<carrier>/`), named in the result as `carrier`; an
+    (`sabrina/<client>/carriers/<carrier>/`), named in the result as `carrier`; an
     export from a portal with no folder is refused with a 422.
     """
     _key, spec = resolve_client(client, "sabrina_audit")
-    audit = client_module(spec, "sabrina")
+    audit = client_module(spec)
 
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="The Sabrina file must be a PDF")
@@ -470,7 +476,7 @@ class PrefillRequest(BaseModel):
 def _prefill_module(client):
     """(key, the client's prefill module), refusing a client without one."""
     key, spec = resolve_client(client, "sabrina_prefill")
-    return key, client_module(spec, "sabrina.prefill")
+    return key, client_module(spec, "prefill")
 
 
 @app.post("/api/scrapes")

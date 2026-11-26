@@ -823,7 +823,7 @@ function collectFinancials() {
   // 3x-individual figure for a stated one -- the guess that was removed from
   // the matcher on 2026-07-15 because it rejected correct plans. The Smile
   // Partners DD RI audit applies its 3x rule itself, in
-  // smile_partners/sabrina/carriers/delta_dental_ri/portal.py.
+  // sabrina/smile_partners/carriers/delta_dental_ri/portal.py.
   return financials;
 }
 
