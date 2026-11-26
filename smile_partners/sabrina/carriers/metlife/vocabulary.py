@@ -217,7 +217,9 @@ _FREQ_WORD_COUNTS = {
 _FREQ_PROSE_RE = re.compile(
     r"^(?:(\d+)|once|twice|thrice|one|two|three|four|five|six|seven|eight|nine|ten)"
     r"\s*(?:times?)?\s*(?:in|per|every)\s*(\d*)\s*"
-    r"(?:calendar\s*|contract\s*|plan\s*|benefit\s*|consecutive\s*|"
+    # "2 TIMES IN 1 FISCAL YEAR": MetLife on a plan whose year starts mid-year
+    # (BPO QA 11/25: twelve codes left blank on the Fill Form).
+    r"(?:calendar\s*|fiscal\s*|contract\s*|plan\s*|benefit\s*|consecutive\s*|"
     r"rolling\s*|successive\s*)*(year|month|week|day)s?",
     re.IGNORECASE)
 

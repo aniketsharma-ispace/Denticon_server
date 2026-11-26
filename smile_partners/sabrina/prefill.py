@@ -136,6 +136,10 @@ def carrier_prefill(portal_raw: dict):
       scrape_network(raw)     -> "In"/"Out"   the network the scrape was taken
                                               for, when the portal scrapes one
                                               network only (Cigna)   (optional)
+      form_frequency(value)   -> str | None   a grid Frequency in the carrier's
+                                              own words ("1X60Months" for MetLife's
+                                              "1 TIME IN 60 MONTHS"); None falls
+                                              back to the shared reading (optional)
     """
     try:
         _key, rules = carrier_rules(portal_raw)
@@ -494,6 +498,8 @@ def build_prefill(portal_raw: dict, network: str) -> dict:
     by_key = {f["key"]: f for f in spec}
     net = _NETWORKS[str(network).strip().lower()]
     vocab = _carrier_vocabulary(portal_raw)
+    hooks = carrier_prefill(portal_raw)
+    freq_reader = _hook(hooks, "form_frequency")
 
     fields, grid, questions = [], [], []
 
@@ -522,7 +528,14 @@ def build_prefill(portal_raw: dict, network: str) -> dict:
         if target:
             code, column = target
             aspect = "pct" if column == "percentage" else field.get("aspect")
-            value = _form_value(key, field["kind"], aspect, raw, vocab)
+            value = None
+            if column == "frequency" and freq_reader:
+                try:
+                    value = freq_reader(raw)
+                except Exception:      # the shared reading below still applies
+                    value = None
+            if value is None:
+                value = _form_value(key, field["kind"], aspect, raw, vocab)
             if value is not None:
                 grid.append({"code": code, "column": column, "value": value,
                              # History changes every visit; the rest is the plan's.
@@ -532,7 +545,6 @@ def build_prefill(portal_raw: dict, network: str) -> dict:
     grid += _no_history(spec, by_key, grid)
     grid = _not_covered_ages(spec, by_key, grid)
     fields += _met_flags(values)
-    hooks = carrier_prefill(portal_raw)
     grid_hook = _hook(hooks, "adjust_grid")
     if grid_hook:
         grid = grid_hook(grid)
