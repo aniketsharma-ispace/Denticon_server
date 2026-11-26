@@ -1,7 +1,7 @@
 """
 Kept so that `import sabrina_compare` keeps working.
 
-The audit lives in `smile_partners/sabrina/`, one folder per insurance portal
+The audit lives in `sabrina/smile_partners/`, one folder per insurance portal
 under `carriers/`. Every name this module used to define is still here:
 
   * `compare_sabrina_to_portal` and `audit_sabrina_pdf` run the folder of the
@@ -13,7 +13,7 @@ under `carriers/`. Every name this module used to define is still here:
   * Cigna's own rules come from `carriers/cigna/rules.py`;
   * everything else — reading the sheet, the vocabulary, comparing two values
     — comes from `carriers/metlife/`. The folders are identical there today;
-    import `smile_partners.sabrina.carriers.<carrier>.<module>` to test
+    import `sabrina.smile_partners.carriers.<carrier>.<module>` to test
     another carrier's copy.
 """
 
@@ -21,15 +21,15 @@ under `carriers/`. Every name this module used to define is still here:
 
 from importlib import import_module
 
-from smile_partners.sabrina import audit_sabrina_pdf, compare_sabrina_to_portal
-from smile_partners.sabrina.carriers import detect_carrier
-from smile_partners.sabrina.carriers.metlife.common import (
+from sabrina.smile_partners import audit_sabrina_pdf, compare_sabrina_to_portal
+from sabrina.smile_partners.carriers import detect_carrier
+from sabrina.smile_partners.carriers.metlife.common import (
     _BLANKS,
     _DEBUG,
     _UNLIMITED_MAX,
     log,
 )
-from smile_partners.sabrina.carriers.metlife.spec import (
+from sabrina.smile_partners.carriers.metlife.spec import (
     CORE_FIELD_KEYS,
     _AGE_LIMIT_CODES,
     _ASPECT_SECTION,
@@ -42,7 +42,7 @@ from smile_partners.sabrina.carriers.metlife.spec import (
     _build_aspect_spec,
     core_fields,
 )
-from smile_partners.sabrina.carriers.metlife.vocabulary import (
+from sabrina.smile_partners.carriers.metlife.vocabulary import (
     _CARRIER_BRANDS,
     _COB_METHODS,
     _DATE_FORMATS,
@@ -88,7 +88,7 @@ from smile_partners.sabrina.carriers.metlife.vocabulary import (
     _select_frequency_clause,
     _visible_part,
 )
-from smile_partners.sabrina.carriers.metlife.parser import (
+from sabrina.smile_partners.carriers.metlife.parser import (
     _ALL_LABELS,
     _BOILERPLATE_RE,
     _FREQ_RE,
@@ -117,13 +117,13 @@ from smile_partners.sabrina.carriers.metlife.parser import (
     parse_sabrina_text,
     sabrina_marker_count,
 )
-from smile_partners.sabrina.carriers.metlife.compare import (
+from sabrina.smile_partners.carriers.metlife.compare import (
     _ADDR_OVERLAP,
     _MONEY_TOLERANCE,
     _PCT_TOLERANCE,
     _compare,
 )
-from smile_partners.sabrina.carriers.cigna.rules import (
+from sabrina.smile_partners.carriers.cigna.rules import (
     _CIGNA_BLANK_WHEN_NOT_COVERED,
     _CIGNA_FL_CODES,
     _cigna_annual_max_classes,
@@ -135,13 +135,13 @@ from smile_partners.sabrina.carriers.cigna.rules import (
     _cigna_preventive_pct,
     _cigna_procedure_not_covered,
 )
-from smile_partners.sabrina.carriers.metlife.portal import (
+from sabrina.smile_partners.carriers.metlife.portal import (
     _DERIVED as _METLIFE_DERIVED,
     _network_pays,
     _pct_from_procs,
     _procfield_from_procs,
 )
-from smile_partners.sabrina.carriers.metlife.audit import (
+from sabrina.smile_partners.carriers.metlife.audit import (
     STATUS_MATCH,
     STATUS_MISMATCH,
     STATUS_MISSING_IN_SABRINA,
@@ -150,7 +150,7 @@ from smile_partners.sabrina.carriers.metlife.audit import (
     STATUS_NOT_STATED,
     _age_from_dob,
 )
-from smile_partners.sabrina.cli import (
+from sabrina.smile_partners.cli import (
     _cli,
 )
 
@@ -160,7 +160,7 @@ def _on_portal(name: str, at: int):
     def run(*args, **kwargs):
         portal_raw = args[at] if len(args) > at else kwargs.get("portal_raw")
         folder = detect_carrier(portal_raw) or "metlife"
-        portal = import_module(f"smile_partners.sabrina.carriers.{folder}.portal")
+        portal = import_module(f"sabrina.smile_partners.carriers.{folder}.portal")
         return getattr(portal, name)(*args, **kwargs)
     run.__name__ = name
     return run

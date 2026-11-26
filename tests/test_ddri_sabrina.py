@@ -6,22 +6,22 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from smile_partners.sabrina.carriers import carrier_rules, detect_carrier
-from smile_partners.sabrina.carriers.delta_dental_ri import compare_sabrina_to_portal
-from smile_partners.sabrina.carriers.delta_dental_ri.compare import _compare
-from smile_partners.sabrina.carriers.delta_dental_ri.portal import (
+from sabrina.smile_partners.carriers import carrier_rules, detect_carrier
+from sabrina.smile_partners.carriers.delta_dental_ri import compare_sabrina_to_portal
+from sabrina.smile_partners.carriers.delta_dental_ri.compare import _compare
+from sabrina.smile_partners.carriers.delta_dental_ri.portal import (
     portal_value,
     procedure_value,
 )
-from smile_partners.sabrina.carriers.delta_dental_ri.vocabulary import (
+from sabrina.smile_partners.carriers.delta_dental_ri.vocabulary import (
     _num_agelimit,
     _num_frequency,
 )
-from smile_partners.portals.delta_dental_ri import (
+from sabrina.smile_partners.portals.delta_dental_ri import (
     _is_ddri_portal,
     _normalize_ddri_portal,
 )
-from smile_partners.breakdown import _extract
+from sabrina.smile_partners.breakdown import _extract
 
 
 def _portal():
@@ -113,7 +113,7 @@ class DeltaDentalRiSabrinaTests(unittest.TestCase):
         self.assertEqual(detect_carrier(portal), "delta_dental_ri")
         key, module = carrier_rules(portal)
         self.assertEqual(key, "delta_dental_ri")
-        self.assertEqual(module.__name__, "smile_partners.sabrina.carriers.delta_dental_ri")
+        self.assertEqual(module.__name__, "sabrina.smile_partners.carriers.delta_dental_ri")
 
     def test_normalizer_exposes_shared_shape_and_preserves_source(self):
         portal = _portal()
@@ -673,7 +673,7 @@ class DeltaDentalRiSabrinaTests(unittest.TestCase):
         # The prefill reads carriers through _portal_breakdown / _portal_value;
         # DD RI implements them over portal_value (11/25), so the Fill Form
         # gets the values the audit compares instead of a refusal.
-        from smile_partners.sabrina import prefill
+        from sabrina.smile_partners import prefill
         carrier, values, _spec = prefill.portal_values(_portal(), "In")
         self.assertEqual(carrier, "delta_dental_ri")
         self.assertEqual(values.get("member_id"), "0003268280")
@@ -684,7 +684,7 @@ class DdriSabrinaPrefillTests(unittest.TestCase):
     """The Fill Form prefill reads DD RI through the same resolver the audit uses."""
 
     def _prefill(self, portal=None):
-        from smile_partners.sabrina.prefill import build_prefill
+        from sabrina.smile_partners.prefill import build_prefill
         return build_prefill(portal or _portal(), "In")
 
     @staticmethod
@@ -700,7 +700,7 @@ class DdriSabrinaPrefillTests(unittest.TestCase):
         self.assertEqual(self._prefill()["carrier"], "delta_dental_ri")
 
     def test_member_key_matches_scrape_to_form(self):
-        from smile_partners.sabrina.prefill import member_key
+        from sabrina.smile_partners.prefill import member_key
         self.assertEqual(member_key(_portal()), ("0003268280", "03/22/1997"))
 
     def test_plan_amounts_as_the_audit_reads_them(self):

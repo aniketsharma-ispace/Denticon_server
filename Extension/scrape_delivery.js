@@ -23,7 +23,7 @@
 //
 // Messages (chrome.runtime.sendMessage({ type, ... })):
 //   SCRAPE_DONE       { carrier, data }                → { ok, scrape }
-//   IAP_GET_PREFILL   { member_id, dob, network }      → { ok, prefill }
+//   IAP_GET_PREFILL   { member_id, dob, network, client_id } → { ok, prefill }
 //   IAP_MARK_USED     { scrape_id }                    → { ok }
 //   IAP_GET_SETTINGS  {}                               → { ok, settings, lastScrape }
 //   IAP_SET_SETTINGS  { settings }                     → { ok, settings }
@@ -134,6 +134,9 @@
         network: msg.network || "",
       });
       if (msg.dob) q.set("dob", msg.dob);
+      // The Fill Form's own ClientID decides whose rules fill it (19 Star
+      // Dental, 26 Smile Partners); `client` above is the Settings fallback.
+      if (msg.client_id) q.set("sabrina_client_id", String(msg.client_id));
       if (last && last.id) q.set("scrape_id", String(last.id));
       // Only this browser's last scrape, never an older one left on the server.
       q.set("only_own", "true");
