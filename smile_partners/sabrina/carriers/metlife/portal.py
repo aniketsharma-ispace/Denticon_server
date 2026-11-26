@@ -76,6 +76,57 @@ def _shared_history(procs: list) -> str | None:
     return ", ".join(dates[d] for d in newest_first)
 
 
+def _card_unread(card) -> bool:
+    """A Maximums card the export has no amounts for ("N/A" throughout)."""
+    return isinstance(card, dict) and all(_blank(card.get(k)) for k in ("total", "used", "remaining"))
+
+
+def _lifetime_unread(lifetime) -> bool:
+    """
+    The scraper's stand-in for a Lifetime card it did not find (content_metlife.js
+    writes 0.0 / 0.0 / 0.0 with no category): no figure the portal printed.
+    """
+    if not isinstance(lifetime, dict) or not _blank(lifetime.get("category")):
+        return False
+    return all(str(lifetime.get(k) or "").strip() in ("0", "0.0", "0.00")
+               for k in ("total", "used", "remaining"))
+
+
+def _no_deductible_plan(ml: dict) -> bool:
+    """
+    The plan has no deductible: Maximums shows no Individual or Family card
+    while it does show the Annual one (so the cards were read), and every
+    Covered Services row says "Deductible Applies : No". A row worded
+    "Deductible Applies : <services>" means a deductible applies to those.
+    """
+    fin = ml.get("financials") or {}
+    if not (_card_unread(fin.get("deductible_ind")) and _card_unread(fin.get("deductible_fam"))):
+        return False
+    if _blank((fin.get("annual_max") or {}).get("total")):
+        return False
+    cells = " ".join(str(row.get(k) or "") for row in (ml.get("covered_services") or [])
+                     if isinstance(row, dict) for k in ("in_network", "out_of_network"))
+    stated = re.findall(r"deductible\s+applies\s*:\s*(\w+)", cells, re.IGNORECASE)
+    return bool(stated) and all(s.lower() == "no" for s in stated)
+
+
+def _financials_for_sheet(portal_raw: dict) -> dict | None:
+    """metlife_data with its Maximums cards as the sheet reads them, or None if unchanged."""
+    ml = (portal_raw or {}).get("metlife_data")
+    if not isinstance(ml, dict) or not isinstance(ml.get("financials"), dict):
+        return None
+    fin = dict(ml["financials"])
+    changed = False
+    if _no_deductible_plan(ml):
+        zero = {"total": "$ 0.00 total", "used": "$ 0.00 paid to date", "remaining": "$ 0.00 remaining"}
+        fin["deductible_ind"], fin["deductible_fam"] = dict(zero), dict(zero)
+        changed = True
+    if _lifetime_unread(fin.get("ortho_lifetime")) and _ortho_provision_covered(portal_raw) is True:
+        fin["ortho_lifetime"] = {"category": "N/A", "total": "N/A", "used": "N/A", "remaining": "N/A"}
+        changed = True
+    return dict(ml, financials=fin) if changed else None
+
+
 def _portal_for_sheet(portal_raw: dict, sab_fields: dict) -> dict:
     """
     The portal export as this sheet should read it.
@@ -90,18 +141,27 @@ def _portal_for_sheet(portal_raw: dict, sab_fields: dict) -> dict:
       only on D1110, so the sheet's D4910 row rightly shows that date too
       (Benjamin R Stanaj: D1110 03/17/26, D4910 "—", sheet D4910 03/17/2026).
       A limit of 0, or no such provision, leaves each code its own history.
+    · A plan with no deductible (`_no_deductible_plan`) reads $0 for both
+      deductibles, not blank (BPO QA 11/25, appointment 327769: "there are no
+      deductibles, it should update 0").
+    · When the plan covers orthodontics but the scraper found no Lifetime card,
+      its 0.0 stand-in is not read as a $0 ortho maximum and $0 used: both are
+      left unstated (BPO QA 11/25, appointments 332163 / 330388).
 
     Everything else is read as it arrives.
     """
+    fin_ml = _financials_for_sheet(portal_raw)
+    with_fin = dict(portal_raw, metlife_data=fin_ml) if fin_ml else portal_raw
+
     bc = (portal_raw or {}).get("benefit_coverage")
     procs = bc.get("procedures") if isinstance(bc, dict) else None
     if not isinstance(procs, list):
-        return portal_raw
+        return with_fin
 
     limit = _cleaning_perio_combined_limit(portal_raw)
     shared = _shared_history(procs) if limit and limit > 0 else None
     if not shared and not any(_no_coverage_info(p) for p in procs):
-        return portal_raw
+        return with_fin
 
     def _for_sheet(p):
         if _no_coverage_info(p):
@@ -110,7 +170,7 @@ def _portal_for_sheet(portal_raw: dict, sab_fields: dict) -> dict:
             p = dict(p, late_date_of_service=shared)
         return p
 
-    out = dict(portal_raw)
+    out = dict(with_fin)
     out["benefit_coverage"] = dict(bc)
     out["benefit_coverage"]["procedures"] = [_for_sheet(p) for p in procs]
     return out
