@@ -292,3 +292,11 @@ Toolkit PPO new-plan review: every value filled was right, but 14 cells the expo
 - **Prep or Seat:** the Toolkit spec's `major_payment_timing` ("Seat Date") now fills "Are Major Services Paid on Prep or Seat date?".
 - **Not Covered % → 0** on every carrier, for both the grid's Percentage option and the Insurance Details % inputs.
 - **Left blank on purpose (user, 11/25):** the payer names and ID, ADDRESS / STREET1 / CITY / STATE / ZIP, INS PHONE#, INS PLAN NAME and INS FEE SCHEDULE. Everything else in Insurance Details is filled.
+
+# Sabrina Fill Form: Delta Dental INS prefill (DDINS QA sheet) [11/26]
+
+- **Plan Type:** the member's plan (`primary_patient.plan`, else a family member's) naming PPO → PPO. Any other product is left to the user.
+- **Calendar/Fiscal Year:** Delta INS states no plan year. Benefit limitations saying "calendar year" → Calendar; "contract / benefit / plan / policy / fiscal year" → Fiscal; both or neither → blank.
+- **Waiting period:** the Waiting Periods tab is recorded even when it has already ended (user decision). Each row's begin–end dates give the period in months (12/01/2025–08/31/2026 = 9 Months); Basic (D2160, else D2391) and Major (D2740) get a row when that code is listed. Any row sets "Is there a waiting period" to Yes.
+- **Coordination of Benefits (all carriers' prefill):** the portal wording is mapped to the dropdown: non-dup → Non-Duplicate, carve-out → Carve-Out Clause, maintenance of benefits / MOB → Maintenance of Benefits, allowable → Upto the Allowable, traditional → Traditional, standard or "always considered the primary plan" → Standard. Anything else stays blank.
+- **Not Covered Add codes (Delta INS only):** D8090, D5995, D6057, D6058, D9310 not covered keep Frequency NC with a **blank** Percentage, not 0. Main-grid codes (D4381, D5899, D9230, D9243) keep 0.
