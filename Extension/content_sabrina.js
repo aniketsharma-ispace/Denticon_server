@@ -32,10 +32,32 @@
     }
     return null;
   };
-  const gridEl = (code, col) =>
-    firstByEnding([code, ...(GRID_ALIASES[code] || [])].map(c => `_${c}_${col}`));
-  const questionEl = q =>
-    firstByEnding([q, ...(QUESTION_ALIASES[q] || [])].map(x => `_${x}_covered`));
+  // `more`: other names the server sends for this client's form (Star Dental's
+  // "Diagnostic: XraysBitewings" row for D0274), tried last.
+  const gridEl = (code, col, more = []) =>
+    firstByEnding([code, ...(GRID_ALIASES[code] || []), ...more].map(c => `_${c}_${col}`));
+  const questionEl = (q, more = []) =>
+    firstByEnding([q, ...(QUESTION_ALIASES[q] || []), ...more].map(x => `_${x}_covered`));
+
+  // Whose Fill Form this is: Sabrina's ClientID (19 Star Dental, 26 Smile
+  // Partners), from the page address (…?clientId=19) or a field on the page.
+  // The server fills the form by that client's rules. "" when the page
+  // doesn't say: the client picked in Settings is used then.
+  const CLIENT_NAMES = { "19": "Star Dental", "26": "Smile Partners" };
+  function sabrinaClientId() {
+    try {
+      for (const q of [location.search || "", String(location.hash || "").split("?")[1] || ""]) {
+        for (const [k, v] of new URLSearchParams(q)) {
+          if (/^client_?id$/i.test(k) && /^\d+$/.test(String(v).trim())) return String(v).trim();
+        }
+      }
+      const el = [...document.querySelectorAll("input[name], select[name]")]
+        .find(e => /(^|\.)client_?id$/i.test(e.name) && /^\d+$/.test(String(e.value).trim()));
+      return el ? String(el.value).trim() : "";
+    } catch (_) {
+      return "";       // never block a fill: the Settings client is used
+    }
+  }
   const pageVal = n => (byName(n)?.value || "").trim();
   const normId = s => String(s || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
   // A DOB as MM/DD/YYYY. A DOB is in the past, so '02/03/90' is 1990 (the same
@@ -285,9 +307,10 @@
       .sort((a, b) => (isSelect(a.name) ? 0 : 1) - (isSelect(b.name) ? 0 : 1))
       .forEach(f => fillOne(byName(f.name), f.value, f.name, f.label || f.name, existing && f.level === "appointment", log));
     (prefill.questions || []).filter(wanted)
-      .forEach(q => fillOne(questionEl(q.question), q.value, "q:" + q.question, q.label || q.question, false, log));
+      .forEach(q => fillOne(questionEl(q.question, q.aliases || []), q.value, "q:" + q.question,
+                            q.label || q.question, false, log));
     (prefill.grid || []).filter(wanted)
-      .forEach(g => fillOne(gridEl(g.code, g.column), g.value, `g:${g.code}:${g.column}`,
+      .forEach(g => fillOne(gridEl(g.code, g.column, g.aliases || []), g.value, `g:${g.code}:${g.column}`,
                             `${g.code} ${g.column}`, existing && g.level === "appointment", log));
     // Boxes always ticked on a filled form (business team, 11/2026).
     ALWAYS_TICK.forEach(([name, label]) => tick(byName(name), label, log));
@@ -401,8 +424,8 @@
         details summary { cursor: pointer; color: #1f4e79; }
         ul { margin: 6px 0 0; padding-left: 18px; max-height: 160px; overflow: auto; }
         li { margin: 2px 0; }
-        input[type=text] { width: 100%; box-sizing: border-box; padding: 5px 7px; border: 1px solid #d0d5dd;
-                           border-radius: 6px; font: inherit; }
+        input[type=text], select { width: 100%; box-sizing: border-box; padding: 5px 7px; border: 1px solid #d0d5dd;
+                                   border-radius: 6px; font: inherit; background: #fff; }
         label.chk { display: flex; gap: 6px; align-items: center; }
         .acts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
         .acts .go { display: grid; gap: 1px; background: #fff; color: #1f4e79; border: 1px solid #1f4e79; }
@@ -415,6 +438,7 @@
       <div class="box">
         <div class="head" id="head"><b>Insurance Auditor · Fill from portal</b><span id="caret">▾</span></div>
         <div class="body">
+          <div class="row"><span class="muted">Client</span><span id="client">—</span></div>
           <div class="row"><span class="muted">Patient</span><span id="patient">—</span></div>
           <div class="row"><span class="muted">Portal scrape</span><span id="scrape">—</span></div>
           <div class="row"><span class="muted">IN OR OON</span><span id="network">—</span></div>
@@ -428,6 +452,11 @@
             <div style="display:grid;gap:6px;margin-top:6px">
               <span class="muted">Server</span>
               <input type="text" id="server" spellcheck="false">
+              <span class="muted">Client, when the Fill Form doesn't state its ClientID</span>
+              <select id="clientPick">
+                <option value="smile_partners">Smile Partners</option>
+                <option value="star_dental">Star Dental</option>
+              </select>
               <button class="go" id="saveSettings" style="padding:5px">Save settings</button>
             </div>
           </details>
@@ -446,7 +475,9 @@
     $("saveSettings").onclick = async () => {
       const r = await send({ type: "IAP_SET_SETTINGS", settings: {
         serverUrl: $("server").value.trim(),
+        client: $("clientPick").value,
       } });
+      if (r.ok) { settingsClient = r.settings.client; showClient(); }
       say(r.ok ? "Settings saved." : r.error, r.ok ? "ok" : "err");
     };
     setMode(detectMode());
@@ -483,7 +514,22 @@
       return say("The extension's background is not answering: " + r.error, "err");
     }
     ui.$("server").value = r.settings.serverUrl || "";
+    settingsClient = r.settings.client || "";
+    if (settingsClient) ui.$("clientPick").value = settingsClient;
+    showClient();
     showLastScrape(r.lastScrape || null);
+  }
+
+  // The client whose rules fill this form: the page's ClientID, else Settings.
+  let settingsClient = "";
+  function showClient() {
+    if (!ui) return;
+    const id = sabrinaClientId();
+    const picked = ui.$("clientPick");
+    const pickedName = picked.options[picked.selectedIndex]?.text || settingsClient || "—";
+    ui.$("client").textContent = id
+      ? `${CLIENT_NAMES[id] || "ClientID " + id} (ClientID ${id})`
+      : `${pickedName} (from Settings)`;
   }
 
   // ── is the last scrape this patient? ──────────────────────────────────────
@@ -762,7 +808,9 @@
 
     setButtons(false);
     say("Fetching portal data…");
-    const r = await send({ type: "IAP_GET_PREFILL", member_id: memberId, dob, network });
+    showClient();
+    const r = await send({ type: "IAP_GET_PREFILL", member_id: memberId, dob, network,
+                           client_id: sabrinaClientId() });
     setButtons(true);
     if (!r.ok && !network && /Choose In or Out/i.test(r.error || "")) {
       // This scrape holds both networks (Aetna, …): the user picks.
@@ -822,7 +870,8 @@
     appliedNetwork = network;
     const n = s => log.filter(x => x.status === s).length;
     const notOnForm = n("not on this form");
-    let text = `Filled ${n("filled")} from the ${prefill.carrier} portal (${network}-network, ${mode} plan).`;
+    const whose = prefill.client_label ? `, ${prefill.client_label} form` : "";
+    let text = `Filled ${n("filled")} from the ${prefill.carrier} portal (${network}-network, ${mode} plan${whose}).`;
     const extra = [];
     if (n("kept existing")) extra.push(`${n("kept existing")} kept as entered`);
     if (n("no matching option")) extra.push(`${n("no matching option")} with no matching option`);

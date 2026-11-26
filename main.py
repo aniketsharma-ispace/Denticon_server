@@ -117,13 +117,16 @@ CLIENTS = {
         # smile_partners/sabrina/prefill.py. Other Sabrina clients get it once
         # their own form is mapped.
         "supports": {"sabrina_audit", "parse_pdf", "sabrina_prefill"},
+        "sabrina_client_id": 26,
     },
     "star_dental": {
         "label":    "Star Dental",
         "system":   "Sabrina",
         "package":  "star_dental",
         "hint":     "Portal export + Sabrina breakdown PDF",
-        "supports": {"sabrina_audit", "parse_pdf"},
+        # sabrina_prefill: star_dental/sabrina/prefill.py (11/26).
+        "supports": {"sabrina_audit", "parse_pdf", "sabrina_prefill"},
+        "sabrina_client_id": 19,
     },
     "jefferson": {
         "label":    "Jefferson",
@@ -174,6 +177,38 @@ def resolve_client(name, capability):
             status_code=400,
             detail=f"{spec['label']} does not use {job}.")
     return key, spec
+
+
+# Sabrina's own client numbers (ClientID), as the business team listed them
+# 11/26. A Fill Form states its ClientID; the client entry above with that
+# `sabrina_client_id` fills it. The rest are named here only so the panel can
+# say whose form it is when that client is not set up for filling yet.
+SABRINA_CLIENT_NAMES = {
+    2: "Absolute Dental", 3: "Kidscare Dental", 7: "Affinity", 10: "Plum Dental",
+    11: "Jefferson Dental & Orthodontics", 12: "Marquee Dental", 15: "Beacon Dental",
+    16: "Pearl Street Dental Partners", 17: "Riccobene Brush and Floss", 18: "Dentologie",
+    19: "Star Dental", 20: "Chord SDP", 21: "Henritze Dental Group", 23: "Eastern Dental",
+    24: "Willis Dentistry", 26: "Smile Partners", 27: "Park Place Dental",
+}
+
+
+def client_for_sabrina_id(sabrina_client_id):
+    """
+    Our client key for a Fill Form's Sabrina ClientID (19 → star_dental).
+    Raises 400 for a ClientID no client here fills.
+    """
+    try:
+        cid = int(str(sabrina_client_id).strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown Sabrina ClientID {sabrina_client_id!r}.")
+    for key, spec in CLIENTS.items():
+        if spec.get("sabrina_client_id") == cid:
+            return key
+    name = SABRINA_CLIENT_NAMES.get(cid)
+    raise HTTPException(
+        status_code=400,
+        detail=(f"Fill from portal is not set up for {name} (Sabrina ClientID {cid}) yet."
+                if name else f"Unknown Sabrina ClientID {cid}."))
 
 
 def client_module(spec, dotted):
@@ -464,7 +499,7 @@ def save_scrape(req: ScrapeRequest):
             "member_id": scrape_store.norm_member(member_id), "dob": dob}
 
 
-def _other_browser_scrape(key: str, member_id: str, dob: Optional[str]) -> Optional[dict]:
+def _other_browser_scrape(key: Optional[str], member_id: str, dob: Optional[str]) -> Optional[dict]:
     """
     A scrape made in another browser for this patient: the portal scraped in
     Firefox, the Fill Form open in Edge. Strict, because nothing ties it to
@@ -480,10 +515,18 @@ def _other_browser_scrape(key: str, member_id: str, dob: Optional[str]) -> Optio
 
 
 @app.get("/api/prefill")
-def get_prefill(client: str, member_id: str, network: str = "", dob: Optional[str] = None,
-                scrape_id: Optional[int] = None, only_own: bool = False):
+def get_prefill(member_id: str, client: str = "", network: str = "", dob: Optional[str] = None,
+                scrape_id: Optional[int] = None, only_own: bool = False,
+                sabrina_client_id: Optional[str] = None):
     """
     What to fill on the Fill Form for this member and network.
+
+    Whose form it is: `sabrina_client_id`, the ClientID the Fill Form states
+    (19 Star Dental, 26 Smile Partners), when the extension found one;
+    otherwise `client`, the extension's setting. That client's prefill module
+    turns the scrape into its form's fields. A scrape is not tied to a client:
+    it is taken on the carrier portal before anyone knows which client's form
+    it will fill, so any client's form may use it.
 
     `member_id` and `dob` are read off the Fill Form (MEMBER#, PATIENT DOB);
     `network` is the user's IN OR OON pick; it may be empty for a portal whose
@@ -503,9 +546,13 @@ def get_prefill(client: str, member_id: str, network: str = "", dob: Optional[st
     is for someone else (including a family member on the same member ID with
     another DOB), 422 when the network is missing or the scrape cannot be read.
     """
+    if sabrina_client_id not in (None, ""):
+        client = client_for_sabrina_id(sabrina_client_id)
     key, prefill = _prefill_module(client)
+    # Scrapes are looked up for any client (see above): ANY_CLIENT.
+    store = scrape_store.ANY_CLIENT
     scrape = None
-    own = scrape_store.get_pending(key, scrape_id) if scrape_id else None
+    own = scrape_store.get_pending(store, scrape_id) if scrape_id else None
     family_member = False
     if own:
         # A portal with no member ID (Guardian, some Toolkit and MetLife
@@ -522,9 +569,9 @@ def get_prefill(client: str, member_id: str, network: str = "", dob: Optional[st
             # the DOB agrees; the extension still shows the patient check.
             scrape = own
     if not scrape and not only_own:
-        scrape = scrape_store.find_pending(key, member_id, dob)
+        scrape = scrape_store.find_pending(store, member_id, dob)
     if not scrape and only_own:
-        scrape = _other_browser_scrape(key, member_id, dob)
+        scrape = _other_browser_scrape(store, member_id, dob)
     if not scrape and own:
         detail = (f"Your last portal scrape is for member {own['member_id']} "
                   f"(DOB {own['dob'] or 'not stated'}), not this patient.")
@@ -550,7 +597,9 @@ def get_prefill(client: str, member_id: str, network: str = "", dob: Optional[st
         result = prefill.build_prefill(scrape["data"], network)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    result.update({"client": key, "scrape_id": scrape["id"], "scraped_at": scrape["scraped_at"]})
+    result.update({"client": key, "client_label": CLIENTS[key]["label"],
+                   "sabrina_client_id": CLIENTS[key].get("sabrina_client_id"),
+                   "scrape_id": scrape["id"], "scraped_at": scrape["scraped_at"]})
     return result
 
 
