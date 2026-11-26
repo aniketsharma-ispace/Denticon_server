@@ -321,6 +321,122 @@ for rel, want in (("Child", "Dependent"), ("Spouse", "Spouse"), ("Self", "Self")
     check(f"Cigna relation {rel or '(none)'!r} → {want}",
           field(build_prefill(cg_rel, ""), "demographic.relationToInsured"), want)
 
+print("── METLIFE: BPO QA 11/25 ──")
+# A made-up MetLife export — no real patient. The QA sheet found codes left
+# blank (FISCAL YEAR limits), months filled as years, no-deductible plans left
+# blank, a $0 ortho maximum the portal never stated, and Relation / Plan Type /
+# Calendar-Fiscal / Ortho Payment Timing not filled.
+
+
+def _ml_proc(code, freq, lvl="80%", age="0-99"):
+    return {"procedure_code": code, "description": code, "frequency_limit": freq,
+            "benefit_level": lvl, "age_limit": age, "deductible": "NO",
+            "late_date_of_service": "—", "network_fee": "N/A", "patient_responsibility": "20%"}
+
+
+_NO_CARD = {"total": "N/A", "used": "N/A", "remaining": "N/A"}
+ML = {
+    "subscriber_info": {"name": "Test Subscriber", "dob": "01/01/1970", "relation": "Subscriber"},
+    "metlife_data": {
+        "source": "MetLife Portal - Plan Overview",
+        "patient": {"name": "Test Spouse", "dob": "02/03/1972", "gender": "Female",
+                    "relationship": "Spouse"},
+        "plan_details": {"network": "PDP PLUS", "group_number": "123456", "employer_group": "TEST CO",
+                         "start_date": "07/01/2026", "end_date": "N/A",
+                         "subscriber_id": "XXXXXXX0000"},
+        "provider_info": {"provider_network_status": "In-Network"},
+        "financials_network": "In-Network",
+        "financials": {
+            "annual_max": {"description": "for Diagnostic, Preventive, Restorative",
+                           "total": "$ 1500.00 total", "used": "$ 0.00 used to date",
+                           "remaining": "$ 1500.00 remaining"},
+            "deductible_ind": dict(_NO_CARD), "deductible_fam": dict(_NO_CARD),
+            # The scraper's stand-in for "no Lifetime card found".
+            "ortho_lifetime": {"category": "N/A", "total": "0.0", "used": "0.0", "remaining": "0.0"},
+        },
+        "deductible_notes": [],
+        "covered_services": [
+            {"category": "DIAGNOSTIC", "services": "Oral Exams",
+             "in_network": "100% Deductible Applies : No", "out_of_network": "100% Deductible Applies : No"},
+            {"category": "RESTORATIVE", "services": "Amalgams/ Fillings",
+             "in_network": "80% Deductible Applies : No", "out_of_network": "80% Deductible Applies : No"},
+        ],
+        "provisions": [
+            {"rule": "Benefit Period", "value": "FISCAL YEAR Start Date: 07/01/2026 End Date: 06/30/2027"},
+            {"rule": "Orthodontic Coverage",
+             "value": "Orthodontics is covered under this plan Percentage considered at initial ortho placement: 20%"},
+            {"rule": "Ortho payment method", "value": "End of quarter"},
+        ],
+    },
+    "benefit_coverage": {
+        "source": "MetLife Portal - Benefit & Coverage Details",
+        "provider_network_status": "In-Network", "procedure_categories": [], "codes_not_returned": [],
+        "procedures": [
+            _ml_proc("D0120", "2 TIMES IN 1 FISCAL YEAR", "100%"),
+            _ml_proc("D0210", "1 TIME IN 60 MONTHS", "100%"),
+            _ml_proc("D1351", "1 TIME IN 60 MONTHS, PERMANENT MOLARS ONLY, EXCLUDING WISDOM TEETH", "100%", "0-14"),
+            _ml_proc("D1510", "ONCE PER LIFETIME", "80%", "0-14"),
+            _ml_proc("D2160", "No Limitations"),
+            _ml_proc("D2740", "1 TIME IN 5 FISCAL YEARS", "50%"),
+            _ml_proc("D4910", "4 TIMES IN 1 CALENDAR YEAR"),
+            _ml_proc("D9944", "*NOT COVERED", "N/A", ""),
+        ],
+    },
+}
+r_ml = build_prefill(ML, "In")
+check("MetLife export read by the MetLife folder", r_ml["carrier"], "metlife")
+check("FISCAL YEAR limits fill (were left blank)",
+      [cell(r_ml, "D0120", "frequency"), cell(r_ml, "D2740", "frequency")], ["2X1Year", "1X5Years"])
+check("months stay months, as the website states them",
+      [cell(r_ml, "D0210", "frequency"), cell(r_ml, "D1351", "frequency")], ["1X60Months", "1X60Months"])
+check("years, lifetime, no limit and not covered as before",
+      [cell(r_ml, c, "frequency") for c in ("D4910", "D1510", "D2160", "D9944")],
+      ["4X1Year", "1XLifetime", "No Frequency", "NC"])
+check("no-deductible plan → both deductibles 0",
+      [field(r_ml, "insuranceDetails.individualDeductible"), field(r_ml, "insuranceDetails.familyDeductible")],
+      ["0", "0"])
+check("ortho covered but no Lifetime card read → ortho max / used left blank, not 0",
+      [field(r_ml, "benefitsInfo.orthoMaximumAmount"), field(r_ml, "benefitsInfo.orthoUsedAmount"),
+       field(r_ml, "benefitsInfo.orthoMaximumCovered")], [None, None, None])
+check("Relation, Plan Type, Calendar/Fiscal from the export",
+      [field(r_ml, "demographic.relationToInsured"), field(r_ml, "insuranceDetails.planType"),
+       field(r_ml, "insuranceDetails.calendarorfiscal")], ["Spouse", "PPO", "Fiscal"])
+check("Ortho Payment Timing: End of quarter → Quarterly",
+      next((q["value"] for q in r_ml["questions"] if q["question"] == "OrthoPaymentTiming"), None), "Quarterly")
+
+ml2 = _c25.deepcopy(ML)
+ml2["metlife_data"]["financials"]["ortho_lifetime"] = {
+    "category": "Orthodontics", "total": "$ 1000.00 total", "used": "$ 250.00 used to date",
+    "remaining": "$ 750.00 remaining"}
+ml2["metlife_data"]["financials"]["deductible_ind"] = {
+    "total": "$ 50.00 total", "used": "$ 0.00 paid to date", "remaining": "$ 50.00 remaining"}
+ml2["metlife_data"]["patient"]["relationship"] = "Subscriber"
+ml2["metlife_data"]["provisions"][0]["value"] = "CALENDAR YEAR Start Date: 01/01/2026 End Date: 12/31/2026"
+ml2["metlife_data"]["provisions"][2]["value"] = "Monthly Repetitive"
+r_ml2 = build_prefill(ml2, "In")
+check("an Orthodontics Lifetime card fills max, used and Lifetime",
+      [field(r_ml2, "benefitsInfo.orthoMaximumAmount"), field(r_ml2, "benefitsInfo.orthoUsedAmount"),
+       field(r_ml2, "benefitsInfo.orthoMaximumCovered")], ["1000", "250", "Lifetime"])
+check("a stated deductible is kept", field(r_ml2, "insuranceDetails.individualDeductible"), "50")
+check("Subscriber → Self, CALENDAR YEAR → Calendar, Monthly Repetitive → Monthly",
+      [field(r_ml2, "demographic.relationToInsured"), field(r_ml2, "insuranceDetails.calendarorfiscal"),
+       next((q["value"] for q in r_ml2["questions"] if q["question"] == "OrthoPaymentTiming"), None)],
+      ["Self", "Calendar", "Monthly"])
+
+ml3 = _c25.deepcopy(ML)
+ml3["metlife_data"]["covered_services"][1]["in_network"] = "80% Deductible Applies : Yes"
+ml3["metlife_data"]["provisions"][1]["value"] = "Orthodontics is not covered under this plan"
+r_ml3 = build_prefill(ml3, "In")
+check("deductible applies somewhere but no card read → left blank, not 0",
+      field(r_ml3, "insuranceDetails.individualDeductible"), None)
+check("ortho not covered → max 0 as before; no Payment Timing",
+      [field(r_ml3, "benefitsInfo.orthoMaximumAmount"),
+       [q for q in r_ml3["questions"] if q["question"] == "OrthoPaymentTiming"]], ["0", []])
+ml4 = _c25.deepcopy(ML)
+ml4["metlife_data"]["financials"]["annual_max"] = dict(_NO_CARD, description="")
+check("Maximums not read at all → deductibles not guessed as 0",
+      field(build_prefill(ml4, "In"), "insuranceDetails.individualDeductible"), None)
+
 print("── SCRAPE STORE ──")
 sid = scrape_store.save("smile_partners", "aetna", "w000-111 222", "2/3/1990", EXPORT)
 check("found by member ID, any format",
