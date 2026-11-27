@@ -68,7 +68,10 @@
     const d = data || {};
     const name = d.patient?.name || d.patient_info?.patient_name || d.primary_patient?.name ||
                  d.member_details?.patient_name || d.metlife_data?.patient?.name ||
-                 d.patient_information?.name || "patient";
+                 d.patient_information?.name ||
+                 // DD Toolkit: the member picked on the Member Benefits page (11/27).
+                 d.member_details?.selectedMember?.patientName || d.member_details?.selectedMember?.name ||
+                 "patient";
     const slug = String(name).trim().replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "").toLowerCase() || "patient";
     return `${carrier}_${slug}_${new Date().toISOString().slice(0, 10)}.json`;
   }
