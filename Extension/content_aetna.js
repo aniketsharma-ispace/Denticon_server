@@ -370,6 +370,52 @@ function _selectGeneralBenefits() {
     if (radio && !radio.checked) radio.click();
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// NETWORK CHOICE — once the patient's benefits page is open, the operator
+// picks In or Out network here. The JSON keeps both networks' tables (the
+// audit needs them) plus network_choice, so the Sabrina fill sets IN OR OON
+// by itself. "Decide in Sabrina" leaves it unset, as before.
+// ══════════════════════════════════════════════════════════════════════════
+
+function _askNetworkChoice() {
+    var box = document.createElement("div");
+    box.id = "iap-network-choice";
+    box.style.cssText = "position:fixed;top:16px;right:16px;z-index:2147483647;" +
+        "background:#fff;border:2px solid #1f6fb2;border-radius:8px;padding:14px 16px;" +
+        "box-shadow:0 4px 16px rgba(0,0,0,.25);font:14px Arial,sans-serif;color:#222;max-width:300px";
+    box.innerHTML =
+        '<div style="font-weight:bold;margin-bottom:6px">Insurance Auditor</div>' +
+        '<div style="margin-bottom:10px">Is this office <b>In</b> or <b>Out</b> of network for this patient?</div>' +
+        '<button data-net="In" style="margin-right:8px;padding:6px 14px;cursor:pointer">In Network</button>' +
+        '<button data-net="Out" style="padding:6px 14px;cursor:pointer">Out of Network</button>' +
+        '<div style="margin-top:10px"><a href="#" data-net="" style="font-size:12px;color:#555">Decide in Sabrina</a></div>';
+    box.addEventListener("click", function(e) {
+        var t = e.target.closest("[data-net]");
+        if (!t) return;
+        e.preventDefault();
+        box.remove();
+        _networkChosen(t.getAttribute("data-net") || null);
+    });
+    (document.body || document.documentElement).appendChild(box);
+}
+
+function _networkChosen(choice) {
+    var state = _getCrawlState();
+    var data = state.pending_payload;
+    if (!data) { _clearCrawlState(); return; }
+    data.network_choice = (choice === "In" || choice === "Out") ? choice : null;
+    if (_needsSubscriberDob(state)) {
+        // Dependent: keep holding this JSON and go fetch the subscriber's DOB.
+        state.pending_payload = data;
+        state.subscriber_steps = 0;
+        _subscriberStep(state, "sub_view_patient");
+        if (!_clickByText("View Patient")) { _giveUpOnSubscriberDob("View Patient not found"); return; }
+        _armSubscriberStepTimeout("sub_view_patient", "the patient page did not open");
+        return;
+    }
+    _finishCrawl(data);
+}
+
 async function continueAetnaCrawl() {
     if (window.__aetnaCrawlBusy) return;
     window.__aetnaCrawlBusy = true;
@@ -460,18 +506,17 @@ async function continueAetnaCrawl() {
         }
 
         if (isBenefitsPage()) {
-            var data = buildAetnaPayload();
             var bs = _getCrawlState();
-            if (_needsSubscriberDob(bs)) {
-                // Dependent: hold this JSON and go fetch the subscriber's DOB.
-                bs.pending_payload = data;
-                bs.subscriber_steps = 0;
-                _subscriberStep(bs, "sub_view_patient");
-                if (!_clickByText("View Patient")) { _giveUpOnSubscriberDob("View Patient not found"); return; }
-                _armSubscriberStepTimeout("sub_view_patient", "the patient page did not open");
+            if (bs.stage === "awaiting_network_choice") {
+                // Already asked on this page (the crawl was re-triggered).
+                if (!document.getElementById("iap-network-choice")) _askNetworkChoice();
                 return;
             }
-            _finishCrawl(data);
+            // Hold the scrape and ask the operator In or Out on this page.
+            bs.pending_payload = buildAetnaPayload();
+            bs.stage = "awaiting_network_choice";
+            _saveCrawlState(bs);
+            _askNetworkChoice();
             return;
         }
 
