@@ -136,6 +136,11 @@ def carrier_prefill(portal_raw: dict):
       scrape_network(raw)     -> "In"/"Out"   the network the scrape was taken
                                               for, when the portal scrapes one
                                               network only (Cigna)   (optional)
+      prefill_export(raw)     -> raw          the export recast into the shape the
+                                              audit's readers take, when the
+                                              extension exports a newer shape the
+                                              audit has not caught up with (DD MO
+                                              1.67 single-network)   (optional)
       form_frequency(value)   -> str | None   a grid Frequency in the carrier's
                                               own words ("1X60Months" for MetLife's
                                               "1 TIME IN 60 MONTHS"); None falls
@@ -193,8 +198,13 @@ def portal_values(portal_raw: dict, network: str) -> tuple[str, dict, list[dict]
     key, rules = carrier_rules(portal_raw)
     portal = import_module(f"{rules.__name__}.portal")
     spec = import_module(f"{rules.__name__}.spec")._SPEC
+    hooks = carrier_prefill(portal_raw)
+    # A newer export the audit's readers don't take yet, recast for them (DD MO 1.67).
+    recast = _hook(hooks, "prefill_export")
+    if recast:
+        portal_raw = recast(portal_raw)
     # Fill Form cells the sheet doesn't print: read the same way, never audited.
-    extra = getattr(carrier_prefill(portal_raw), "FORM_ONLY_SPEC", None) or []
+    extra = getattr(hooks, "FORM_ONLY_SPEC", None) or []
     spec = list(spec) + [f for f in extra if f["key"] not in {s["key"] for s in spec}]
 
     # The audit's In Network answer, as the sheet would state it.
