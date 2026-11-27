@@ -470,8 +470,28 @@ def _yesno(value) -> str | None:
     return None
 
 
+# COORDINATION OF BENEFITS is a dropdown: the portal's wording → its option.
+# Star's copy of the team rule of 11/26 (RULES.md; Smile Partners has its own).
+_COB_OPTIONS = (
+    (r"non[\s-]*dup", "Non-Duplicate"),
+    (r"carve[\s-]*out", "Carve-Out Clause"),
+    (r"maintenance\s+of\s+benefits|\bMOB\b", "Maintenance of Benefits"),
+    (r"up\s*to\s+the\s+allowable|allowable", "Upto the Allowable"),
+    (r"traditional", "Traditional"),
+    (r"standard|primary", "Standard"),
+)
+
+
+def _cob_option(value) -> str | None:
+    text = str(value or "").strip()
+    return next((option for pattern, option in _COB_OPTIONS
+                 if re.search(pattern, text, re.IGNORECASE)), None)
+
+
 def _form_value(spec_key: str, kind: str, aspect: str | None, value, vocab=None) -> str | None:
     """A portal value rewritten for its Fill Form input, or None to leave it empty."""
+    if spec_key == "cob":
+        return _cob_option(value)
     if aspect == "hist":
         return _history(value)
     if aspect == "freq":

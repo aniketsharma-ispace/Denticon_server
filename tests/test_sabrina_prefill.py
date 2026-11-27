@@ -112,14 +112,40 @@ check("history is appointment-level",
 check("missing tooth clause question",
       next((q["value"] for q in r_in["questions"]
             if q["question"] == "DoesMissingToothClauseApply?"), None), "Yes")
-check("COB is left to the user",
-      field(r_in, "insuranceDetails.coordinationOfBenefits"), None)
+check("COB from the plan remarks: Standard COB → Standard (rule 11/26)",
+      field(r_in, "insuranceDetails.coordinationOfBenefits"), "Standard")
 check("relation: Employee → Self", field(r_in, "demographic.relationToInsured"), "Self")
 check("plan type PPO", field(r_in, "insuranceDetails.planType"), "PPO")
 check("calendar year", field(r_in, "insuranceDetails.calendarorfiscal"), "Calendar")
 check("ortho maximum Lifetime", field(r_in, "benefitsInfo.orthoMaximumCovered"), "Lifetime")
 spouse = dict(EXPORT, payer=dict(EXPORT["payer"], coverage="Spouse"))
 check("relation: Spouse", field(build_prefill(spouse, "In"), "demographic.relationToInsured"), "Spouse")
+
+print("── AETNA: BPO DATA CHECK 11/27 (Relation, COB) ──")
+# A spouse on an "Employee and Spouse" plan was filled as Self: the Coverage
+# tier says who is covered, not who the patient is. COB was never filled.
+_rel = lambda export: field(build_prefill(export, "In"), "demographic.relationToInsured")
+tier = dict(EXPORT, payer=dict(EXPORT["payer"], coverage="Employee and Spouse"))
+check("a tier covering several people does not decide (was Self)", _rel(tier), None)
+check("…nor does Family", _rel(dict(tier, payer=dict(tier["payer"], coverage="Family"))), None)
+check("the member picked on the eligibility page decides: Spouse",
+      _rel(dict(tier, selected_member={"name": "TEST PATIENT", "relationship": "Spouse"})), "Spouse")
+check("…the patient's row in the member list",
+      _rel(dict(tier, eligibility_members=[{"name": "SOMEONE ELSE", "relationship": "Self"},
+                                          {"name": "Test Patient", "relationship": "Child"}])), "Dependent")
+check("…the patient is the subscriber (same name and DOB) → Self",
+      _rel(dict(tier, subscriber={"name": "TEST PATIENT", "date_of_birth": "02/03/1990"})), "Self")
+check("…another subscriber, no relationship stated → left blank",
+      _rel(dict(tier, subscriber={"name": "OTHER PERSON", "date_of_birth": "09/13/1970"})), None)
+check("a one-person tier: Individual → Self",
+      _rel(dict(tier, payer=dict(tier["payer"], coverage="Individual"))), "Self")
+nondup = dict(EXPORT, plan_level_remarks=["MISSING TOOTH CLAUSE DOES NOT APPLY",
+                                          "Self Funded,CHLD TO 26 OR 26 IF FT STUDENT,Non-duplicating COB"])
+check("COB: Non-duplicating COB → Non-Duplicate",
+      field(build_prefill(nondup, "In"), "insuranceDetails.coordinationOfBenefits"), "Non-Duplicate")
+check("COB: no COB remark → left blank",
+      field(build_prefill(dict(EXPORT, plan_level_remarks=[]), "In"),
+            "insuranceDetails.coordinationOfBenefits"), None)
 no_ortho = dict(EXPORT, in_network=dict(EXPORT["in_network"],
                                          maximums=EXPORT["in_network"]["maximums"][:1]))
 check("no ortho maximum row → left for the user",
@@ -442,6 +468,7 @@ print("── STAR DENTAL: ITS OWN FILL FORM (ClientID 19, 11/26) ──")
 # readers, with the rows of Star's Insurance Plan Breakdown.
 from sabrina.star_dental.prefill import build_prefill as star_prefill   # noqa: E402
 from sabrina.star_dental.prefill import scrape_network as star_network  # noqa: E402
+from sabrina.star_dental import prefill as star_pf                       # noqa: E402
 r_star = star_prefill(EXPORT, "In")
 check("Star: plan amounts under Sabrina's usual names",
       [field(r_star, "insuranceDetails.yearlyMaxAmount"), field(r_star, "benefitsInfo.orthoMaximumAmount")],
@@ -450,7 +477,7 @@ check("Star: Preventive / Basic / Major % (on the form, not in Star's audit list
       [field(r_star, f"insuranceDetails.{k}") for k in ("preventive", "basic", "major")], ["100", "80", "50"])
 check("Star: its own question names",
       sorted(q["question"] for q in r_star["questions"]),
-      ["Aremajorpaidatpreporseatdate?", "DoesMissingToothClauseApply?"])
+      ["Aremajorpaidatpreporseatdate?", "DoesMissingToothClauseApply?", "OrthoMaximumCovered"])
 check("Star: Seat Date in Star's words (Seat)",
       next(q["value"] for q in r_star["questions"] if q["question"] == "Aremajorpaidatpreporseatdate?"), "Seat")
 check("Star: Orthodontics' Dependent Age Limit? row", cell(r_star, "DependentAgeLimit?", "ageLimit"), "26")
@@ -473,6 +500,39 @@ check("Star ortho: the Coverage row and Orthodontics Child D8080 both get the or
       sorted((g["code"], g["value"]) for g in r_star_tk["grid"]
              if g["code"] in ("Coverage", "D8080") and g["column"] == "percentage"),
       [("Coverage", "0"), ("D8080", "0")])
+print("── STAR DENTAL: AETNA DATA CHECK 11/27 ──")
+# Stephen Shearin on Star's form: Relation, COB and the share-freq questions
+# were blank although the export states them in its own words.
+st_ae = _c25.deepcopy(EXPORT)
+st_ae["payer"]["coverage"] = "Employee and Spouse"
+st_ae["selected_member"] = {"name": "TEST PATIENT", "relationship": "Spouse"}
+for _net in ("in_network", "out_of_network"):
+    st_ae[_net]["service_level_benefits"] += [
+        dict(_row("D0140", "0% / 100%"), message="Alternate benefit D0120"),
+        dict(_row("D0210", "0% / 100%"), shares_frequency_with="D0330,D0372,DEDUCTIBLE DOES NOT APPLY"),
+        _row("D0330", "0% / 100%"),
+        dict(_row("D1110", "0% / 100%"), message="Shares frequency with D1120,D4346,DEDUCTIBLE DOES NOT APPLY"),
+        _row("D4910", "0% / 100%"),
+    ]
+r_st_ae = star_prefill(st_ae, "In")
+_q = lambda r, name: next((q["value"] for q in r["questions"] if q["question"] == name), None)
+check("Star Aetna: Relation to Subscriber from the picked member (Spouse)",
+      field(r_st_ae, "demographic.relationToInsured"), "Spouse")
+check("Star Aetna: COB from the plan remarks (Standard COB → Standard)",
+      field(r_st_ae, "insuranceDetails.coordinationOfBenefits"), "Standard")
+check("Star Aetna: FMX and Pano share freq? Yes (D0210 lists D0330)",
+      _q(r_st_ae, "FMXandPanosharefreq?"), "Yes")
+check("Star Aetna: Prophy and Perio maintenance share freq? No (D1110 lists D1120, D4346)",
+      _q(r_st_ae, "ProphyandPeriomaintenancesharefreq?"), "No")
+check("Star Aetna: D0120 and D0140 share freq? No (an alternate-benefit mention is not a share)",
+      _q(r_st_ae, "D0120andD0140sharefreq?"), "No")
+check("Star Aetna: Ortho Maximum Covered from the ortho maximum (Lifetime)",
+      _q(r_st_ae, "OrthoMaximumCovered"), "Lifetime")
+check("Star Aetna: an export stating no shared frequency answers none of them",
+      [_q(r_star, q) for q in ("FMXandPanosharefreq?", "D0120andD0140sharefreq?")], [None, None])
+check("Star: COB wording mapped to the dropdown", star_pf._cob_option("Non-duplicating COB"), "Non-Duplicate")
+check("Smile Aetna is not given Star's questions",
+      _q(build_prefill(st_ae, "In"), "FMXandPanosharefreq?"), None)
 check("Smile unchanged: no Star rows, questions or hints",
       [cell(r_in, "DependentAgeLimit?", "ageLimit"), "Insurance phone" in r_in["hints"],
        any(q["question"] == "Aremajorpaidatpreporseatdate?" for q in r_in["questions"])],

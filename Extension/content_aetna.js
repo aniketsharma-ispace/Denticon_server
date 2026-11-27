@@ -8,12 +8,23 @@ const clean = (s) => (s || "").trim().replace(/\s+/g, ' ');
 // Existing extraction/output behavior below is intentionally kept intact.
 // ══════════════════════════════════════════════════════════════════════════
 
+// Every code a Sabrina client's sheet reads: the portal is scraped before
+// anyone knows whose Fill Form it will fill, so one search asks for all of them
+// (each client's fill reads only its own rows).
 const PROCEDURE_CODES = [
+    // Smile Partners
     "D0220","D0120","D0140","D0150","D0210","D0330","D0274","D1110","D1206",
     "D1208","D1351","D1510","D2160","D2391","D2740","D2950","D2980","D3310",
     "D4260","D4341","D4346","D4355","D4381","D4910","D5110","D5212","D5899",
     "D6010","D6750","D7140","D7210","D9110","D9230","D9243","D9944","D5995",
-    "D6057","D6058","D9310","D8080","D8090"
+    "D6057","D6058","D9310","D8080","D8090",
+    // Star Dental's sheet rows not above (BPO data check 11/27: 37 of its 72
+    // code rows were never requested, so half its grid stayed blank)
+    "D0230","D0240","D1120","D0367","D1516","D2331","D2140","D2610","D2642",
+    "D2750","D5511","D5650","D5810","D5821","D5912","D6104","D6190","D6056",
+    "D6240","D6245","D9222","D9239","D9612","D9630","D9946","D9947","D3221",
+    "D3330","D3346","D3348","D4921","D7230","D7240","D7310","D7953","D8220",
+    "D8680"
 ];
 
 const CLAIMCONNECT_CRAWL_KEY = "__claimconnect_aetna_crawl_state_v1";
