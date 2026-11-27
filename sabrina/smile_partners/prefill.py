@@ -329,7 +329,9 @@ def _history(value) -> str | None:
     text = str(value).strip()
     if text.upper() in ("NH", "NO HISTORY"):
         return "NH"
-    dates = [_date(d) for d in re.split(r"[,;]\s*", text)]
+    # Cigna gives several visits one per line ("08/04/2026\n01/28/2026");
+    # other portals separate them with commas.
+    dates = [_date(d) for d in re.split(r"[,;\n]\s*", text)]
     dates = [d for d in dates if d]
     return ", ".join(dates) if dates else None
 
