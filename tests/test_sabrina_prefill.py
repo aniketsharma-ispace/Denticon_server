@@ -1,5 +1,5 @@
 """
-Sabrina Fill Form prefill (smile_partners/sabrina/prefill.py) and the scrape
+Sabrina Fill Form prefill (sabrina/smile_partners/prefill.py) and the scrape
 store behind /api/scrapes and /api/prefill.
 
 Run:  python tests/test_sabrina_prefill.py
@@ -12,7 +12,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["SCRAPE_DB"] = os.path.join(tempfile.mkdtemp(), "scrapes.db")
 
-from smile_partners.sabrina.prefill import build_prefill, member_key   # noqa: E402
+from sabrina.smile_partners.prefill import build_prefill, member_key   # noqa: E402
 from shared import scrape_store                                         # noqa: E402
 
 _failed = 0
@@ -93,7 +93,7 @@ check("carrier", r_in["carrier"], "aetna")
 check("network echoed", (r_in["network"], r_out["network"]), ("In", "Out"))
 check("yearly max: plain number, no commas or .00", field(r_in, "insuranceDetails.yearlyMaxAmount"), "1500")
 check("yearly max used = max − remaining", field(r_in, "benefitsInfo.yearlyMaxUsed"), "300")
-from smile_partners.sabrina.prefill import _money                      # noqa: E402
+from sabrina.smile_partners.prefill import _money                      # noqa: E402
 check("money formats", [_money("$1,250.00"), _money("154.37"), _money("0.00"), _money("$37.5")],
       ["1250", "154.37", "0", "37.50"])
 check("plan start month", field(r_in, "insuranceDetails.planMonth"), "January")
@@ -195,7 +195,7 @@ check("Cigna: IN OR OON not left for the user", "IN OR OON" in r_cg["left_for_us
 check("Cigna frequency in Sabrina's words",
       [cell(r_cg, c, "frequency") for c in ("D0120", "D1208", "D1351")], ["2X1Year", "1X1Year", "1X3Year"])
 check("Cigna 'Exclude after age 18' → 18", cell(r_cg, "D1208", "ageLimit"), "18")
-from smile_partners.sabrina.prefill import _frequency                  # noqa: E402
+from sabrina.smile_partners.prefill import _frequency                  # noqa: E402
 check("frequency wordings",
       [_frequency(t) for t in ("Once Per 6 Consecutive Months", "Four Times Per Calendar Year",
                                "No benefits for this service", "Not Applicable", "2X1Year")],
@@ -207,7 +207,7 @@ print("── DELTA DENTAL / TOOLKIT: NETWORK FROM THE SCRAPE ──")
 # that network only: PPO and Premier are In, Out of Network is Out. A pick on
 # the form against it is refused, as for Cigna, instead of filling the scraped
 # network's figures under the other one.
-from smile_partners.sabrina.prefill import scrape_network                # noqa: E402
+from sabrina.smile_partners.prefill import scrape_network                # noqa: E402
 
 
 def _refused(export, network):
@@ -261,8 +261,8 @@ check("Toolkit before the pop-up (no network_choice) still takes the pick",
       scrape_network(_tk(None, "PPO Dentist")), None)
 
 print("── PREFILL: TOOLKIT FORM-ONLY CELLS (11/25) ──")
-from smile_partners.sabrina import prefill as _pf                        # noqa: E402
-from smile_partners.sabrina.carriers.delta_toolkit import prefill as _tkpf  # noqa: E402
+from sabrina.smile_partners import prefill as _pf                        # noqa: E402
+from sabrina.smile_partners.carriers.delta_toolkit import prefill as _tkpf  # noqa: E402
 check("Not Covered % → 0 (grid option and Insurance Details number)",
       (_pf._pct_option("Not Covered"), _pf._pct_number("Not Covered"), _pf._pct_option("80%")),
       ("0", "0", "80%"))
@@ -312,7 +312,7 @@ check("D1206 (Not Covered in the sample) → Age 0", cell(r_fb, "D1206", "ageLim
 check("covered code keeps its own age", cell(r_fb, "D1208", "ageLimit"), "14")
 check("D4341's age column is Quads, not touched", cell(r_fb, "D4341", "quads"), "4")
 check("999 months → 1XLifetime", cell(r_fb, "D4355", "frequency"), "1XLifetime")
-from smile_partners.sabrina.prefill import _frequency as _f25              # noqa: E402
+from sabrina.smile_partners.prefill import _frequency as _f25              # noqa: E402
 check("other spans untouched", [_f25("1X36Months"), _f25("1X5Year"), _f25("1X84Year")],
       ["1X36Months", "1X5Year", "1XLifetime"])
 for rel, want in (("Child", "Dependent"), ("Spouse", "Spouse"), ("Self", "Self"), ("", None)):
@@ -320,6 +320,163 @@ for rel, want in (("Child", "Dependent"), ("Spouse", "Spouse"), ("Self", "Self")
     cg_rel.setdefault("patient", {})["relationship"] = rel
     check(f"Cigna relation {rel or '(none)'!r} → {want}",
           field(build_prefill(cg_rel, ""), "demographic.relationToInsured"), want)
+
+print("── METLIFE: BPO QA 11/25 ──")
+# A made-up MetLife export — no real patient. The QA sheet found codes left
+# blank (FISCAL YEAR limits), months filled as years, no-deductible plans left
+# blank, a $0 ortho maximum the portal never stated, and Relation / Plan Type /
+# Calendar-Fiscal / Ortho Payment Timing not filled.
+
+
+def _ml_proc(code, freq, lvl="80%", age="0-99"):
+    return {"procedure_code": code, "description": code, "frequency_limit": freq,
+            "benefit_level": lvl, "age_limit": age, "deductible": "NO",
+            "late_date_of_service": "—", "network_fee": "N/A", "patient_responsibility": "20%"}
+
+
+_NO_CARD = {"total": "N/A", "used": "N/A", "remaining": "N/A"}
+ML = {
+    "subscriber_info": {"name": "Test Subscriber", "dob": "01/01/1970", "relation": "Subscriber"},
+    "metlife_data": {
+        "source": "MetLife Portal - Plan Overview",
+        "patient": {"name": "Test Spouse", "dob": "02/03/1972", "gender": "Female",
+                    "relationship": "Spouse"},
+        "plan_details": {"network": "PDP PLUS", "group_number": "123456", "employer_group": "TEST CO",
+                         "start_date": "07/01/2026", "end_date": "N/A",
+                         "subscriber_id": "XXXXXXX0000"},
+        "provider_info": {"provider_network_status": "In-Network"},
+        "financials_network": "In-Network",
+        "financials": {
+            "annual_max": {"description": "for Diagnostic, Preventive, Restorative",
+                           "total": "$ 1500.00 total", "used": "$ 0.00 used to date",
+                           "remaining": "$ 1500.00 remaining"},
+            "deductible_ind": dict(_NO_CARD), "deductible_fam": dict(_NO_CARD),
+            # The scraper's stand-in for "no Lifetime card found".
+            "ortho_lifetime": {"category": "N/A", "total": "0.0", "used": "0.0", "remaining": "0.0"},
+        },
+        "deductible_notes": [],
+        "covered_services": [
+            {"category": "DIAGNOSTIC", "services": "Oral Exams",
+             "in_network": "100% Deductible Applies : No", "out_of_network": "100% Deductible Applies : No"},
+            {"category": "RESTORATIVE", "services": "Amalgams/ Fillings",
+             "in_network": "80% Deductible Applies : No", "out_of_network": "80% Deductible Applies : No"},
+        ],
+        "provisions": [
+            {"rule": "Benefit Period", "value": "FISCAL YEAR Start Date: 07/01/2026 End Date: 06/30/2027"},
+            {"rule": "Orthodontic Coverage",
+             "value": "Orthodontics is covered under this plan Percentage considered at initial ortho placement: 20%"},
+            {"rule": "Ortho payment method", "value": "End of quarter"},
+        ],
+    },
+    "benefit_coverage": {
+        "source": "MetLife Portal - Benefit & Coverage Details",
+        "provider_network_status": "In-Network", "procedure_categories": [], "codes_not_returned": [],
+        "procedures": [
+            _ml_proc("D0120", "2 TIMES IN 1 FISCAL YEAR", "100%"),
+            _ml_proc("D0210", "1 TIME IN 60 MONTHS", "100%"),
+            _ml_proc("D1351", "1 TIME IN 60 MONTHS, PERMANENT MOLARS ONLY, EXCLUDING WISDOM TEETH", "100%", "0-14"),
+            _ml_proc("D1510", "ONCE PER LIFETIME", "80%", "0-14"),
+            _ml_proc("D2160", "No Limitations"),
+            _ml_proc("D2740", "1 TIME IN 5 FISCAL YEARS", "50%"),
+            _ml_proc("D4910", "4 TIMES IN 1 CALENDAR YEAR"),
+            _ml_proc("D9944", "*NOT COVERED", "N/A", ""),
+        ],
+    },
+}
+r_ml = build_prefill(ML, "In")
+check("MetLife export read by the MetLife folder", r_ml["carrier"], "metlife")
+check("FISCAL YEAR limits fill (were left blank)",
+      [cell(r_ml, "D0120", "frequency"), cell(r_ml, "D2740", "frequency")], ["2X1Year", "1X5Years"])
+check("months stay months, as the website states them",
+      [cell(r_ml, "D0210", "frequency"), cell(r_ml, "D1351", "frequency")], ["1X60Months", "1X60Months"])
+check("years, lifetime, no limit and not covered as before",
+      [cell(r_ml, c, "frequency") for c in ("D4910", "D1510", "D2160", "D9944")],
+      ["4X1Year", "1XLifetime", "No Frequency", "NC"])
+check("no-deductible plan → both deductibles 0",
+      [field(r_ml, "insuranceDetails.individualDeductible"), field(r_ml, "insuranceDetails.familyDeductible")],
+      ["0", "0"])
+check("ortho covered but no Lifetime card read → ortho max / used left blank, not 0",
+      [field(r_ml, "benefitsInfo.orthoMaximumAmount"), field(r_ml, "benefitsInfo.orthoUsedAmount"),
+       field(r_ml, "benefitsInfo.orthoMaximumCovered")], [None, None, None])
+check("Relation, Plan Type, Calendar/Fiscal from the export",
+      [field(r_ml, "demographic.relationToInsured"), field(r_ml, "insuranceDetails.planType"),
+       field(r_ml, "insuranceDetails.calendarorfiscal")], ["Spouse", "PPO", "Fiscal"])
+check("Ortho Payment Timing: End of quarter → Quarterly",
+      next((q["value"] for q in r_ml["questions"] if q["question"] == "OrthoPaymentTiming"), None), "Quarterly")
+
+ml2 = _c25.deepcopy(ML)
+ml2["metlife_data"]["financials"]["ortho_lifetime"] = {
+    "category": "Orthodontics", "total": "$ 1000.00 total", "used": "$ 250.00 used to date",
+    "remaining": "$ 750.00 remaining"}
+ml2["metlife_data"]["financials"]["deductible_ind"] = {
+    "total": "$ 50.00 total", "used": "$ 0.00 paid to date", "remaining": "$ 50.00 remaining"}
+ml2["metlife_data"]["patient"]["relationship"] = "Subscriber"
+ml2["metlife_data"]["provisions"][0]["value"] = "CALENDAR YEAR Start Date: 01/01/2026 End Date: 12/31/2026"
+ml2["metlife_data"]["provisions"][2]["value"] = "Monthly Repetitive"
+r_ml2 = build_prefill(ml2, "In")
+check("an Orthodontics Lifetime card fills max, used and Lifetime",
+      [field(r_ml2, "benefitsInfo.orthoMaximumAmount"), field(r_ml2, "benefitsInfo.orthoUsedAmount"),
+       field(r_ml2, "benefitsInfo.orthoMaximumCovered")], ["1000", "250", "Lifetime"])
+check("a stated deductible is kept", field(r_ml2, "insuranceDetails.individualDeductible"), "50")
+check("Subscriber → Self, CALENDAR YEAR → Calendar, Monthly Repetitive → Monthly",
+      [field(r_ml2, "demographic.relationToInsured"), field(r_ml2, "insuranceDetails.calendarorfiscal"),
+       next((q["value"] for q in r_ml2["questions"] if q["question"] == "OrthoPaymentTiming"), None)],
+      ["Self", "Calendar", "Monthly"])
+
+ml3 = _c25.deepcopy(ML)
+ml3["metlife_data"]["covered_services"][1]["in_network"] = "80% Deductible Applies : Yes"
+ml3["metlife_data"]["provisions"][1]["value"] = "Orthodontics is not covered under this plan"
+r_ml3 = build_prefill(ml3, "In")
+check("deductible applies somewhere but no card read → left blank, not 0",
+      field(r_ml3, "insuranceDetails.individualDeductible"), None)
+check("ortho not covered → max 0 as before; no Payment Timing",
+      [field(r_ml3, "benefitsInfo.orthoMaximumAmount"),
+       [q for q in r_ml3["questions"] if q["question"] == "OrthoPaymentTiming"]], ["0", []])
+ml4 = _c25.deepcopy(ML)
+ml4["metlife_data"]["financials"]["annual_max"] = dict(_NO_CARD, description="")
+check("Maximums not read at all → deductibles not guessed as 0",
+      field(build_prefill(ml4, "In"), "insuranceDetails.individualDeductible"), None)
+
+print("── STAR DENTAL: ITS OWN FILL FORM (ClientID 19, 11/26) ──")
+# sabrina/star_dental/prefill.py: Star's own copy, run on Star's carrier
+# readers, with the rows of Star's Insurance Plan Breakdown.
+from sabrina.star_dental.prefill import build_prefill as star_prefill   # noqa: E402
+from sabrina.star_dental.prefill import scrape_network as star_network  # noqa: E402
+r_star = star_prefill(EXPORT, "In")
+check("Star: plan amounts under Sabrina's usual names",
+      [field(r_star, "insuranceDetails.yearlyMaxAmount"), field(r_star, "benefitsInfo.orthoMaximumAmount")],
+      ["1500", "2500"])
+check("Star: Preventive / Basic / Major % (on the form, not in Star's audit list)",
+      [field(r_star, f"insuranceDetails.{k}") for k in ("preventive", "basic", "major")], ["100", "80", "50"])
+check("Star: its own question names",
+      sorted(q["question"] for q in r_star["questions"]),
+      ["Aremajorpaidatpreporseatdate?", "DoesMissingToothClauseApply?"])
+check("Star: Seat Date in Star's words (Seat)",
+      next(q["value"] for q in r_star["questions"] if q["question"] == "Aremajorpaidatpreporseatdate?"), "Seat")
+check("Star: Orthodontics' Dependent Age Limit? row", cell(r_star, "DependentAgeLimit?", "ageLimit"), "26")
+check("Star: no Quads column (Smile's D4341 quads)", cell(r_star, "D4341", "quads"), None)
+check("Star: bitewings row also tried by its label",
+      next(g.get("aliases") for g in r_star["grid"] if g["code"] == "D0274"), ["Diagnostic:XraysBitewings"])
+check("Star: insurance phone offered as a hint", r_star["hints"].get("Insurance phone"), "8004517715")
+r_star_cg = star_prefill(cg_total, "")
+check("Star Cigna: network from the scrape",
+      (r_star_cg["carrier"], r_star_cg["network"], r_star_cg["network_from_scrape"]), ("cigna", "In", True))
+check("Star Cigna: D4341 quads go to SRP Quads per day?",
+      next((q["value"] for q in r_star_cg["questions"] if q["question"] == "SRPQuadsperday?"), None), "4")
+check("Star Delta Dental: network from the pop-up pick",
+      [star_network(_dd(s)) for s in ("ppo", "premier", "oon", "")], ["In", "In", "Out", None])
+check("Star Toolkit: network from the export",
+      [star_network(_tk(c, n)) for c, n in (("ppo", "PPO Dentist"), ("oon", "Nonparticipating Dentist"),
+                                            (None, "PPO Dentist"))], ["In", "Out", None])
+r_star_tk = star_prefill(_tk("ppo", "PPO Dentist"), "")
+check("Star ortho: the Coverage row and Orthodontics Child D8080 both get the ortho %",
+      sorted((g["code"], g["value"]) for g in r_star_tk["grid"]
+             if g["code"] in ("Coverage", "D8080") and g["column"] == "percentage"),
+      [("Coverage", "0"), ("D8080", "0")])
+check("Smile unchanged: no Star rows, questions or hints",
+      [cell(r_in, "DependentAgeLimit?", "ageLimit"), "Insurance phone" in r_in["hints"],
+       any(q["question"] == "Aremajorpaidatpreporseatdate?" for q in r_in["questions"])],
+      [None, False, False])
 
 print("── SCRAPE STORE ──")
 sid = scrape_store.save("smile_partners", "aetna", "w000-111 222", "2/3/1990", EXPORT)
@@ -332,6 +489,9 @@ check("other client cannot see it",
 check("the user's own scrape by id",
       (scrape_store.get_pending("smile_partners", sid) or {}).get("member_id"), "W000111222")
 check("own scrape id is per client", scrape_store.get_pending("star_dental", sid), None)
+check("ANY_CLIENT finds it whoever saved it (the form decides the client)",
+      [(scrape_store.find_pending(scrape_store.ANY_CLIENT, "W000111222") or {}).get("id"),
+       (scrape_store.get_pending(scrape_store.ANY_CLIENT, sid) or {}).get("id")], [sid, sid])
 check("mark used", scrape_store.mark_used(sid), True)
 check("used scrape not returned by id", scrape_store.get_pending("smile_partners", sid), None)
 check("used scrape is not returned again",
@@ -428,6 +588,33 @@ fx2 = api.post("/api/scrapes", json={"client": "smile_partners", "portal_data": 
 api.post(f"/api/scrapes/{fx2}/used")
 check("a used scrape is not used across browsers",
       edge(member_id="W999000111", dob="07/04/1985").status_code, 404)
+
+print("── ENDPOINTS: WHOSE FORM — SABRINA CLIENTID (11/26) ──")
+# The Fill Form states its Sabrina ClientID; that client's prefill fills it.
+# The scrape was saved before anyone knew whose form it would fill (the
+# extension's setting, Smile Partners by default), so any client's form finds it.
+sm = api.post("/api/scrapes", json={"client": "smile_partners", "portal_data": EXPORT}).json()["id"]
+form = lambda **q: api.get("/api/prefill", params=dict(network="In", member_id="W000111222", dob="02/03/1990",
+                                                        scrape_id=sm, only_own="true", **q))
+got = form(client="smile_partners", sabrina_client_id="19")
+check("ClientID 19 → Star Dental's form, from a scrape saved as Smile Partners",
+      (got.status_code, got.json().get("client"), got.json().get("client_label"), got.json().get("scrape_id")),
+      (200, "star_dental", "Star Dental", sm))
+check("…filled with Star's own questions",
+      any(q["question"] == "Aremajorpaidatpreporseatdate?" for q in got.json().get("questions", [])), True)
+got = form(client="star_dental", sabrina_client_id="26")
+check("ClientID 26 → Smile Partners, whatever the setting says",
+      (got.status_code, got.json().get("client"), got.json().get("sabrina_client_id")),
+      (200, "smile_partners", 26))
+check("no ClientID on the form → the extension's setting",
+      form(client="smile_partners").json().get("client"), "smile_partners")
+check("no ClientID and no setting → refused (400)", form().status_code, 400)
+got = form(client="smile_partners", sabrina_client_id="3")
+check("a known client not set up yet is named (400)",
+      (got.status_code, "Kidscare Dental" in str(got.json().get("detail"))), (400, True))
+check("an unknown ClientID is refused (400)", form(sabrina_client_id="999").status_code, 400)
+check("an old extension (client only) is served as before",
+      form(client="smile_partners").json().get("scrape_id"), sm)
 
 print(f"\n{'all passed' if not _failed else f'{_failed} failed'}")
 sys.exit(1 if _failed else 0)

@@ -36,6 +36,16 @@ OTHER_BROWSER_MINUTES = int(os.environ.get("SCRAPE_OTHER_BROWSER_MINUTES", "60")
 
 _lock = threading.Lock()
 
+# Pass as `client` to look a scrape up whichever client saved it. The portal is
+# scraped before anyone knows which client's Fill Form it will fill (the form
+# says so: Star Dental, Smile Partners), so /api/prefill looks up this way.
+ANY_CLIENT = None
+
+
+def _client_clause(client: str | None) -> tuple[str, tuple]:
+    """The SQL condition and parameters for one client, or none for ANY_CLIENT."""
+    return ("", ()) if client is ANY_CLIENT else (" AND client = ?", (client,))
+
 
 def _connect() -> sqlite3.Connection:
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
@@ -95,7 +105,7 @@ def save(client: str, carrier: str | None, member_id: str, dob: str | None, data
         return int(cur.lastrowid)
 
 
-def find_pending(client: str, member_id: str, dob: str | None = None,
+def find_pending(client: str | None, member_id: str, dob: str | None = None,
                  max_age_minutes: int | None = None) -> dict | None:
     """
     The latest pending scrape for this member, or None.
@@ -103,15 +113,17 @@ def find_pending(client: str, member_id: str, dob: str | None = None,
     When both the form and the scrape state a DOB they must agree, so two
     family members sharing a subscriber ID cannot be mixed up.
     `max_age_minutes` narrows the default MAX_AGE_HOURS window.
+    `client` ANY_CLIENT: whichever client saved it.
     """
     age = timedelta(minutes=max_age_minutes) if max_age_minutes is not None else timedelta(hours=MAX_AGE_HOURS)
     since = (_now() - age).isoformat()
     want_dob = norm_dob(dob)
+    which, params = _client_clause(client)
     with _lock, _connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM scrapes WHERE client = ? AND member_id = ? AND status = 'pending' "
-            "AND scraped_at >= ? ORDER BY scraped_at DESC",
-            (client, norm_member(member_id), since)).fetchall()
+            "SELECT * FROM scrapes WHERE member_id = ? AND status = 'pending' "
+            "AND scraped_at >= ?" + which + " ORDER BY scraped_at DESC",
+            (norm_member(member_id), since) + params).fetchall()
     for row in rows:
         if want_dob and row["dob"] and row["dob"] != want_dob:
             continue
@@ -119,13 +131,17 @@ def find_pending(client: str, member_id: str, dob: str | None = None,
     return None
 
 
-def get_pending(client: str, scrape_id: int) -> dict | None:
-    """One pending scrape by its id (the user's own last scrape), or None."""
+def get_pending(client: str | None, scrape_id: int) -> dict | None:
+    """
+    One pending scrape by its id (the user's own last scrape), or None.
+    `client` ANY_CLIENT: whichever client saved it.
+    """
     since = (_now() - timedelta(hours=MAX_AGE_HOURS)).isoformat()
+    which, params = _client_clause(client)
     with _lock, _connect() as conn:
         row = conn.execute(
-            "SELECT * FROM scrapes WHERE id = ? AND client = ? AND status = 'pending' "
-            "AND scraped_at >= ?", (int(scrape_id), client, since)).fetchone()
+            "SELECT * FROM scrapes WHERE id = ? AND status = 'pending' "
+            "AND scraped_at >= ?" + which, (int(scrape_id), since) + params).fetchone()
     return _as_dict(row) if row else None
 
 

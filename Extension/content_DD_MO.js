@@ -10,7 +10,9 @@
  *                 portal itself sends, then replays the four benefit endpoints.
  * ISOLATED world: popup messaging, chrome.storage.local and the JSON download.
  *
- * Usage: open a member on /member-benefits, wait for the page to finish loading, click Crawl in the popup.
+ * Usage: open a member on /member-benefits, wait for the page to finish loading, click Crawl in the popup,
+ * then pick the provider network (PPO, Premier or Non-participating) in the pop-up on the portal page.
+ * Only that network's figures are exported, as DD Toolkit and DD INS do (extension 1.67, 11/27).
  * If the extension was just installed/reloaded, refresh the portal tab first so the hook sees the page's calls.
  * The Bearer token is kept in memory only — it is never written to storage or to the output JSON.
  *
@@ -36,6 +38,19 @@
     const COVERAGE_PAGE_SIZE = 1000; // same size the portal uses
     const HISTORY_PAGE_SIZE = 200;   // portal's default response size
     const MAX_PAGES = 20;
+
+    // Provider network. Which network the office participates in is something the user
+    // knows and the portal does not say, so before every crawl the user picks one in a
+    // pop-up on the portal page (the same pop-up as DD Toolkit and DD INS). The portal
+    // states every percentage, maximum and deductible under PPO, Premier and
+    // out-of-network side by side; only the picked network's figures are exported, and
+    // the pick is recorded as `network_choice` / `selected_network` (Toolkit's names).
+    const NETWORK_CHOICES = Object.freeze([
+        Object.freeze({ key: "ppo", label: "PPO", name: "PPO Dentist", coverage: "PPO", accumulator: "ppo" }),
+        Object.freeze({ key: "premier", label: "Premier", name: "Premier Dentist", coverage: "Premier", accumulator: "premier" }),
+        Object.freeze({ key: "oon", label: "Non-participating", name: "Nonparticipating Dentist", coverage: "OON", accumulator: "outOfNetwork" })
+    ]);
+    const networkChoice = key => NETWORK_CHOICES.find(choice => choice.key === key) || null;
 
     // Website order.
     const ENDPOINTS = Object.freeze([
@@ -211,7 +226,8 @@
                 persistAndDownload(message.data).then(() => {
                     window.postMessage({ source: EXT_SOURCE, type: "RESULT_ACK", requestId: message.requestId }, window.location.origin);
                     const coverageRows = Number(message.data?.coverage_rows || 0);
-                    const text = `[+] Done — ${coverageRows} coverage rows. JSON downloaded.`;
+                    const network = message.data?.selected_network ? ` (${message.data.selected_network})` : "";
+                    const text = `[+] Done${network} — ${coverageRows} coverage rows. JSON downloaded.`;
                     sendPopupStatus(text, "ready", { state: "COMPLETE" });
                 }).catch(error => {
                     sendPopupStatus(`[!] Extraction finished, but save/download failed: ${error.message}`, "error", { state: "FAILED" });
@@ -237,18 +253,36 @@
 
         chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
             if (request?.command === "START_CRAWL") {
-                const requestId = makeId();
-                const timer = setTimeout(() => {
-                    const wait = pendingStarts.get(requestId);
-                    if (!wait) return;
-                    pendingStarts.delete(requestId);
-                    wait.sendResponse({
-                        status: "[!] DD MO page extractor is unavailable. Refresh the portal tab and ensure content_DD_MO.js is loaded in both MAIN and ISOLATED worlds.",
-                        started: false
+                // Check the member and login first, so the pop-up only appears when a crawl
+                // can actually run. The popup closes as soon as the user clicks the page, so
+                // it is answered before the pick; the pick and the crawl report through
+                // sendPopupStatus, which the popup reads back from storage.
+                queryPageStatus().then(status => {
+                    if (!status) {
+                        sendResponse({ status: UNAVAILABLE_TEXT, started: false });
+                        return;
+                    }
+                    if (!status.ready) {
+                        sendResponse({ status: `[!] ${status.message || "DD MO is not ready."}`, started: false });
+                        return;
+                    }
+                    sendResponse({
+                        status: "Choose the provider network on the portal page to start the crawl.",
+                        started: true
                     });
-                }, 4000);
-                pendingStarts.set(requestId, { sendResponse, timer });
-                window.postMessage({ source: EXT_SOURCE, type: "START_CRAWL", requestId }, window.location.origin);
+                    askProviderNetwork().then(choice => {
+                        const requestId = makeId();
+                        const timer = setTimeout(() => {
+                            if (!pendingStarts.has(requestId)) return;
+                            pendingStarts.delete(requestId);
+                            sendPopupStatus(UNAVAILABLE_TEXT, "error", { state: "FAILED" });
+                        }, 4000);
+                        // STARTED and ERROR answer the popup through sendPopupStatus too.
+                        pendingStarts.set(requestId, { sendResponse: () => {}, timer });
+                        sendPopupStatus(`Starting the ${choice.name} crawl…`, "working");
+                        window.postMessage({ source: EXT_SOURCE, type: "START_CRAWL", requestId, network: choice.key }, window.location.origin);
+                    });
+                });
                 return true;
             }
 
@@ -267,6 +301,84 @@
 
             return false;
         });
+
+        const UNAVAILABLE_TEXT = "[!] DD MO page extractor is unavailable. Refresh the portal tab and ensure content_DD_MO.js is loaded in both MAIN and ISOLATED worlds.";
+
+        // The MAIN world's readiness (member, login token), or null when it does not answer.
+        function queryPageStatus() {
+            return new Promise(resolve => {
+                const requestId = makeId();
+                const timer = setTimeout(() => {
+                    if (!pendingStatus.has(requestId)) return;
+                    pendingStatus.delete(requestId);
+                    resolve(null);
+                }, 1500);
+                pendingStatus.set(requestId, { sendResponse: resolve, timer });
+                window.postMessage({ source: EXT_SOURCE, type: "GET_STATUS", requestId }, window.location.origin);
+            });
+        }
+
+        // The same pop-up as the DD Toolkit and DD INS extractors: the crawl waits until
+        // one of the three networks is picked.
+        function askProviderNetwork() {
+            return new Promise(resolve => {
+                document.getElementById("dd-mo-network-choice")?.remove();
+
+                const overlay = document.createElement("div");
+                overlay.id = "dd-mo-network-choice";
+                overlay.style.cssText = [
+                    "position:fixed", "inset:0", "z-index:2147483647", "display:flex",
+                    "align-items:center", "justify-content:center", "background:rgba(15,23,42,.45)",
+                    "font:14px/1.45 Arial,sans-serif"
+                ].join(";");
+
+                const box = document.createElement("div");
+                box.setAttribute("role", "dialog");
+                box.setAttribute("aria-modal", "true");
+                box.setAttribute("aria-labelledby", "dd-mo-network-choice-title");
+                box.style.cssText = [
+                    "width:360px", "max-width:calc(100vw - 32px)", "background:#fff", "color:#172033",
+                    "border-radius:10px", "box-shadow:0 12px 36px rgba(0,0,0,.28)", "padding:18px"
+                ].join(";");
+
+                const title = document.createElement("div");
+                title.id = "dd-mo-network-choice-title";
+                title.textContent = "Provider network";
+                title.style.cssText = "font-weight:700;font-size:16px;margin-bottom:6px;color:#075985";
+
+                const text = document.createElement("div");
+                text.textContent = "Which network does this office participate in? Only that network's benefits are exported.";
+                text.style.cssText = "margin-bottom:14px;color:#475569";
+
+                box.append(title, text);
+                const buttons = NETWORK_CHOICES.map(choice => {
+                    const button = document.createElement("button");
+                    button.type = "button";
+                    button.style.cssText = [
+                        "display:block", "width:100%", "text-align:left", "margin:0 0 8px",
+                        "padding:10px 12px", "border:1px solid #9db3c7", "border-radius:8px",
+                        "background:#f8fafc", "color:#172033", "cursor:pointer", "font:inherit"
+                    ].join(";");
+                    const name = document.createElement("div");
+                    name.textContent = choice.label;
+                    name.style.cssText = "font-weight:700";
+                    const hint = document.createElement("div");
+                    hint.textContent = choice.name;
+                    hint.style.cssText = "font-size:12px;color:#64748b";
+                    button.append(name, hint);
+                    button.addEventListener("click", () => {
+                        overlay.remove();
+                        resolve(choice);
+                    });
+                    box.appendChild(button);
+                    return button;
+                });
+
+                overlay.appendChild(box);
+                (document.body || document.documentElement).appendChild(overlay);
+                buttons[0].focus();
+            });
+        }
 
         function sendPopupStatus(status, mode = "working", extra = {}) {
             const payload = {
@@ -644,8 +756,13 @@
                     postPageMessage("ERROR", { requestId: message.requestId, error: problem });
                     return;
                 }
-                postPageMessage("STARTED", { requestId: message.requestId, status: "[+] DD MO crawl requested. Fetching member benefits…" });
-                startCrawl(state, nativeFetch, message.requestId).catch(error => {
+                const choice = networkChoice(message.network);
+                if (!choice) {
+                    postPageMessage("ERROR", { requestId: message.requestId, error: "No provider network was picked. Click Crawl and choose PPO, Premier or Non-participating." });
+                    return;
+                }
+                postPageMessage("STARTED", { requestId: message.requestId, status: `[+] DD MO crawl requested (${choice.name}). Fetching member benefits…` });
+                startCrawl(state, nativeFetch, message.requestId, choice).catch(error => {
                     state.activeRun = null;
                     setStatus("[!] " + error.message, "error", { state: "FAILED" });
                     postPageMessage("ERROR", { requestId: message.requestId, error: error.message });
@@ -672,7 +789,8 @@
 
     // ---- crawl ----------------------------------------------------------
 
-    async function startCrawl(state, nativeFetch, requestId) {
+    async function startCrawl(state, nativeFetch, requestId, choice) {
+        if (!choice) throw new Error("No provider network was picked.");
         const problem = readinessProblem(state);
         if (problem) throw new Error(problem);
 
@@ -739,7 +857,7 @@
 
         await ensureSubscriberKnown(state, nativeFetch, ctx, raw.general, warnings);
 
-        const data = buildFinalOutput(state, ctx, raw, failed, warnings, run);
+        const data = buildFinalOutput(state, ctx, raw, failed, warnings, run, choice);
         run.resultData = data;
         postPageMessage("RESULT", { requestId, data });
         setTimeout(() => { if (state.activeRun === run) state.activeRun = null; }, 20000);
@@ -863,7 +981,7 @@
 
     // ---- output ---------------------------------------------------------
 
-    function buildFinalOutput(state, ctx, raw, failed, warnings, run) {
+    function buildFinalOutput(state, ctx, raw, failed, warnings, run, choice) {
         const generalRows = Array.isArray(raw.general) ? raw.general : [];
         const selected = selectedGeneralRow(generalRows, ctx.enrolleeId);
         const coverageRows = raw.coverage?.rows || [];
@@ -871,16 +989,26 @@
 
         // Keep only the required codes (PROCEDURE_CODES). The count below reflects the actual
         // portal coverage rows, while coverage_levels includes all required codes.
-        const coverage = coverageRows.map(normalizeCoverageRow).filter(r => PROCEDURE_CODE_SET.has(r.code));
+        const requiredRows = coverageRows.filter(r => PROCEDURE_CODE_SET.has(normalizeCode(r?.procedureCode)));
+        const coverage = requiredRows.map(r => normalizeCoverageRow(r, choice));
         const history = historyRows.map(normalizeHistoryRow);
         const maximumAndDeductible = Array.isArray(raw.maxDeductible)
-            ? buildCleanMaximumAndDeductible(raw.maxDeductible.map(normalizeAccumulatorRow))
+            ? buildCleanMaximumAndDeductible(raw.maxDeductible.map(r => normalizeAccumulatorRow(r, choice)))
             : null;
 
         return {
             source: "Delta Dental of Missouri Provider Portal",
             carrier: CARRIER,
             extracted_at: new Date().toISOString(),
+            // The network picked before the crawl; every figure below is that network's.
+            network_choice: choice.key,
+            selected_network: choice.name,
+            // Which networks the plan pays any of the required codes above 0% under — a
+            // yes/no per network, no figures — so the "OON Benefits" question can still be
+            // answered from an in-network export.
+            networks_paying: NETWORK_CHOICES
+                .filter(c => requiredRows.some(r => Number(r?.[`benefitLevel${c.coverage}`]) > 0))
+                .map(c => c.key),
             coverage_rows: coverage.length,
             member_details: buildMemberDetails(selected, generalRows, ctx, state),
             maximum_and_deductible: maximumAndDeductible,
@@ -1019,17 +1147,14 @@
         return result;
     }
 
-    function normalizeCoverageRow(r) {
+    // One coverage row, with the picked network's percentage and deductible flag only.
+    function normalizeCoverageRow(r, choice) {
         return {
             code: normalizeCode(r.procedureCode),
             benefit_group: r.benefitGroup ?? null,
             description: r.procedureDescr ?? null,
-            ppo_pct: pct(r.benefitLevelPPO),
-            ppo_deductible_applies: r.deductibleAppliesPPO ?? null,
-            premier_pct: pct(r.benefitLevelPremier),
-            premier_deductible_applies: r.deductibleAppliesPremier ?? null,
-            oon_pct: pct(r.benefitLevelOON),
-            oon_deductible_applies: r.deductibleAppliesOON ?? null,
+            benefit_pct: pct(r[`benefitLevel${choice.coverage}`]),
+            deductible_applies: r[`deductibleApplies${choice.coverage}`] ?? null,
             last_service_dates: r.lastServiceDates ?? null,
             waiting_period: r.waitingPeriod ?? null,
             frequency: emptyToNull(r.frequency),
@@ -1052,21 +1177,20 @@
         });
     }
 
-    function normalizeAccumulatorRow(r) {
-        const net = (max, met, rem, note) => ({
-            max: max ?? null,
-            met: met ?? 0,
-            remaining: rem ?? null,
-            note: note ?? null
-        });
+    // One accumulator row, with the picked network's max / met / remaining only.
+    function normalizeAccumulatorRow(r, choice) {
+        const prefix = choice.accumulator; // ppo | premier | outOfNetwork
         return {
             plan_type: r.planType ?? null,
             sub_type: r.planSubType ?? null,
             period: r.category ?? null,
             category: r.categoryType ?? null,
-            ppo: net(r.ppoMax, r.ppoMet, r.ppoRem, r.ppoOverRideText),
-            premier: net(r.premierMax, r.premierMet, r.premierRem, r.premierOverRideText),
-            out_of_network: net(r.outOfNetworkMax, r.outOfNetworkMet, r.outOfNetworkRem, r.outOfNetworkOverRideText),
+            network: {
+                max: r[`${prefix}Max`] ?? null,
+                met: r[`${prefix}Met`] ?? 0,
+                remaining: r[`${prefix}Rem`] ?? null,
+                note: r[`${prefix}OverRideText`] ?? null
+            },
             max_rollover: r.isMaxRollover ?? null,
             period_benefit_level: r.PeriodBenefitLevelDescription ?? null,
             age_min: r.ageMin ?? null,
@@ -1075,7 +1199,7 @@
     }
 
     // Public JSON uses only the values shown in the member-benefits PDF, plus the amounts and the
-    // family/ortho deductibles the client sheets ask for (PPO network values, like the rest).
+    // family/ortho deductibles the client sheets ask for (the picked network's values, like the rest).
     // Internal API dimensions (network, max code, rollover flags, etc.) are not emitted.
     function buildCleanMaximumAndDeductible(rows) {
         const find = (planType, subType, category, period) => rows.find(r =>
@@ -1091,15 +1215,15 @@
         const familyRegularDeductible = find("Family", "Deductible", "Regular", "Annual");
         const orthoDeductible = find("Individual", "Deductible", "Orthodontic", null);
 
-        const readMet = row => Number.isFinite(Number(row?.ppo?.met)) ? Number(row.ppo.met) : 0;
-        const readRemaining = row => Number.isFinite(Number(row?.ppo?.remaining)) ? Number(row.ppo.remaining) : null;
+        const readMet = row => Number.isFinite(Number(row?.network?.met)) ? Number(row.network.met) : 0;
+        const readRemaining = row => Number.isFinite(Number(row?.network?.remaining)) ? Number(row.network.remaining) : null;
         const unlimited = value => value != null && value >= 99999 ? "Unlimited" : value;
         // "SHARED" rows carry 0 placeholders; the portal shows the text instead of amounts.
-        const isShared = row => /^shared$/i.test(String(row?.ppo?.note ?? "").trim());
+        const isShared = row => /^shared$/i.test(String(row?.network?.note ?? "").trim());
         const readAmount = row => {
             if (!row) return null;
             if (isShared(row)) return "SHARED";
-            return row.ppo?.max != null && Number.isFinite(Number(row.ppo.max)) ? Number(row.ppo.max) : null;
+            return row.network?.max != null && Number.isFinite(Number(row.network.max)) ? Number(row.network.max) : null;
         };
         // Null throughout when the portal returned no such accumulator for this member.
         const optionalDeductible = row => !row || isShared(row)

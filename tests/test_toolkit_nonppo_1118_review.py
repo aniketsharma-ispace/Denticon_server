@@ -129,8 +129,8 @@ def test_premier_unchanged():
 # network (Smile 11/10, Star 11/09). "Non-PPO Dentist" is that network on
 # Medicare Advantage PPO plans, so it counts too.
 
-from smile_partners.portals import delta_toolkit as smile_toolkit  # noqa: E402
-from star_dental.portals import delta_toolkit as star_toolkit  # noqa: E402
+from sabrina.smile_partners.portals import delta_toolkit as smile_toolkit  # noqa: E402
+from sabrina.star_dental.portals import delta_toolkit as star_toolkit  # noqa: E402
 
 PORTALS = pytest.mark.parametrize("portal", [smile_toolkit, star_toolkit], ids=["smile", "star"])
 

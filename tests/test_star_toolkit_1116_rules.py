@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from star_dental.sabrina.carriers.delta_toolkit import rules
+from sabrina.star_dental.carriers.delta_toolkit import rules
 
 
 # ── 1. Verification date ────────────────────────────────────────────────────

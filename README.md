@@ -7,9 +7,10 @@ breakdown sheet a BPO team filled in by hand.
 
 ## Layout
 
-The top level is organised **one folder per client**. A client is a dental group
+The code is organised **one folder per client**. A client is a dental group
 we do this work for; each has its own way of recording benefits, and each owns
-its code outright.
+its code outright. The Sabrina clients sit together under `sabrina/`; DCA, the
+Denticon client, keeps its folder at the top level. `main.py` is common to all.
 
 ```
 DCA/                     the Denticon client
@@ -24,36 +25,38 @@ DCA/                     the Denticon client
   compare_patients.py    matching a portal record to a Denticon plan
   patient_notes.py       the note written back into Denticon
 
-smile_partners/          the Sabrina client
-  portals/               its own copy of the same five readers
-  breakdown.py           its own copy
-  sabrina/               the breakdown sheet this client works from
-    carriers/              one folder per insurance portal, each a whole audit
-      aetna/  cigna/  delta_dental/  delta_toolkit/  guardian/  metlife/
-        spec.py              what the sheet contains, field by field
-        parser.py            reading the sheet out of the PDF
-        vocabulary.py        making a stated value comparable
-        compare.py           deciding whether two values agree
-        portal.py            where each answer is found on the portal
-        rules.py             this carrier's own rules
-        audit.py             the audit itself
-    sheet/                 recognizing an uploaded sheet before the portal is known
-    cli.py                 tuning the parser against a real sheet
+sabrina/                 the Sabrina clients, one folder each
+  smile_partners/          Smile Partners (Sabrina ClientID 26)
+    portals/                 its own copy of the carrier readers
+    breakdown.py             its own copy
+    carriers/                one folder per insurance portal, each a whole audit
+      aetna/  cigna/  delta_dental/  delta_toolkit/  guardian/  metlife/  …
+        spec.py                what the sheet contains, field by field
+        parser.py              reading the sheet out of the PDF
+        vocabulary.py          making a stated value comparable
+        compare.py             deciding whether two values agree
+        portal.py              where each answer is found on the portal
+        rules.py               this carrier's own rules
+        audit.py               the audit itself
+        prefill.py             this carrier's Fill Form extras
+    sheet/                   recognizing an uploaded sheet before the portal is known
+    prefill.py               filling Sabrina's Fill Form from a portal scrape
+    cli.py                   tuning the parser against a real sheet
 
-star_dental/             a second Sabrina client (Star Dental)
-  …                      began 2026-10-22 as a copy of smile_partners/
+  star_dental/             Star Dental (Sabrina ClientID 19)
+    …                        began 2026-10-22 as a copy of smile_partners/
 
-jefferson/               a third Sabrina client (Jefferson)
-  …                      began 2026-10-26 as a copy of star_dental/
+  jefferson/               Jefferson
+    …                        began 2026-10-26 as a copy of star_dental/
 
-park_dental/             a fourth Sabrina client (Park Dental)
-  …                      began 2026-10-28 as a copy of star_dental/
+  park_dental/             Park Dental
+    …                        began 2026-10-28 as a copy of star_dental/
 ```
 
 A Sabrina client's field list — which codes it audits, and which of them carry
 a Frequency, Coverage %, Age Limit or History cell — comes from that client's
 tab of `Material/Comparison/Updated Sabrina Codes & C Q's Data - All Clients.xlsx`
-and lives in its `sabrina/carriers/*/spec.py` (and `sheet/spec.py`). A code
+and lives in its `carriers/*/spec.py` (and `sheet/spec.py`). A code
 ticked for Frequency but not Coverage % is listed in `_NO_PERCENTAGE_CODES`,
 and its percentage is never compared (Park Dental).
 
@@ -62,7 +65,7 @@ client cannot reach another — that is the point of the split, not an oversight
 When you change one, say so, and decide deliberately whether the others should
 follow.
 
-**The same holds for each carrier under `sabrina/carriers/`.** The uploaded
+**The same holds for each carrier under a client's `carriers/`.** The uploaded
 portal export decides which folder runs — an Aetna export is audited by
 `aetna/` and no other folder is even imported — so a fix belongs in the folder
 of the carrier it was reported for. An export from a portal with no folder
@@ -70,9 +73,9 @@ of the carrier it was reported for. An export from a portal with no folder
 nearest carrier's rules. Guardian has a folder for Smile Partners only
 (2026-11-02); it reads the JSON `Extension/content_guardian.js` downloads, or
 the patient's Dental Eligibility page saved as a PDF, which
-`smile_partners/portals/guardian_pdf.py` reads into the same shape (the web
-page sends the client with a PDF, and `/api/parse-pdf` lets a client's
-`sabrina.read_portal_pdf` take it before the shared parser). D1510, D2980,
+`sabrina/smile_partners/portals/guardian_pdf.py` reads into the same shape (the
+web page sends the client with a PDF, and `/api/parse-pdf` lets a client's
+`read_portal_pdf` take it before the shared parser). D1510, D2980,
 D4260, D7140, D7210 and D9944 are taken from Guardian's CDT code search; without
 one (a PDF, a skipped search) only a main-page row that names the code counts
 ("D2980-D2983 … are covered under Major"), and otherwise they read "not on
@@ -93,7 +96,7 @@ tests/                   the regression suites
 tools/                   build scripts
 Material/                sample exports and sheets, used as fixtures
 new_plan.py              compatibility shim -> DCA.plan_pdf
-sabrina_compare.py       compatibility shim -> smile_partners.sabrina
+sabrina_compare.py       compatibility shim -> sabrina.smile_partners
 ```
 
 ## Choosing the client
@@ -109,15 +112,19 @@ can do:
 ```python
 CLIENTS = {
     "dca":            {..., "supports": {"match", "notes", "new_plan", "parse_pdf"}},
-    "smile_partners": {..., "supports": {"sabrina_audit", "parse_pdf"}},
-    "star_dental":    {..., "supports": {"sabrina_audit", "parse_pdf"}},
-    "jefferson":      {..., "supports": {"sabrina_audit", "parse_pdf"}},
-    "park_dental":    {..., "supports": {"sabrina_audit", "parse_pdf"}},
+    "smile_partners": {..., "package": "sabrina.smile_partners", "sabrina_client_id": 26,
+                       "supports": {"sabrina_audit", "parse_pdf", "sabrina_prefill"}},
+    "star_dental":    {..., "package": "sabrina.star_dental", "sabrina_client_id": 19,
+                       "supports": {"sabrina_audit", "parse_pdf", "sabrina_prefill"}},
+    "jefferson":      {..., "package": "sabrina.jefferson", "supports": {"sabrina_audit", "parse_pdf"}},
+    "park_dental":    {..., "package": "sabrina.park_dental", "supports": {"sabrina_audit", "parse_pdf"}},
 }
 ```
 
 `GET /api/clients` serves that list, and the dropdown is built from it — so
-adding a client is one entry here plus a folder, with no change to the page.
+adding a client is one entry here plus a folder, with no change to the page. A
+new Sabrina client's folder goes under `sabrina/`. On the Fill Form, the page's
+Sabrina ClientID picks the client (`sabrina_client_id`).
 
 ## Running it
 

@@ -9,8 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from smile_partners.sabrina.carriers.delta_toolkit import portal, rules
-from smile_partners.sabrina.carriers.delta_toolkit.spec import CORE_FIELD_KEYS, _SPEC
+from sabrina.smile_partners.carriers.delta_toolkit import portal, rules
+from sabrina.smile_partners.carriers.delta_toolkit.spec import CORE_FIELD_KEYS, _SPEC
 
 BY_KEY = {f["key"]: f for f in _SPEC}
 

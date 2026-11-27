@@ -23,7 +23,7 @@
 //
 // Messages (chrome.runtime.sendMessage({ type, ... })):
 //   SCRAPE_DONE       { carrier, data }                → { ok, scrape }
-//   IAP_GET_PREFILL   { member_id, dob, network }      → { ok, prefill }
+//   IAP_GET_PREFILL   { member_id, dob, network, client_id } → { ok, prefill }
 //   IAP_MARK_USED     { scrape_id }                    → { ok }
 //   IAP_GET_SETTINGS  {}                               → { ok, settings, lastScrape }
 //   IAP_SET_SETTINGS  { settings }                     → { ok, settings }
@@ -68,7 +68,10 @@
     const d = data || {};
     const name = d.patient?.name || d.patient_info?.patient_name || d.primary_patient?.name ||
                  d.member_details?.patient_name || d.metlife_data?.patient?.name ||
-                 d.patient_information?.name || "patient";
+                 d.patient_information?.name ||
+                 // DD Toolkit: the member picked on the Member Benefits page (11/27).
+                 d.member_details?.selectedMember?.patientName || d.member_details?.selectedMember?.name ||
+                 "patient";
     const slug = String(name).trim().replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "").toLowerCase() || "patient";
     return `${carrier}_${slug}_${new Date().toISOString().slice(0, 10)}.json`;
   }
@@ -134,6 +137,9 @@
         network: msg.network || "",
       });
       if (msg.dob) q.set("dob", msg.dob);
+      // The Fill Form's own ClientID decides whose rules fill it (19 Star
+      // Dental, 26 Smile Partners); `client` above is the Settings fallback.
+      if (msg.client_id) q.set("sabrina_client_id", String(msg.client_id));
       if (last && last.id) q.set("scrape_id", String(last.id));
       // Only this browser's last scrape, never an older one left on the server.
       q.set("only_own", "true");
