@@ -831,6 +831,8 @@ def _aetna_frequency(text: str) -> str | None:
     count, span, unit = int(m.group(1)), int(m.group(2) or 1), m.group(3).lower()
     if unit == "year" and span >= 99:
         return f"{count}XLifetime"
+    if unit == "month" and span >= 999:
+        return f"{count}XLifetime"
     if unit == "day":
         return f"{count}X{span}Days"
     return f"{count}X{span}Year" if unit == "year" else f"{count}X{span}Months"

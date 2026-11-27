@@ -496,6 +496,10 @@ def build_prefill(portal_raw: dict, network: str) -> dict:
     # the network picked before the crawl) brings its own IN OR OON.
     scraped = scrape_network(portal_raw)
     picked = _NETWORKS.get(str(network or "").strip().lower())
+    # A scrape holding both networks (Aetna) only suggests one: IN OR OON
+    # already set on the form wins, and nothing is refused.
+    if scraped and picked and getattr(carrier_prefill(portal_raw), "SCRAPE_HOLDS_BOTH_NETWORKS", False):
+        scraped = None
     if scraped:
         if picked and picked != scraped:
             words = {"In": "in-network", "Out": "out-of-network"}

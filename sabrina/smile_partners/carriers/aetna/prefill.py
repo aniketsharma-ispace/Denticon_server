@@ -83,3 +83,24 @@ def waiting_periods(view: dict) -> list[dict]:
                              "source": code})
                 break
     return rows
+
+
+# The scrape holds both networks' tables, so IN OR OON already set on the
+# Sabrina form wins over the operator's crawl-time pick (no refusal).
+SCRAPE_HOLDS_BOTH_NETWORKS = True
+
+
+def scrape_network(portal_raw: dict) -> str | None:
+    """
+    "In" / "Out" as the operator picked on the patient's benefits page while
+    crawling (extension 1.66+), so the fill sets IN OR OON by itself. None for
+    older crawls or "Decide in Sabrina": the user picks on the form, as before.
+    """
+    if not isinstance(portal_raw, dict):
+        return None
+    for candidate in (portal_raw, portal_raw.get("aetna_data"), portal_raw.get("portal_data")):
+        if isinstance(candidate, dict):
+            choice = str(candidate.get("network_choice") or "").strip().title()
+            if choice in ("In", "Out"):
+                return choice
+    return None
