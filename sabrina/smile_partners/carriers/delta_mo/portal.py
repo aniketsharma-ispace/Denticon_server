@@ -383,7 +383,15 @@ def _portal_oon_benefits(bd: dict, portal_raw: dict, sab_raw=None) -> str | None
     benefits. Only when no category states an OON benefit at all do we fall
     back to the provision text — and an in-network fee schedule is never taken
     to imply OON coverage.
+
+    A PPO or Premier export from extension 1.67+ carries no out-of-network
+    figures; its `networks_paying` says whether the plan pays any requested
+    code above 0% out of network, and answers instead (as the prefill does).
     """
+    meta = (portal_raw or {}).get("_mo_meta") or {}
+    if meta.get("export_network") in ("ppo", "premier") and isinstance(meta.get("networks_paying"), list):
+        return "Yes" if "oon" in meta["networks_paying"] else "No"
+
     ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
 
     services = ml.get("covered_services")

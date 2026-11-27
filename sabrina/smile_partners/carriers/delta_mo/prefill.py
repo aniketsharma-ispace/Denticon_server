@@ -14,11 +14,12 @@ holds that network's figures only:
     coverage_levels[]  benefit_pct + deductible_applies (the picked network's)
     maximum_and_deductible   the picked network's accumulators
 
-The audit (portals/delta_mo.py) still reads the older three-column exports
-(ppo_pct / premier_pct / oon_pct side by side) and has not been changed for the
-new shape (user decision, 11/27: prefill only for now). So the prefill recasts a
-single-network export into the columns the audit's readers take, and leaves an
-older export exactly as it is.
+The audit (portals/delta_mo.py) reads both shapes since 11/27 (user decision:
+fix the audit before shipping extension 1.69): `benefit_pct` and
+`deductible_applies` on a single-network export, the three columns on an older
+one. The prefill still recasts a single-network export into the older columns
+(prefill_export below); the audit reads the recast rows the same way, so the
+fill is unchanged. An older export is left exactly as it is.
 """
 
 _SCRAPE_NETWORK = {"ppo": "In", "premier": "In", "oon": "Out"}
@@ -67,11 +68,11 @@ def prefill_export(portal_raw: dict) -> dict:
 
 def form_only(view: dict, values: dict) -> list[dict]:
     """
-    OON Benefits for an in-network export. The audit answers it from the
-    out-of-network percentages, which a PPO or Premier export no longer
-    carries; `networks_paying` still says whether the plan pays out of
-    network. An Out export states its own percentages, and an older export
-    all three, so the audit's answer stands for those.
+    OON Benefits for an in-network export, from `networks_paying`. Since
+    11/27 the audit's own reader (portal._portal_oon_benefits) answers it the
+    same way, so this only fires when that reader has no answer. An Out
+    export states its own percentages, and an older export all three, so the
+    audit's answer stands for those.
     """
     raw = values.get("_raw") or {}
     if "oon_benefits" in values or _choice(raw) not in ("ppo", "premier"):

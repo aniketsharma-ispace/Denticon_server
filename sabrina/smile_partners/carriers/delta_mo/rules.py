@@ -263,6 +263,9 @@ _MO_PREMIER_FEE_RE = re.compile(r"\bprem", re.IGNORECASE)
 _MO_UCR_FEE_RE = re.compile(r"\bUCR\b", re.IGNORECASE)
 
 _MO_NETWORK_NAMES = {"ppo": "PPO", "premier": "Premier", "oon": "Out of Network"}
+# The DD MO pop-up's own button labels (content_DD_MO.js NETWORK_CHOICES), for
+# telling the user which one to pick when they re-export.
+_MO_POPUP_LABELS = {"ppo": "PPO", "premier": "Premier", "oon": "Non-participating"}
 
 
 def _mo_sheet_network(sheet_in_network, fee_schedule=None) -> tuple[str, str, str]:
@@ -386,8 +389,12 @@ def _mo_identity_gate(sabrina_parsed: dict, portal_raw: dict) -> tuple[bool, lis
     and apostrophes aside). The date of birth on the portal has its year
     filled in from the member's age on the day the portal was read.
 
-    There is no network check: the export states the PPO, Premier and
-    out-of-network figures side by side, and the sheet picks among them.
+    An export from before extension 1.67 states the PPO, Premier and
+    out-of-network figures side by side, and the sheet picks among them. From
+    1.67 (11/27) the export holds one network, picked before the crawl; it must
+    be the network the sheet records (Premier fee schedule -> Premier, In
+    Network Out / UCR -> Non-participating, otherwise PPO), or nothing is
+    compared and the user is told which network to re-export (as DD Toolkit).
     """
     from .compare import _compare
     from .vocabulary import _norm_id, _num_date
@@ -413,5 +420,14 @@ def _mo_identity_gate(sabrina_parsed: dict, portal_raw: dict) -> tuple[bool, lis
     sab_group, por_group = _norm_id(fields.get("group_number")), _norm_id(group)
     if not sab_group or not por_group or sab_group != por_group:
         issues.append(f"group number mismatch ({fields.get('group_number')!r} vs {group!r})")
+
+    meta = (portal_raw or {}).get("_mo_meta") or {}
+    exported, expected = meta.get("export_network"), meta.get("network") or "ppo"
+    if exported and exported != expected:
+        want = _MO_POPUP_LABELS.get(expected, expected)
+        issues.append(
+            f"DD MO network mismatch ({_MO_POPUP_LABELS.get(exported, exported)} exported); "
+            f"the sheet records {_MO_NETWORK_NAMES.get(expected, expected)} benefits, so "
+            f"re-export choosing {want}")
 
     return not issues, issues

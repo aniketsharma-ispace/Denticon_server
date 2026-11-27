@@ -26,12 +26,29 @@ from .common import _blank_present_end_date, _dollar
 # The export is already structured: member_details, maximum_and_deductible,
 # coverage_levels (one row per requested CDT code, with the PPO / Premier /
 # out-of-network percentage, frequency and age limit the portal's coverage
-# table prints) and patient_history. Everything the breakdown sheet audits is
+# table prints) and patient_history. From extension 1.67 (11/27) a row holds
+# only the network picked before the crawl, as benefit_pct /
+# deductible_applies (see _mo_export_network). Everything the breakdown sheet audits is
 # in there; it only has to be put into the contract the rest of the pipeline
 # speaks. Nothing here touches another carrier's path.
 
 # The networks a coverage row states a percentage for.
 _MO_NETWORK_PCT = {'ppo': 'ppo_pct', 'premier': 'premier_pct', 'oon': 'oon_pct'}
+
+
+def _mo_export_network(raw):
+    """
+    The network an extension 1.67+ export holds alone, or "" for an older one.
+
+    From 1.67 (11/27) the extension asks PPO / Premier / Non-participating
+    before the crawl, as DD Toolkit and DD INS do, records the pick as
+    `network_choice`, and gives each coverage row that network's figures only:
+    `benefit_pct` and `deductible_applies` in place of the ppo_ / premier_ /
+    oon_ columns. The identity gate refuses an export of another network than
+    the sheet records (rules._mo_identity_gate).
+    """
+    value = str((raw or {}).get('network_choice') or '').strip().lower()
+    return value if value in _MO_NETWORK_PCT else ''
 
 # Codes whose service dates count against each other. The portal files a date
 # under the one code that was billed; the team records it against each code of
@@ -289,12 +306,15 @@ def _normalize_dd_mo_portal(raw):
 
     `_mo_network` — "ppo" (the default), "premier" or "oon" — names the network
     whose percentages are read; the audit sets it from the sheet's In Network
-    and fee schedule. No Denticon values are introduced here.
+    and fee schedule. A 1.67+ export states one network's figures only, read
+    whatever `_mo_network` says: the identity gate refuses it when that is not
+    the sheet's network. No Denticon values are introduced here.
     """
     member = raw.get('member_details') or {}
     accumulators = _mo_accumulator_table(raw.get('maximum_and_deductible'))
     network = str(raw.get('_mo_network') or 'ppo').lower()
     pct_key = _MO_NETWORK_PCT.get(network, 'ppo_pct')
+    export_network = _mo_export_network(raw)
     as_of = _mo_as_of(raw)
 
     # ── identity ───────────────────────────────────────────────────────────
@@ -312,7 +332,8 @@ def _normalize_dd_mo_portal(raw):
         subscriber_name = str((subscriber or {}).get('patient_name') or '').strip()
         subscriber_dob = ''
 
-    # ── maximums and deductibles (the PPO network's, as the export states them) ─
+    # ── maximums and deductibles (the PPO network's before extension 1.67, the
+    #    picked network's from 1.67) ─
     max_stated, annual = _mo_accumulator(accumulators.get('individual_regular_annual_maximum'), 'used')
     ind_stated, deductible_ind = _mo_accumulator(accumulators.get('individual_regular_deductible'), 'met')
     fam_stated, deductible_fam = _mo_accumulator(accumulators.get('family_regular_deductible'), 'met')
@@ -328,10 +349,15 @@ def _normalize_dd_mo_portal(raw):
     if max_stated and not fam_stated and 'family_regular_deductible' in accumulators:
         deductible_fam = dict(zero)
 
-    # The export carries the PPO network's accumulators only. They are the
-    # plan's own: the portal's out-of-network column states the same figures
+    # An export before 1.67 carries the PPO network's accumulators only. They are
+    # the plan's own: the portal's out-of-network column states the same figures
     # (David Olea's capture), and the team reads them for an out-of-network
-    # sheet too (11/10, Evan Hopf).
+    # sheet too (11/10, Evan Hopf). From 1.67 the export carries the picked
+    # network's accumulators instead, and they can differ (11/27: one plan's PPO
+    # maximum $2,000, its Premier and out-of-network maximum $1,500). An
+    # out-of-network export no longer states the PPO figures, so whether the
+    # 11/10 rule still holds for such a plan is OPEN; the picked network's
+    # figures are compared.
 
     # A plan with orthodontics whose table has no orthodontic maximum or
     # deductible for this member has none: 0 (11/10, team rule, Mahesh).
@@ -412,7 +438,16 @@ def _normalize_dd_mo_portal(raw):
             })
             continue
 
-        pct = row.get(pct_key)
+        if export_network:
+            # 1.67+: the picked network's figures, the only ones the row has.
+            # Out of network is stated only when that is the picked network.
+            pct = row.get('benefit_pct')
+            deductible_applies = row.get('deductible_applies')
+            oon_pct = pct if export_network == 'oon' else None
+        else:
+            pct = row.get(pct_key)
+            deductible_applies = row.get('ppo_deductible_applies')
+            oon_pct = row.get('oon_pct')
         level = f'{pct:g}%' if isinstance(pct, (int, float)) else ''
         age = ortho_age if code in _MO_ORTHO_CODES and ortho_age else _mo_age_limit(row.get('age_limit'))
         procedures.append({
@@ -422,7 +457,7 @@ def _normalize_dd_mo_portal(raw):
             'frequency_limit': _mo_frequency(row.get('frequency')),
             'age_limit': age,
             'late_date_of_service': _history(code),
-            'deductible': str(row.get('ppo_deductible_applies') or ''),
+            'deductible': str(deductible_applies or ''),
             'limitation': str(row.get('other_limitations') or ''),
             'mo_listed': True,
         })
@@ -432,7 +467,7 @@ def _normalize_dd_mo_portal(raw):
         group = str(row.get('benefit_group') or '').strip().upper()
         if group:
             best = categories.setdefault(group, {'in': None, 'out': None})
-            for side, value in (('in', pct), ('out', row.get('oon_pct'))):
+            for side, value in (('in', pct), ('out', oon_pct)):
                 if isinstance(value, (int, float)) and (best[side] is None or value > best[side]):
                     best[side] = value
 
@@ -519,6 +554,14 @@ def _normalize_dd_mo_portal(raw):
         'benefit_coverage': {'procedures': procedures},
         '_mo_meta': {
             'network': network,
+            # The network a 1.67+ export holds alone ("" for an older export),
+            # and the networks the plan pays any requested code above 0% under:
+            # the OON Benefits answer for an in-network export, which carries no
+            # out-of-network figures.
+            'export_network': export_network,
+            'networks_paying': (list(raw.get('networks_paying'))
+                                if export_network and isinstance(raw.get('networks_paying'), list)
+                                else None),
             'scraped_on': as_of.strftime('%m/%d/%Y'),
             # When the benefit year began, and whether it is a calendar year —
             # the window a service date has to fall in to count against a
