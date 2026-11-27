@@ -376,6 +376,18 @@ def _portal_prev_in_max(bd: dict, portal_raw: dict, sab_raw=None) -> str | None:
     before that was added simply have nothing here, and the row stays unstated
     rather than guessed at.
     """
+    # Cigna (business rule): look up D0120 on its own — a Maximum section on
+    # its benefits means preventive counts toward the yearly max (Yes); no
+    # Maximum section means No. When D0120 itself is not covered or failed,
+    # the Benefit Maximums card below decides.
+    cigna = _cigna_export(portal_raw)
+    if cigna:
+        d0120 = next((r for r in (cigna.get("procedures") or {}).get("results") or []
+                      if isinstance(r, dict) and r.get("procedure_code") == "D0120"), None)
+        if d0120 and d0120.get("covered") is True:
+            maximum = str(d0120.get("maximum_total") or "").strip().upper()
+            return "No" if maximum in ("", "N/A", "NA", "-") else "Yes"
+
     ml = (portal_raw or {}).get("metlife_data") or portal_raw or {}
     financials = ml.get("financials") or {}
     annual = financials.get("annual_max") or {}
